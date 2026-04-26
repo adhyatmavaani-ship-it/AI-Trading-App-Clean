@@ -19,8 +19,18 @@ logger = logging.getLogger(__name__)
 class AuthMiddleware(BaseHTTPMiddleware):
     """Validates API key/JWT and enforces authentication."""
 
-    EXCLUDED_PATHS = {"/health", "/v1/health", "/docs", "/redoc", "/openapi.json"}
-    EXCLUDED_PREFIXES = ("/health/", "/v1/health/", "/public/", "/v1/public/")
+    EXCLUDED_PATHS = {
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+        "/health",
+        "/health/live",
+        "/health/ready",
+        "/v1/health",
+        "/v1/health/live",
+        "/v1/health/ready",
+    }
+    EXCLUDED_PREFIXES = ("/public/", "/v1/public/")
 
     def __init__(self, app):
         super().__init__(app)
@@ -29,7 +39,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: Callable):
         # Skip auth for health checks and documentation
-        if request.url.path in self.EXCLUDED_PATHS or request.url.path.startswith(self.EXCLUDED_PREFIXES):
+        path = request.url.path.rstrip("/") or "/"
+        if path in self.EXCLUDED_PATHS or path.startswith(self.EXCLUDED_PREFIXES):
             return await call_next(request)
 
         # Extract and validate API key
