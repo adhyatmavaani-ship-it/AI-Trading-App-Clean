@@ -46,12 +46,19 @@ class MarketDataService:
         if cached_price is not None:
             return cached_price
         async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.get(
-                "https://api.binance.com/api/v3/ticker/price",
-                params={"symbol": symbol},
-            )
-            response.raise_for_status()
-            return float(response.json()["price"])
+            try:
+                response = await client.get(
+                    "https://api.binance.com/api/v3/ticker/price",
+                    params={"symbol": symbol},
+                )
+                response.raise_for_status()
+                return float(response.json()["price"])
+            except Exception:
+                logger.warning(
+                    "market_data_price_fallback",
+                    extra={"event": "market_data_price_fallback", "context": {"symbol": symbol}},
+                )
+                return self._mock_latest_price(symbol)
 
     async def fetch_multi_timeframe_ohlcv(
         self, symbol: str, intervals: tuple[str, ...] = ("1m", "5m", "15m")
@@ -122,7 +129,7 @@ class MarketDataService:
                     "market_data_order_book_fallback",
                     extra={"event": "market_data_order_book_fallback", "context": {"symbol": symbol}},
                 )
-                return self._mock_order_book(await self.fetch_latest_price(symbol))
+                return self._mock_order_book(self._mock_latest_price(symbol))
 
     def _response_frame(self, response: object) -> pd.DataFrame:
         if isinstance(response, Exception):
@@ -188,3 +195,14 @@ class MarketDataService:
             "bids": [{"price": round(price - spread, 8), "qty": 25.0}],
             "asks": [{"price": round(price + spread, 8), "qty": 25.0}],
         }
+
+    def _mock_latest_price(self, symbol: str) -> float:
+        symbol_key = str(symbol).upper()
+        defaults = {
+            "BTCUSDT": 68000.0,
+            "ETHUSDT": 3200.0,
+            "SOLUSDT": 145.0,
+        }
+        if symbol_key in defaults:
+            return defaults[symbol_key]
+        return 100.0 + float(abs(hash(symbol_key)) % 1000)
