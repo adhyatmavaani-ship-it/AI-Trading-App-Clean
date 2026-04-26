@@ -92,7 +92,10 @@ async def _collect_live_signals(container: ServiceContainer, viewer_subscription
 async def _generate_live_signals(container: ServiceContainer, limit: int = 3) -> list[LiveSignalItem]:
     generated: list[LiveSignalItem] = []
     target = max(1, min(limit, 3))
-    for signal in await container.trading_orchestrator.generate_live_signals(limit=target):
+    trading_orchestrator = getattr(container, "trading_orchestrator", None)
+    if trading_orchestrator is None:
+        return []
+    for signal in await trading_orchestrator.generate_live_signals(limit=target):
         generated.append(_live_signal_from_response(container, signal))
     if len(generated) < target:
         generated.extend(_fallback_live_signals(container, limit=target - len(generated), existing_symbols={item.symbol for item in generated}))
@@ -146,7 +149,11 @@ def _fallback_live_signals(
     existing_symbols: set[str] | None = None,
 ) -> list[LiveSignalItem]:
     existing_symbols = existing_symbols or set()
-    candidates = list(container.settings.websocket_symbols or ["BTCUSDT", "ETHUSDT", "SOLUSDT"])
+    settings = getattr(container, "settings", None)
+    websocket_symbols = getattr(settings, "websocket_symbols", None)
+    signal_min_publish_confidence = float(getattr(settings, "signal_min_publish_confidence", 0.2))
+    alpha_trade_threshold = float(getattr(settings, "alpha_trade_threshold", 5.0))
+    candidates = list(websocket_symbols or ["BTCUSDT", "ETHUSDT", "SOLUSDT"])
     now = datetime.now(timezone.utc)
     items: list[LiveSignalItem] = []
     for index, symbol in enumerate(candidates):
@@ -160,8 +167,8 @@ def _fallback_live_signals(
                 symbol=normalized,
                 action=action,
                 strategy="LOW_CONFIDENCE_WATCHLIST",
-                confidence=max(0.2, float(container.settings.signal_min_publish_confidence)),
-                alpha_score=max(0.0, float(container.settings.alpha_trade_threshold) - 5.0),
+                confidence=max(0.2, signal_min_publish_confidence),
+                alpha_score=max(0.0, alpha_trade_threshold - 5.0),
                 regime="RANGING",
                 price=0.0,
                 signal_version=0,
@@ -368,10 +375,12 @@ def _ensure_user_access(authenticated_user_id: str, requested_user_id: str) -> N
 
 def _load_viewer_signal_subscription(container: ServiceContainer, user_id: str) -> dict:
     payload = container.cache.get_json(f"subscription:{user_id}") or {}
+    settings = getattr(container, "settings", None)
+    default_balance = float(getattr(settings, "default_portfolio_balance", 0.0))
     return {
         "user_id": user_id,
         "tier": str(payload.get("tier", "free")),
-        "balance": float(payload.get("balance", container.settings.default_portfolio_balance)),
+        "balance": float(payload.get("balance", default_balance)),
         "risk_profile": str(payload.get("risk_profile", "moderate")),
     }
 

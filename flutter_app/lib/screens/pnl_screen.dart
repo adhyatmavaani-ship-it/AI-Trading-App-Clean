@@ -67,6 +67,7 @@ class PnlScreen extends ConsumerWidget {
                         show: true,
                         gradient: LinearGradient(
                           colors: <Color>[
+                            // ignore: deprecated_member_use
                             const Color(0xFF66E0B4).withOpacity(0.25),
                             Colors.transparent,
                           ],

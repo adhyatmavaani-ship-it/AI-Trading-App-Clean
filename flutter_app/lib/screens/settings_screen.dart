@@ -77,6 +77,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<AuthScheme>(
+                // ignore: deprecated_member_use
                 value: _authScheme,
                 decoration: const InputDecoration(labelText: 'Header type'),
                 items: const <DropdownMenuItem<AuthScheme>>[

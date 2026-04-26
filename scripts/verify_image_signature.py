@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -31,7 +32,7 @@ def _verify(
     _validate_digest(image_digest)
     image_ref = f"{image_repository}@{image_digest}"
     command = [
-        cosign_bin,
+        *shlex.split(cosign_bin),
         "verify",
         image_ref,
         "--certificate-identity",

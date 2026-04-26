@@ -46,18 +46,21 @@ class AuthMiddleware(BaseHTTPMiddleware):
         self.auth_service = ApiKeyAuthService(self.settings)
 
     async def dispatch(self, request: Request, call_next: Callable):
-        # Skip auth for health checks and documentation
         path = request.url.path.rstrip("/") or "/"
-        if path in self.EXCLUDED_PATHS or path.startswith(self.EXCLUDED_PREFIXES):
-            return await call_next(request)
-
-        # Extract and validate API key
         api_key = request.headers.get("X-API-Key") or request.headers.get("Authorization", "")
         auth_scheme = "X-API-Key"
         if api_key.startswith("Bearer "):
             api_key = api_key[7:]
             auth_scheme = "Bearer"
         api_key = api_key.strip()
+
+        # Skip required auth for health checks and documentation, but preserve identity when a valid credential is provided.
+        if path in self.EXCLUDED_PATHS or path.startswith(self.EXCLUDED_PREFIXES):
+            if api_key:
+                principal = self.auth_service.authenticate(api_key)
+                if principal is not None:
+                    self._set_request_context(request, principal, api_key)
+            return await call_next(request)
 
         if not api_key:
             self._log_failure(request, reason="missing_credentials", auth_scheme=auth_scheme)
@@ -82,7 +85,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 },
             )
 
-        # Store user context in request state for downstream use
+        self._set_request_context(request, principal, api_key)
+        response = await call_next(request)
+        return response
+
+    def _set_request_context(self, request: Request, principal, api_key: str) -> None:
         request.state.user_id = principal.user_id
         request.state.authenticated_user_id = principal.user_id
         request.state.api_key = api_key
@@ -90,9 +97,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
         request.state.api_key_id = principal.key_id
         request.state.auth_principal_type = principal.principal_type
         request.state.auth_can_execute_for_users = principal.can_execute_for_users
-
-        response = await call_next(request)
-        return response
 
     def _log_failure(
         self,

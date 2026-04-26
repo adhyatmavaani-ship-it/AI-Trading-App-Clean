@@ -41,7 +41,8 @@ async def readiness_check(container: ServiceContainer = Depends(get_container)) 
 
     # Check Redis
     try:
-        if container.cache.using_fallback:
+        using_fallback = bool(getattr(container.cache, "using_fallback", False))
+        if using_fallback:
             checks["redis"] = "degraded_in_memory"
         elif container.cache.client.ping():
             checks["redis"] = "ready"
@@ -109,9 +110,10 @@ async def detailed_health(container: ServiceContainer = Depends(get_container)) 
 
     # Dependencies status
     try:
+        using_fallback = bool(getattr(container.cache, "using_fallback", False))
         details["dependencies"]["redis"] = (
             "in_memory_fallback"
-            if container.cache.using_fallback
+            if using_fallback
             else "connected"
             if container.cache.client.ping()
             else "disconnected"

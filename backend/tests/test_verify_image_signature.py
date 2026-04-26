@@ -33,8 +33,6 @@ class VerifyImageSignatureScriptTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            cosign_cmd = Path(temp_dir) / "fake_cosign.cmd"
-            cosign_cmd.write_text(f'@echo off\r\n"{sys.executable}" "{cosign_script}" %*\r\n', encoding="utf-8")
             result = self._run(
                 "--repository",
                 "gcr.io/example/trading-backend",
@@ -45,7 +43,7 @@ class VerifyImageSignatureScriptTest(unittest.TestCase):
                 "--oidc-issuer",
                 "https://token.actions.githubusercontent.com",
                 "--cosign-bin",
-                str(cosign_cmd),
+                f'"{sys.executable}" "{cosign_script}"',
             )
 
         self.assertEqual(result.returncode, 0, msg=result.stderr)
@@ -64,8 +62,6 @@ class VerifyImageSignatureScriptTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            cosign_cmd = Path(temp_dir) / "fake_cosign_fail.cmd"
-            cosign_cmd.write_text(f'@echo off\r\n"{sys.executable}" "{cosign_script}" %*\r\n', encoding="utf-8")
             result = self._run(
                 "--repository",
                 "gcr.io/example/trading-backend",
@@ -76,7 +72,7 @@ class VerifyImageSignatureScriptTest(unittest.TestCase):
                 "--oidc-issuer",
                 "https://token.actions.githubusercontent.com",
                 "--cosign-bin",
-                str(cosign_cmd),
+                f'"{sys.executable}" "{cosign_script}"',
             )
 
         self.assertNotEqual(result.returncode, 0)
