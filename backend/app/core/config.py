@@ -203,6 +203,10 @@ class Settings(BaseSettings):
     meta_factor_sleeve_priority_floor: float = 0.90
     probability_factor_sleeve_priority_boost: float = 1.06
     probability_factor_sleeve_priority_floor: float = 0.92
+    signal_safe_test_mode: bool = True
+    signal_min_publish_confidence: float = 0.30
+    signal_force_min_candidates: int = 1
+    signal_diagnostics_limit: int = 10
 
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"

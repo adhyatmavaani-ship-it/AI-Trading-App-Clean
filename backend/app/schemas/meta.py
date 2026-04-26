@@ -36,4 +36,5 @@ class MetaAnalyticsResponse(BaseModel):
     blocked_trades: MetaBlockedTradesStats = Field(default_factory=MetaBlockedTradesStats)
     strategy_performance: dict[str, MetaStrategyPerformanceItem] = Field(default_factory=dict)
     confidence_distribution: dict[str, int] = Field(default_factory=dict)
+    signal_pipeline: dict[str, Any] = Field(default_factory=dict)
     updated_at: str | None = None

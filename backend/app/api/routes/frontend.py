@@ -35,36 +35,58 @@ async def get_live_signals(
     try:
         authenticated_user_id = get_user_id(request)
         viewer_subscription = _load_viewer_signal_subscription(container, authenticated_user_id)
-        signals: list[LiveSignalItem] = []
-        for key in container.cache.keys("signal:latest:*"):
-            payload = container.cache.get_json(key)
-            if not payload:
-                continue
-            if not _signal_visible_to_viewer(container, payload, viewer_subscription):
-                continue
-            alpha_decision = payload.get("alpha_decision", {})
-            signals.append(
-                LiveSignalItem(
-                    signal_id=str(payload.get("signal_id", "")),
-                    symbol=str(payload.get("symbol", "")),
-                    strategy=str(payload.get("strategy", "NO_TRADE")),
-                    alpha_score=float(alpha_decision.get("final_score", payload.get("alpha_score", 0.0))),
-                    regime=str(payload.get("regime", "UNKNOWN")),
-                    price=float(payload.get("price", 0.0)),
-                    signal_version=int(payload.get("signal_version", 0)),
-                    published_at=payload.get("published_at", datetime.now(timezone.utc).isoformat()),
-                    decision_reason=str(payload.get("decision_reason", "")),
-                    degraded_mode=bool(payload.get("degraded_mode", False)),
-                    required_tier=str(payload.get("required_tier", "free")),
-                    min_balance=float(payload.get("min_balance", 0.0)),
-                )
-            )
+        signals = await _collect_live_signals(container, viewer_subscription)
+        if not signals:
+            await _generate_live_signals(container)
+            signals = await _collect_live_signals(container, viewer_subscription)
         ordered = sorted(signals, key=lambda item: item.published_at, reverse=True)[:limit]
         return LiveSignalsResponse(count=len(ordered), items=ordered)
     except AuthenticationError as exc:
         raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+async def _collect_live_signals(container: ServiceContainer, viewer_subscription: dict) -> list[LiveSignalItem]:
+    signals: list[LiveSignalItem] = []
+    for key in container.cache.keys("signal:latest:*"):
+        payload = container.cache.get_json(key)
+        if not payload:
+            continue
+        if not _signal_visible_to_viewer(container, payload, viewer_subscription):
+            continue
+        alpha_decision = payload.get("alpha_decision", {})
+        signals.append(
+            LiveSignalItem(
+                signal_id=str(payload.get("signal_id", "")),
+                symbol=str(payload.get("symbol", "")),
+                action=str(payload.get("action", payload.get("strategy_signal", payload.get("strategy", "HOLD")))),
+                strategy=str(payload.get("strategy", "NO_TRADE")),
+                confidence=float(payload.get("confidence", payload.get("trade_success_probability", payload.get("strategy_confidence", 0.0)))),
+                alpha_score=float(alpha_decision.get("final_score", payload.get("alpha_score", 0.0))),
+                regime=str(payload.get("regime", "UNKNOWN")),
+                price=float(payload.get("price", 0.0)),
+                signal_version=int(payload.get("signal_version", 0)),
+                published_at=payload.get("published_at", datetime.now(timezone.utc).isoformat()),
+                decision_reason=str(payload.get("decision_reason", "")),
+                degraded_mode=bool(payload.get("degraded_mode", False)),
+                required_tier=str(payload.get("required_tier", "free")),
+                min_balance=float(payload.get("min_balance", 0.0)),
+                rejection_reason=str(payload.get("rejection_reason")) if payload.get("rejection_reason") else None,
+                low_confidence=bool(payload.get("low_confidence", False)),
+            )
+        )
+    return signals
+
+
+async def _generate_live_signals(container: ServiceContainer) -> None:
+    symbols = list(container.settings.websocket_symbols or ["BTCUSDT", "ETHUSDT", "SOLUSDT"])
+    limit = max(1, int(container.settings.signal_force_min_candidates))
+    for symbol in symbols[: max(limit, min(5, len(symbols)))]:
+        try:
+            await container.trading_orchestrator.evaluate_symbol(symbol.upper())
+        except Exception:
+            continue
 
 
 @router.get(
@@ -259,7 +281,7 @@ def _load_viewer_signal_subscription(container: ServiceContainer, user_id: str) 
     return {
         "user_id": user_id,
         "tier": str(payload.get("tier", "free")),
-        "balance": float(payload.get("balance", 0.0)),
+        "balance": float(payload.get("balance", container.settings.default_portfolio_balance)),
         "risk_profile": str(payload.get("risk_profile", "moderate")),
     }
 

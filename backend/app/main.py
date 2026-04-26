@@ -3,7 +3,7 @@ import logging
 import signal
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
@@ -12,7 +12,7 @@ from app.api.routes import backtests, frontend, health, meta, monitoring, public
 from app.core.config import get_settings
 from app.core.exceptions import TradingSystemException
 from app.core.logging import configure_logging
-from app.middleware.auth import AuthMiddleware
+from app.middleware.auth import AuthMiddleware, get_api_key
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.request_context import RequestContextMiddleware
 from app.services.signal_websocket_manager import get_signal_websocket_manager
@@ -48,10 +48,11 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Autonomous Crypto Trading System",
+    title="AI Crypto Trading System",
     version="1.0.0",
     description="Production-oriented AI-driven crypto trading backend.",
     lifespan=lifespan,
+    swagger_ui_parameters={"persistAuthorization": True},
     openapi_tags=[
         {"name": "Signals", "description": "Live trading signals produced by the central alpha and strategy engines."},
         {"name": "Virtual Order Batches", "description": "Aggregated virtual parent orders managed by the VOM execution layer."},
@@ -132,13 +133,13 @@ app.add_middleware(RequestContextMiddleware)  # Added last so it executes first 
 # Route registration
 app.include_router(health.router)
 app.include_router(health.router, prefix="/v1")
-app.include_router(frontend.router, prefix="/v1")
+app.include_router(frontend.router, prefix="/v1", dependencies=[Depends(get_api_key)])
 app.include_router(public.router, prefix="/v1")
-app.include_router(trading.router, prefix="/v1")
-app.include_router(meta.router, prefix="/v1")
-app.include_router(backtests.router, prefix="/v1")
-app.include_router(monitoring.router, prefix="/v1")
-app.include_router(simulation.router, prefix="/v1")
+app.include_router(trading.router, prefix="/v1", dependencies=[Depends(get_api_key)])
+app.include_router(meta.router, prefix="/v1", dependencies=[Depends(get_api_key)])
+app.include_router(backtests.router, prefix="/v1", dependencies=[Depends(get_api_key)])
+app.include_router(monitoring.router, prefix="/v1", dependencies=[Depends(get_api_key)])
+app.include_router(simulation.router, prefix="/v1", dependencies=[Depends(get_api_key)])
 app.include_router(realtime.router)
 app.include_router(realtime.router, prefix="/v1")
 

@@ -4,7 +4,8 @@ import hashlib
 import logging
 from typing import Callable
 
-from fastapi import Request
+from fastapi import Request, Security
+from fastapi.security import APIKeyHeader
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
@@ -14,6 +15,12 @@ from app.services.api_key_auth import ApiKeyAuthService
 
 
 logger = logging.getLogger(__name__)
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+async def get_api_key(api_key: str | None = Security(api_key_header)) -> str | None:
+    """Expose the API key header to OpenAPI without replacing middleware auth."""
+    return api_key
 
 
 class AuthMiddleware(BaseHTTPMiddleware):

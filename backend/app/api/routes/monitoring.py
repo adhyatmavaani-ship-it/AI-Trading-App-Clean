@@ -125,6 +125,35 @@ async def model_stability_concentration_history(
 
 @router.get(
     "/metrics",
+    summary="Signal pipeline metrics",
+    description="Returns live signal pipeline diagnostics, recent decisions, and rejection reasons for debugging signal generation.",
+)
+async def signal_pipeline_metrics(
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    diagnostics = []
+    for key in sorted(container.cache.keys("signal:diagnostics:*"))[-container.settings.signal_diagnostics_limit :]:
+        payload = container.cache.get_json(key)
+        if payload:
+            diagnostics.append(payload)
+    accepted = sum(1 for item in diagnostics if item.get("accepted_trade"))
+    low_confidence = sum(1 for item in diagnostics if item.get("low_confidence"))
+    rejection_reasons: dict[str, int] = {}
+    for item in diagnostics:
+        reason = str(item.get("rejection_reason", "") or "").strip()
+        if reason:
+            rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+    return {
+        "count": len(diagnostics),
+        "accepted": accepted,
+        "low_confidence": low_confidence,
+        "rejection_reasons": rejection_reasons,
+        "latest": diagnostics[-container.settings.signal_diagnostics_limit :],
+    }
+
+
+@router.get(
+    "/metrics/prometheus",
     summary="Prometheus metrics",
     description="Returns metrics in Prometheus text format for scraping.",
     include_in_schema=False,

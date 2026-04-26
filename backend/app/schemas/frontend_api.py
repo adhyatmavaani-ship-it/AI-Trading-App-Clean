@@ -8,7 +8,9 @@ from pydantic import BaseModel, Field
 class LiveSignalItem(BaseModel):
     signal_id: str = Field(description="Unique signal identifier used for downstream execution and deduplication.", examples=["BTCUSDT:1777155200"])
     symbol: str = Field(description="Market symbol for the live signal.", examples=["BTCUSDT"])
+    action: str = Field(description="Directional action produced by the signal pipeline.", examples=["BUY"])
     strategy: str = Field(description="Strategy selected by the strategy engine for this signal.", examples=["TREND_FOLLOW"])
+    confidence: float = Field(description="Final confidence score attached to the signal.", examples=[0.44])
     alpha_score: float = Field(description="Unified alpha score from the alpha decision engine.", examples=[87.4])
     regime: str = Field(description="Detected market regime at signal generation time.", examples=["TRENDING"])
     price: float = Field(description="Reference market price when the signal was generated.", examples=[68250.25])
@@ -18,13 +20,17 @@ class LiveSignalItem(BaseModel):
     degraded_mode: bool = Field(description="Whether the platform was in degraded execution mode when this signal was produced.", examples=[False])
     required_tier: str = Field(description="Minimum user tier required to receive the signal.", examples=["pro"])
     min_balance: float = Field(description="Minimum portfolio balance required to receive the signal.", examples=[25.0])
+    rejection_reason: str | None = Field(default=None, description="Why the signal was not fully accepted for execution, if applicable.", examples=["meta_model_low_final_score"])
+    low_confidence: bool = Field(default=False, description="Whether the signal is being surfaced as a watchlist/debug candidate rather than a fully accepted execution candidate.", examples=[True])
 
     model_config = {
         "json_schema_extra": {
             "example": {
                 "signal_id": "BTCUSDT:1777155200",
                 "symbol": "BTCUSDT",
+                "action": "BUY",
                 "strategy": "TREND_FOLLOW",
+                "confidence": 0.44,
                 "alpha_score": 87.4,
                 "regime": "TRENDING",
                 "price": 68250.25,
@@ -34,6 +40,8 @@ class LiveSignalItem(BaseModel):
                 "degraded_mode": False,
                 "required_tier": "pro",
                 "min_balance": 25.0,
+                "rejection_reason": None,
+                "low_confidence": False,
             }
         }
     }

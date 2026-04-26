@@ -45,9 +45,25 @@ async def get_meta_decision(
     description="Returns blocked trade stats, strategy performance, and confidence distribution derived from Meta Controller logs.",
 )
 async def get_meta_analytics(
+    request: Request,
     container: ServiceContainer = Depends(get_container),
 ) -> MetaAnalyticsResponse:
     try:
-        return MetaAnalyticsResponse(**container.meta_controller.analytics_snapshot())
+        get_user_id(request)
+        diagnostics = []
+        for key in sorted(container.cache.keys("signal:diagnostics:*"))[-container.settings.signal_diagnostics_limit :]:
+            payload = container.cache.get_json(key)
+            if payload:
+                diagnostics.append(payload)
+        snapshot = container.meta_controller.analytics_snapshot()
+        snapshot["signal_pipeline"] = {
+            "count": len(diagnostics),
+            "accepted": sum(1 for item in diagnostics if item.get("accepted_trade")),
+            "low_confidence": sum(1 for item in diagnostics if item.get("low_confidence")),
+            "latest": diagnostics,
+        }
+        return MetaAnalyticsResponse(**snapshot)
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=500, detail=str(exc)) from exc

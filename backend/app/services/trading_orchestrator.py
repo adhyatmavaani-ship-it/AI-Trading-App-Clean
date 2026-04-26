@@ -123,19 +123,58 @@ class TradingOrchestrator:
         frames = await self.market_data.fetch_multi_timeframe_ohlcv(symbol)
         order_book = await self.market_data.fetch_order_book(symbol)
         snapshot = self.feature_pipeline.build(symbol, frames, order_book)
+        diagnostics = {
+            "symbol": symbol,
+            "market_data": self._market_data_diagnostics(frames),
+            "strategy_candidates": [],
+            "rejection_reasons": [],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
         await self._inject_sleeve_budget_context(
             user_id="system",
             symbol=symbol,
             snapshot=snapshot,
         )
+        strategy_candidates = self.strategy_engine.analyze_all(frames, snapshot=snapshot)
+        diagnostics["strategy_candidates"] = [
+            {
+                "strategy": decision.strategy,
+                "signal": decision.signal,
+                "confidence": round(float(decision.confidence), 6),
+                "reason": str(decision.metadata.get("reason", "")),
+                "trade_probability": round(float(decision.metadata.get("trade_success_probability", decision.confidence) or 0.0), 6),
+                "regime_type": str(decision.metadata.get("regime_type", snapshot.regime)),
+            }
+            for decision in strategy_candidates
+        ]
         strategy_decision = self.strategy_engine.analyze(frames, snapshot=snapshot)
+        diagnostics["selected_strategy"] = {
+            "strategy": strategy_decision.strategy,
+            "signal": strategy_decision.signal,
+            "confidence": round(float(strategy_decision.confidence), 6),
+            "reason": str(strategy_decision.metadata.get("reason", "")),
+        }
         inference, ai_layer = self._resolve_ai_inference(snapshot, strategy_decision)
+        diagnostics["inference"] = {
+            "decision": inference.decision,
+            "confidence": round(float(inference.confidence_score), 6),
+            "trade_probability": round(float(inference.trade_probability), 6),
+            "model_version": inference.model_version,
+            "reason": inference.reason,
+            "ai_layer_mode": ai_layer["mode"],
+        }
         probability_features = self._trade_probability_features(snapshot.features, strategy_decision.metadata)
         snapshot.features.update(probability_features)
         if ai_layer["mode"] == "primary":
             effective_inference = self._merge_strategy_signal(inference, strategy_decision)
         else:
             effective_inference = inference
+        diagnostics["effective_inference"] = {
+            "decision": effective_inference.decision,
+            "confidence": round(float(effective_inference.confidence_score), 6),
+            "trade_probability": round(float(effective_inference.trade_probability), 6),
+            "reason": effective_inference.reason,
+        }
         strategy = self.strategy_engine.select(snapshot, effective_inference, frame=frames)
         rollout = self.rollout_manager.status()
         chain_route = self.multi_chain_router.route(symbol, effective_inference.decision, 0.0)
@@ -163,6 +202,11 @@ class TradingOrchestrator:
             },
             execution_costs=self._execution_costs(chain_route),
         )
+        diagnostics["alpha"] = {
+            "final_score": round(float(alpha_decision["final_score"]), 6),
+            "allow_trade": bool(alpha_decision["allow_trade"]),
+            "net_expected_return": round(float(alpha_decision["net_expected_return"]), 6),
+        }
         whale_signal = self._whale_direction(alpha)
         whale_conflict_flag = self._whale_conflict(effective_inference.decision, whale_signal)
         self.system_monitor.record_signal(
@@ -186,6 +230,10 @@ class TradingOrchestrator:
             degraded_mode=self._degraded_mode(),
             volume=float(snapshot.features.get("15m_volume", 0.0)),
         ) if self._is_micro_capital(account_equity) else {"allowed": True, "reasons": []}
+        diagnostics["micro"] = {
+            "allowed": bool(micro_decision["allowed"]),
+            "reasons": list(micro_decision.get("reasons", [])),
+        }
         risk = self.risk_engine.evaluate(
             balance=account_equity,
             snapshot=snapshot,
@@ -201,12 +249,24 @@ class TradingOrchestrator:
             hours_since_rebalance=self._hours_since_rebalance(),
             trade_intelligence_metrics=self._trade_intelligence_metrics(strategy_decision.metadata),
         )
+        diagnostics["risk"] = {
+            "risk_budget": round(float(risk.risk_budget), 6),
+            "rebalance_required": bool(risk.rebalance_required),
+        }
         if whale_conflict_flag or not alpha_decision["allow_trade"] or alpha_decision["final_score"] <= self.settings.alpha_trade_threshold:
             strategy = "NO_TRADE"
+        if whale_conflict_flag:
+            diagnostics["rejection_reasons"].append("whale_conflict")
+        if not alpha_decision["allow_trade"]:
+            diagnostics["rejection_reasons"].append("alpha_engine_rejected")
+        if alpha_decision["final_score"] <= self.settings.alpha_trade_threshold:
+            diagnostics["rejection_reasons"].append("alpha_score_below_threshold")
         if self._degraded_mode():
             strategy = "NO_TRADE"
+            diagnostics["rejection_reasons"].append("degraded_mode")
         if not micro_decision["allowed"]:
             strategy = "NO_TRADE"
+            diagnostics["rejection_reasons"].extend([f"micro:{reason}" for reason in micro_decision.get("reasons", [])])
         meta_decision = None
         if self.meta_controller is not None:
             meta_decision = self.meta_controller.govern_signal(
@@ -227,9 +287,25 @@ class TradingOrchestrator:
             )
             if not meta_decision.allow_trade:
                 strategy = "NO_TRADE"
+                diagnostics["rejection_reasons"].extend([f"meta:{reason}" for reason in meta_decision.reasons])
+            diagnostics["meta"] = {
+                "allow_trade": bool(meta_decision.allow_trade),
+                "confidence": round(float(meta_decision.confidence_score), 6),
+                "strategy": meta_decision.selected_strategy,
+                "reasons": list(meta_decision.reasons),
+            }
         risk_budget = risk.risk_budget * rollout.capital_fraction
         if meta_decision is not None:
             risk_budget *= meta_decision.capital_multiplier
+        final_action = self._final_signal_action(snapshot, effective_inference, strategy_decision)
+        final_confidence = max(
+            float(strategy_decision.metadata.get("adjusted_confidence", strategy_decision.confidence) or 0.0),
+            float(effective_inference.confidence_score),
+        )
+        accepted_trade = strategy != "NO_TRADE" and final_action in {"BUY", "SELL"}
+        rejection_reason = "; ".join(dict.fromkeys(diagnostics["rejection_reasons"])) or None
+        low_confidence = strategy == "NO_TRADE" or final_confidence < max(self.settings.signal_min_publish_confidence, 0.4)
+        published_strategy = strategy if strategy != "NO_TRADE" else "LOW_CONFIDENCE_WATCHLIST"
         payload = {
             "symbol": symbol,
             "signal_id": f"{symbol}:{int(datetime.now(timezone.utc).timestamp())}",
@@ -239,7 +315,9 @@ class TradingOrchestrator:
             "adjusted_strategy_confidence": strategy_decision.metadata.get("adjusted_confidence", strategy_decision.confidence),
             "volatility": snapshot.volatility,
             "inference": effective_inference.model_dump(),
-            "strategy": strategy,
+            "strategy": published_strategy,
+            "action": final_action,
+            "confidence": round(float(final_confidence), 6),
             "risk_budget": risk_budget,
             "reason": effective_inference.reason,
             "feature_snapshot": snapshot.features,
@@ -260,6 +338,9 @@ class TradingOrchestrator:
             "micro_decision": micro_decision,
             "required_tier": self._required_tier(alpha_decision["final_score"]),
             "min_balance": self._minimum_balance_requirement(alpha_decision["final_score"]),
+            "rejection_reason": rejection_reason,
+            "low_confidence": low_confidence,
+            "final_trade_status": "accepted" if accepted_trade else "rejected",
             "allowed_risk_profiles": self._allowed_risk_profiles(snapshot.regime, snapshot.volatility),
             "meta_control": meta_decision.payload() if meta_decision is not None else None,
             "strategy_signal": strategy_decision.signal,
@@ -282,10 +363,16 @@ class TradingOrchestrator:
             "ai_layer_mode": ai_layer["mode"],
             "ai_layer_disabled": ai_layer["disabled"],
             "ai_fallback_reason": ai_layer["reason"],
+            "pipeline_diagnostics": diagnostics,
         }
+        if low_confidence:
+            payload["required_tier"] = "free"
+            payload["min_balance"] = 0.0
         broadcast_payload = self.signal_broadcaster.publish_signal(payload)
-        self.firestore.save_signal(broadcast_payload)
-        self.firestore.save_performance_snapshot(
+        self._store_signal_diagnostics(symbol, diagnostics={**diagnostics, "action": final_action, "confidence": round(float(final_confidence), 6), "accepted_trade": accepted_trade, "rejection_reason": rejection_reason, "low_confidence": low_confidence})
+        self._safe_firestore_call("save_signal", broadcast_payload)
+        self._safe_firestore_call(
+            "save_performance_snapshot",
             "whale_veto",
             {
                 "total_signals": int(self.cache.get("monitor:total_signals") or 0),
@@ -295,7 +382,8 @@ class TradingOrchestrator:
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             },
         )
-        self.firestore.save_performance_snapshot(
+        self._safe_firestore_call(
+            "save_performance_snapshot",
             "signal_distribution",
             {
                 "symbol": symbol,
@@ -304,17 +392,17 @@ class TradingOrchestrator:
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             },
         )
-        self.firestore.save_liquidity_snapshot({"symbol": symbol, **liquidity_data})
-        self.firestore.save_sentiment_snapshot({"symbol": symbol, **sentiment_data})
-        self.firestore.save_security_scan({"symbol": symbol, **security_data})
+        self._safe_firestore_call("save_liquidity_snapshot", {"symbol": symbol, **liquidity_data})
+        self._safe_firestore_call("save_sentiment_snapshot", {"symbol": symbol, **sentiment_data})
+        self._safe_firestore_call("save_security_scan", {"symbol": symbol, **security_data})
         if whale_data["new_token_entry"]:
-            self.firestore.save_whale_event({"symbol": symbol, **whale_data, "trigger_auto_trade": self.settings.auto_trade_on_whale_signal})
+            self._safe_firestore_call("save_whale_event", {"symbol": symbol, **whale_data, "trigger_auto_trade": self.settings.auto_trade_on_whale_signal})
         return SignalResponse(
             symbol=symbol,
             timeframe="multi",
             snapshot=snapshot,
             inference=effective_inference,
-            strategy=strategy,
+            strategy=published_strategy,
             risk_budget=risk_budget,
             rollout_capital_fraction=rollout.capital_fraction,
             alpha=alpha,
@@ -1947,6 +2035,54 @@ class TradingOrchestrator:
         if not alpha_decision["allow_trade"]:
             return "Blocked: alpha engine rejected return/risk profile"
         return f"Approved: alpha final score {alpha_decision['final_score']:.2f}"
+
+    def _final_signal_action(self, snapshot, inference, strategy_decision) -> str:
+        if strategy_decision.signal in {"BUY", "SELL"}:
+            return strategy_decision.signal
+        if inference.decision in {"BUY", "SELL"}:
+            return inference.decision
+        return "BUY" if snapshot.order_book_imbalance >= 0 else "SELL"
+
+    def _store_signal_diagnostics(self, symbol: str, diagnostics: dict) -> None:
+        self.cache.set_json(
+            f"signal:diagnostics:{symbol.upper()}",
+            diagnostics,
+            ttl=self.settings.signal_version_ttl_seconds,
+        )
+
+    def _market_data_diagnostics(self, frames: dict[str, object]) -> dict:
+        diagnostics: dict[str, object] = {"frames": {}, "stale": False, "empty_intervals": []}
+        now = datetime.now(timezone.utc)
+        for interval, frame in frames.items():
+            if frame is None or getattr(frame, "empty", True):
+                diagnostics["empty_intervals"].append(interval)
+                continue
+            last_close_ms = float(frame["close_time"].iloc[-1]) if "close_time" in frame else 0.0
+            last_close_at = datetime.fromtimestamp(last_close_ms / 1000, tz=timezone.utc) if last_close_ms else now
+            age_seconds = max(0.0, (now - last_close_at).total_seconds())
+            diagnostics["frames"][interval] = {
+                "rows": int(len(frame)),
+                "last_close_at": last_close_at.isoformat(),
+                "age_seconds": round(age_seconds, 3),
+            }
+            if age_seconds > {"1m": 180, "5m": 900, "15m": 2700, "1h": 7200}.get(interval, 900):
+                diagnostics["stale"] = True
+        return diagnostics
+
+    def _safe_firestore_call(self, method_name: str, *args) -> None:
+        firestore_client = getattr(self.firestore, "client", None)
+        if firestore_client is None:
+            return
+        method = getattr(self.firestore, method_name, None)
+        if method is None:
+            return
+        try:
+            method(*args)
+        except Exception:
+            logger.warning(
+                "firestore_signal_write_failed",
+                extra={"event": "firestore_signal_write_failed", "context": {"method": method_name}},
+            )
 
     def _execution_costs(self, route: dict) -> dict:
         gas_fee = float(route.get("gas_estimate", 0.0)) / 10_000
