@@ -1,0 +1,215 @@
+# Default values for trading-backend Helm chart
+
+replicaCount: 3
+
+image:
+  repository: gcr.io/MY-PROJECT-ID/trading-backend
+  pullPolicy: IfNotPresent
+  digest: ""
+
+canary:
+  enabled: false
+  replicaCount: 1
+  weight: 10
+  image:
+    digest: ""
+  ingressAnnotations: {}
+  analysis:
+    durationSeconds: 120
+    intervalSeconds: 10
+    maxErrorRate: 0.05
+    minTradeSuccessRate: 0.90
+    maxLatencyMs: 500
+    maxGrossExposurePct: 0.75
+    maxSymbolExposurePct: 0.35
+    maxThemeExposurePct: 0.45
+    maxClusterExposurePct: 0.45
+    maxBetaBucketExposurePct: 0.55
+    maxGrossExposureDriftPct: 0.08
+    maxClusterConcentrationDriftPct: 0.08
+    maxBetaBucketConcentrationDriftPct: 0.08
+    maxClusterTurnover: 0.50
+    maxFactorSleeveBudgetTurnover: 0.30
+    maxFactorSleeveBudgetGapPct: 0.18
+    minimumRequestSamples: 6
+    minimumTradeSamples: 0
+
+nameOverride: ""
+fullnameOverride: "trading-backend"
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8000"
+  prometheus.io/path: "/v1/monitoring/metrics"
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+    - ALL
+
+service:
+  type: LoadBalancer
+  port: 80
+  targetPort: 8000
+
+# Ingress configuration (optional)
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations: {}
+  hosts:
+  - host: trading-api.example.com
+    paths:
+    - path: /
+      pathType: Prefix
+  tls: []
+
+# Resource limits and requests
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 500m
+    memory: 512Mi
+
+# Autoscaling
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# Pod Disruption Budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+# Health checks
+livenessProbe:
+  initialDelaySeconds: 10
+  periodSeconds: 10
+
+readinessProbe:
+  initialDelaySeconds: 15
+  periodSeconds: 5
+
+# Graceful shutdown
+terminationGracePeriodSeconds: 30
+
+# Node selection
+nodeSelector: {}
+
+# Affinity rules (for pod spreading)
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchExpressions:
+          - key: app.kubernetes.io/name
+            operator: In
+            values:
+            - trading-backend
+        topologyKey: kubernetes.io/hostname
+
+# Tolerations for node taints
+tolerations: []
+
+# Configuration (ConfigMap)
+config:
+  ENVIRONMENT: "prod"
+  LOG_LEVEL: "INFO"
+  JSON_LOGS: "true"
+  TRADING_MODE: "paper"
+  REDIS_URL: "redis://redis.trading-system:6379/0"
+  FIRESTORE_PROJECT_ID: "MY-PROJECT-ID"
+  BASE_RISK_PER_TRADE: "0.02"
+  DAILY_LOSS_LIMIT: "0.05"
+  MAX_CONSECUTIVE_LOSSES: "3"
+  MAX_COIN_EXPOSURE_PCT: "0.20"
+  SLIPPAGE_BPS: "25"
+  RATE_LIMIT_PER_MINUTE: "120"
+  MARKET_DATA_CACHE_TTL: "15"
+  BINANCE_TESTNET: "true"
+
+# Secrets (should be created separately)
+# kubectl create secret generic trading-backend-secrets \
+#   --from-literal=binance-api-key='...' \
+#   --from-literal=binance-api-secret='...'
+
+# Monitoring
+prometheus:
+  enabled: true
+  scrapeInterval: 15s
+
+rolloutMonitoring:
+  enabled: true
+  prometheus:
+    namespace: monitoring
+    serviceName: kube-prometheus-stack-prometheus
+    port: 9090
+  alertmanager:
+    namespace: monitoring
+    serviceName: kube-prometheus-stack-alertmanager
+    port: 9093
+  analysis:
+    durationSeconds: 300
+    intervalSeconds: 30
+    lookbackWindow: 5m
+    maxErrorRate: 0.05
+    minTradeSuccessRate: 0.90
+    maxLatencyMs: 500
+    maxGrossExposurePct: 0.75
+    maxSymbolExposurePct: 0.35
+    maxThemeExposurePct: 0.45
+    maxClusterExposurePct: 0.45
+    maxBetaBucketExposurePct: 0.55
+    maxGrossExposureDriftPct: 0.08
+    maxClusterConcentrationDriftPct: 0.08
+    maxBetaBucketConcentrationDriftPct: 0.08
+    maxClusterTurnover: 0.50
+    maxFactorSleeveBudgetTurnover: 0.30
+    maxFactorSleeveBudgetGapPct: 0.18
+    minimumRequestSamples: 10
+    minimumTradeSamples: 0
+    rollbackOnAlert: true
+    alertNames:
+    - TradingBackendPostPromotionHighErrorRate
+    - TradingBackendPostPromotionLowTradeSuccessRate
+    - TradingBackendPostPromotionHighLatency
+    - TradingBackendPostPromotionHighConcentration
+
+# Network Policy
+networkPolicy:
+  enabled: false
+  policyTypes:
+  - Ingress
+  - Egress
+
+# PodMonitor for Prometheus Operator
+podMonitor:
+  enabled: false
+  interval: 15s
+  path: /v1/monitoring/metrics
+  additionalLabels: {}
+
+prometheusRule:
+  enabled: false
+  for: 2m
+  receiver: trading-backend-rollout
+  additionalLabels: {}

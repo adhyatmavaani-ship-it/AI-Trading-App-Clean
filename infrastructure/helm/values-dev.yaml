@@ -1,0 +1,67 @@
+# Development environment values
+# Use with: helm install ... -f values-dev.yaml
+
+replicaCount: 1
+
+image:
+  tag: "latest"
+  pullPolicy: Always
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+
+podDisruptionBudget:
+  enabled: false
+
+config:
+  ENVIRONMENT: "dev"
+  LOG_LEVEL: "DEBUG"
+  JSON_LOGS: "false"
+  TRADING_MODE: "paper"  # Paper trading in dev
+  REDIS_URL: "redis://redis.trading-system:6379/0"
+  BASE_RISK_PER_TRADE: "0.05"  # Higher risk for testing
+  DAILY_LOSS_LIMIT: "0.10"
+  MAX_CONSECUTIVE_LOSSES: "5"
+  BINANCE_TESTNET: "true"
+
+service:
+  type: ClusterIP
+  port: 8000
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-staging"
+  hosts:
+  - host: trading-api-dev.example.local
+    paths:
+    - path: /
+      pathType: Prefix
+
+livenessProbe:
+  initialDelaySeconds: 30
+  periodSeconds: 15
+
+readinessProbe:
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+affinity: {}  # No anti-affinity in dev
+
+prometheus:
+  enabled: true
+  scrapeInterval: 30s
+
+networkPolicy:
+  enabled: false

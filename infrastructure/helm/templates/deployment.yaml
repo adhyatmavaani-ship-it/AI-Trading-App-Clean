@@ -1,0 +1,247 @@
+{{- $stableName := include "trading-backend.resourceName" (dict "root" . "track" "stable") -}}
+{{- $stableTrack := "stable" -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $stableName }}
+  labels:
+    {{- include "trading-backend.labels" . | nindent 4 }}
+    rollout.track: {{ $stableTrack }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "trading-backend.trackSelectorLabels" (dict "root" . "track" $stableTrack) | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- toYaml .Values.podAnnotations | nindent 8 }}
+      labels:
+        {{- include "trading-backend.trackSelectorLabels" (dict "root" . "track" $stableTrack) | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "trading-backend.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      containers:
+      - name: {{ .Chart.Name }}
+        securityContext:
+          {{- toYaml .Values.securityContext | nindent 10 }}
+        image: "{{ .Values.image.repository }}@{{ required "image.digest is required for immutable deployments" .Values.image.digest }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: {{ .Values.service.targetPort }}
+          protocol: TCP
+        env:
+        - name: SERVICE_NAME
+          value: {{ $stableName | quote }}
+        - name: ROLLOUT_TRACK
+          value: {{ $stableTrack | quote }}
+        - name: BINANCE_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "trading-backend.fullname" . }}-secrets
+              key: binance-api-key
+        - name: BINANCE_API_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "trading-backend.fullname" . }}-secrets
+              key: binance-api-secret
+        envFrom:
+        - configMapRef:
+            name: {{ include "trading-backend.fullname" . }}-config
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: http
+          initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+          periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: http
+          initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+          periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+          timeoutSeconds: 3
+          failureThreshold: 2
+        resources:
+          {{- toYaml .Values.resources | nindent 10 }}
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: cache
+          mountPath: /app/.cache
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: cache
+        emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+---
+{{- if .Values.canary.enabled }}
+{{- $canaryName := include "trading-backend.resourceName" (dict "root" . "track" "canary") -}}
+{{- $canaryTrack := "canary" -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $canaryName }}
+  labels:
+    {{- include "trading-backend.labels" . | nindent 4 }}
+    rollout.track: {{ $canaryTrack }}
+spec:
+  replicas: {{ .Values.canary.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "trading-backend.trackSelectorLabels" (dict "root" . "track" $canaryTrack) | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- toYaml .Values.podAnnotations | nindent 8 }}
+      labels:
+        {{- include "trading-backend.trackSelectorLabels" (dict "root" . "track" $canaryTrack) | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "trading-backend.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      containers:
+      - name: {{ .Chart.Name }}
+        securityContext:
+          {{- toYaml .Values.securityContext | nindent 10 }}
+        image: "{{ .Values.image.repository }}@{{ required "canary.image.digest is required when canary is enabled" .Values.canary.image.digest }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: {{ .Values.service.targetPort }}
+          protocol: TCP
+        env:
+        - name: SERVICE_NAME
+          value: {{ $canaryName | quote }}
+        - name: ROLLOUT_TRACK
+          value: {{ $canaryTrack | quote }}
+        - name: BINANCE_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "trading-backend.fullname" . }}-secrets
+              key: binance-api-key
+        - name: BINANCE_API_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "trading-backend.fullname" . }}-secrets
+              key: binance-api-secret
+        envFrom:
+        - configMapRef:
+            name: {{ include "trading-backend.fullname" . }}-config
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: http
+          initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+          periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: http
+          initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+          periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+          timeoutSeconds: 3
+          failureThreshold: 2
+        resources:
+          {{- toYaml .Values.resources | nindent 10 }}
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: cache
+          mountPath: /app/.cache
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: cache
+        emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+
+---
+{{- if .Values.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $stableName }}
+  labels:
+    {{- include "trading-backend.labels" . | nindent 4 }}
+    rollout.track: stable
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ $stableName }}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: {{ .Values.autoscaling.targetMemoryUtilizationPercentage }}
+{{- end }}
+
+---
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $stableName }}
+  labels:
+    {{- include "trading-backend.labels" . | nindent 4 }}
+    rollout.track: stable
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "trading-backend.trackSelectorLabels" (dict "root" . "track" "stable") | nindent 6 }}
+{{- end }}
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "trading-backend.serviceAccountName" . }}
+  labels:
+    {{- include "trading-backend.labels" . | nindent 4 }}

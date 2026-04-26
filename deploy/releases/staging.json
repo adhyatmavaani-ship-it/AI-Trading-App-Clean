@@ -1,0 +1,29 @@
+{
+  "environment": "staging",
+  "namespace": "trading-staging",
+  "release_name": "trading-backend",
+  "deployment": "trading-backend",
+  "service": "trading-backend",
+  "chart_path": "infrastructure/helm",
+  "values_file": "infrastructure/helm/values-staging.yaml",
+  "context": "staging-cluster",
+  "ai_model_version": "v1",
+  "strategy": {
+    "default": "ensemble",
+    "enabled": [
+      "ensemble",
+      "hybrid_crypto",
+      "ema_crossover",
+      "rsi",
+      "breakout"
+    ]
+  },
+  "image": {
+    "repository": "gcr.io/MY-PROJECT-ID/trading-backend",
+    "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "signature": {
+    "identity": "https://github.com/MY-ORG/ai-trading-app/.github/workflows/sign-release-image.yml@refs/heads/main",
+    "oidc_issuer": "https://token.actions.githubusercontent.com"
+  }
+}

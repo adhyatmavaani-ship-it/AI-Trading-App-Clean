@@ -1,0 +1,23 @@
+{{- if .Values.podMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ include "trading-backend.fullname" . }}
+  labels:
+    {{- include "trading-backend.labels" . | nindent 4 }}
+    {{- with .Values.podMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "trading-backend.selectorLabels" . | nindent 6 }}
+  podMetricsEndpoints:
+  - port: http
+    path: {{ .Values.podMonitor.path }}
+    interval: {{ .Values.podMonitor.interval }}
+  podTargetLabels:
+  - app.kubernetes.io/instance
+  - app.kubernetes.io/name
+  - rollout.track
+{{- end }}

@@ -1,0 +1,16 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: ai-trading-backend
+spec:
+  template:
+    spec:
+      containers:
+        - image: gcr.io/PROJECT_ID/ai-trading-backend:latest
+          ports:
+            - containerPort: 8000
+          env:
+            - name: ENVIRONMENT
+              value: prod
+            - name: REDIS_URL
+              value: redis://redis:6379/0

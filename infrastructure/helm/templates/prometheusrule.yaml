@@ -1,0 +1,103 @@
+{{- if .Values.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "trading-backend.fullname" . }}
+  labels:
+    {{- include "trading-backend.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+  - name: {{ include "trading-backend.fullname" . }}-post-promotion
+    rules:
+    - alert: TradingBackendPostPromotionHighErrorRate
+      expr: |
+        (
+          sum(increase(api_requests_total{namespace="{{ .Release.Namespace }}",app_kubernetes_io_instance="{{ .Release.Name }}",rollout_track="stable",status_code=~"5.."}[{{ .Values.rolloutMonitoring.analysis.lookbackWindow }}]))
+          /
+          clamp_min(sum(increase(api_requests_total{namespace="{{ .Release.Namespace }}",app_kubernetes_io_instance="{{ .Release.Name }}",rollout_track="stable"}[{{ .Values.rolloutMonitoring.analysis.lookbackWindow }}])), 1)
+        ) > {{ .Values.rolloutMonitoring.analysis.maxErrorRate }}
+      for: {{ .Values.prometheusRule.for }}
+      labels:
+        severity: critical
+        release_name: {{ .Release.Name | quote }}
+        namespace: {{ .Release.Namespace | quote }}
+        service: {{ include "trading-backend.fullname" . | quote }}
+        receiver: {{ .Values.prometheusRule.receiver | quote }}
+      annotations:
+        summary: Trading backend post-promotion error rate degraded
+        description: Stable rollout error rate breached the configured threshold.
+    - alert: TradingBackendPostPromotionLowTradeSuccessRate
+      expr: |
+        (
+          sum(increase(trading_executions_total{namespace="{{ .Release.Namespace }}",app_kubernetes_io_instance="{{ .Release.Name }}",rollout_track="stable",status="SUCCESS"}[{{ .Values.rolloutMonitoring.analysis.lookbackWindow }}]))
+          /
+          clamp_min(sum(increase(trading_executions_total{namespace="{{ .Release.Namespace }}",app_kubernetes_io_instance="{{ .Release.Name }}",rollout_track="stable"}[{{ .Values.rolloutMonitoring.analysis.lookbackWindow }}])), 1)
+        ) < {{ .Values.rolloutMonitoring.analysis.minTradeSuccessRate }}
+        and
+        sum(increase(trading_executions_total{namespace="{{ .Release.Namespace }}",app_kubernetes_io_instance="{{ .Release.Name }}",rollout_track="stable"}[{{ .Values.rolloutMonitoring.analysis.lookbackWindow }}])) >= {{ .Values.rolloutMonitoring.analysis.minimumTradeSamples }}
+      for: {{ .Values.prometheusRule.for }}
+      labels:
+        severity: critical
+        release_name: {{ .Release.Name | quote }}
+        namespace: {{ .Release.Namespace | quote }}
+        service: {{ include "trading-backend.fullname" . | quote }}
+        receiver: {{ .Values.prometheusRule.receiver | quote }}
+      annotations:
+        summary: Trading backend post-promotion trade success degraded
+        description: Stable rollout trade success rate dropped below the configured threshold.
+    - alert: TradingBackendPostPromotionHighLatency
+      expr: |
+        (
+          sum(increase(api_request_latency_seconds_sum{namespace="{{ .Release.Namespace }}",app_kubernetes_io_instance="{{ .Release.Name }}",rollout_track="stable"}[{{ .Values.rolloutMonitoring.analysis.lookbackWindow }}]))
+          /
+          clamp_min(sum(increase(api_request_latency_seconds_count{namespace="{{ .Release.Namespace }}",app_kubernetes_io_instance="{{ .Release.Name }}",rollout_track="stable"}[{{ .Values.rolloutMonitoring.analysis.lookbackWindow }}])), 1)
+        ) * 1000 > {{ .Values.rolloutMonitoring.analysis.maxLatencyMs }}
+        and
+        sum(increase(api_request_latency_seconds_count{namespace="{{ .Release.Namespace }}",app_kubernetes_io_instance="{{ .Release.Name }}",rollout_track="stable"}[{{ .Values.rolloutMonitoring.analysis.lookbackWindow }}])) >= {{ .Values.rolloutMonitoring.analysis.minimumRequestSamples }}
+      for: {{ .Values.prometheusRule.for }}
+      labels:
+        severity: critical
+        release_name: {{ .Release.Name | quote }}
+        namespace: {{ .Release.Namespace | quote }}
+        service: {{ include "trading-backend.fullname" . | quote }}
+        receiver: {{ .Values.prometheusRule.receiver | quote }}
+      annotations:
+        summary: Trading backend post-promotion latency degraded
+        description: Stable rollout API latency exceeded the configured threshold.
+    - alert: TradingBackendPostPromotionHighConcentration
+      expr: |
+        max_over_time(portfolio_gross_exposure_pct{namespace="{{ .Release.Namespace }}",app_kubernetes_io_instance="{{ .Release.Name }}",rollout_track="stable"}[{{ .Values.rolloutMonitoring.analysis.lookbackWindow }}]) > {{ .Values.rolloutMonitoring.analysis.maxGrossExposurePct }}
+        or
+        max_over_time(portfolio_max_symbol_exposure_pct{namespace="{{ .Release.Namespace }}",app_kubernetes_io_instance="{{ .Release.Name }}",rollout_track="stable"}[{{ .Values.rolloutMonitoring.analysis.lookbackWindow }}]) > {{ .Values.rolloutMonitoring.analysis.maxSymbolExposurePct }}
+        or
+        max_over_time(portfolio_max_theme_exposure_pct{namespace="{{ .Release.Namespace }}",app_kubernetes_io_instance="{{ .Release.Name }}",rollout_track="stable"}[{{ .Values.rolloutMonitoring.analysis.lookbackWindow }}]) > {{ .Values.rolloutMonitoring.analysis.maxThemeExposurePct }}
+        or
+        max_over_time(portfolio_max_cluster_exposure_pct{namespace="{{ .Release.Namespace }}",app_kubernetes_io_instance="{{ .Release.Name }}",rollout_track="stable"}[{{ .Values.rolloutMonitoring.analysis.lookbackWindow }}]) > {{ .Values.rolloutMonitoring.analysis.maxClusterExposurePct }}
+        or
+        max_over_time(portfolio_max_beta_bucket_exposure_pct{namespace="{{ .Release.Namespace }}",app_kubernetes_io_instance="{{ .Release.Name }}",rollout_track="stable"}[{{ .Values.rolloutMonitoring.analysis.lookbackWindow }}]) > {{ .Values.rolloutMonitoring.analysis.maxBetaBucketExposurePct }}
+        or
+        max_over_time(portfolio_gross_exposure_drift_pct{namespace="{{ .Release.Namespace }}",app_kubernetes_io_instance="{{ .Release.Name }}",rollout_track="stable"}[{{ .Values.rolloutMonitoring.analysis.lookbackWindow }}]) > {{ .Values.rolloutMonitoring.analysis.maxGrossExposureDriftPct }}
+        or
+        max_over_time(portfolio_cluster_concentration_drift_pct{namespace="{{ .Release.Namespace }}",app_kubernetes_io_instance="{{ .Release.Name }}",rollout_track="stable"}[{{ .Values.rolloutMonitoring.analysis.lookbackWindow }}]) > {{ .Values.rolloutMonitoring.analysis.maxClusterConcentrationDriftPct }}
+        or
+        max_over_time(portfolio_beta_bucket_concentration_drift_pct{namespace="{{ .Release.Namespace }}",app_kubernetes_io_instance="{{ .Release.Name }}",rollout_track="stable"}[{{ .Values.rolloutMonitoring.analysis.lookbackWindow }}]) > {{ .Values.rolloutMonitoring.analysis.maxBetaBucketConcentrationDriftPct }}
+        or
+        max_over_time(portfolio_cluster_turnover{namespace="{{ .Release.Namespace }}",app_kubernetes_io_instance="{{ .Release.Name }}",rollout_track="stable"}[{{ .Values.rolloutMonitoring.analysis.lookbackWindow }}]) > {{ .Values.rolloutMonitoring.analysis.maxClusterTurnover }}
+        or
+        max_over_time(portfolio_factor_sleeve_budget_turnover{namespace="{{ .Release.Namespace }}",app_kubernetes_io_instance="{{ .Release.Name }}",rollout_track="stable"}[{{ .Values.rolloutMonitoring.analysis.lookbackWindow }}]) > {{ .Values.rolloutMonitoring.analysis.maxFactorSleeveBudgetTurnover }}
+        or
+        max_over_time(portfolio_max_factor_sleeve_budget_gap_pct{namespace="{{ .Release.Namespace }}",app_kubernetes_io_instance="{{ .Release.Name }}",rollout_track="stable"}[{{ .Values.rolloutMonitoring.analysis.lookbackWindow }}]) > {{ .Values.rolloutMonitoring.analysis.maxFactorSleeveBudgetGapPct }}
+      for: {{ .Values.prometheusRule.for }}
+      labels:
+        severity: critical
+        release_name: {{ .Release.Name | quote }}
+        namespace: {{ .Release.Namespace | quote }}
+        service: {{ include "trading-backend.fullname" . | quote }}
+        receiver: {{ .Values.prometheusRule.receiver | quote }}
+      annotations:
+        summary: Trading backend post-promotion concentration degraded
+        description: Stable rollout portfolio concentration exceeded the configured threshold.
+{{- end }}

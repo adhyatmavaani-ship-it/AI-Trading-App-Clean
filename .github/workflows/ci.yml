@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install -r requirements.txt
+
+      - name: Compile backend
+        run: python -m compileall app tests scripts
+
+      - name: Run backend test suite
+        run: python -m unittest discover -s tests -v
+
+      - name: Smoke-check backend app boot
+        run: python -m unittest tests.test_app_boot -v
+
+      - name: Smoke-check FastAPI process and websocket
+        run: python scripts/process_smoke_check.py
+
+  flutter:
+    name: Flutter Analyze
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: flutter_app
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      - name: Analyze Flutter app
+        run: flutter analyze
+
+  cloud-functions:
+    name: Cloud Functions Check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloud_functions
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: cloud_functions/package-lock.json
+
+      - name: Install function dependencies
+        run: npm ci
+
+      - name: Run cloud function tests
+        run: npm test
+
+      - name: Validate cloud function syntax
+        run: node --check index.js

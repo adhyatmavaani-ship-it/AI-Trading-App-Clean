@@ -1,0 +1,24 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: ../../backend
+    env_file:
+      - ../../backend/.env.example
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+  worker-supervisor:
+    build:
+      context: ../../backend
+    env_file:
+      - ../../backend/.env.example
+    command: ["supervisord", "-c", "/app/deploy/supervisord-workers.conf"]
+    depends_on:
+      - redis
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"

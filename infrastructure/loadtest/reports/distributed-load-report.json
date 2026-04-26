@@ -1,0 +1,74 @@
+{
+  "scenario": {
+    "subscribers": 100000,
+    "signals_per_burst": 3,
+    "shards": 64,
+    "batch_size": 250
+  },
+  "registration_ms": 514.239,
+  "broadcast_latency_ms": {
+    "p50": 788.261,
+    "p95": 2352.15,
+    "samples": [
+      788.261,
+      2352.15,
+      237.706
+    ]
+  },
+  "queue_depth": {
+    "high": 13006,
+    "normal": 53929,
+    "delayed": 69982,
+    "total": 136917
+  },
+  "redis_validation": {
+    "pubsub_messages": 6,
+    "approx_payload_mb": 47.185,
+    "queue_corruption_detected": false
+  },
+  "shard_distribution": {
+    "mean_jobs_per_shard": 2139.328,
+    "median_jobs_per_shard": 1796.0,
+    "max_jobs_per_shard": 23787,
+    "min_jobs_per_shard": 1692,
+    "p95_jobs_per_shard": 1877.0,
+    "imbalance_ratio": 11.119
+  },
+  "queue_validation": {
+    "processed_jobs": 136917,
+    "duplicate_jobs": 0,
+    "lag_p50_ms": 1889.257,
+    "lag_p95_ms": 3253.483,
+    "lag_max_ms": 3884.0911388397217,
+    "delayed_processed": 69982,
+    "first_delayed_cycle": 4,
+    "remaining_jobs": 0,
+    "cycles": 96
+  },
+  "failure_simulation": {
+    "worker_crash": {
+      "jobs_popped_before_crash": 250,
+      "queue_depth_before": 20000,
+      "queue_depth_after": 19750,
+      "data_loss_detected": true
+    },
+    "redis_restart": {
+      "queued_before_restart": 19750,
+      "queued_after_restart": 0,
+      "data_loss_detected": true
+    }
+  },
+  "execution_quality": {
+    "processed_jobs": 136917,
+    "expected_price": 100.0,
+    "actual_price_modeled": 100.3,
+    "expected_slippage_bps": 12.0,
+    "actual_slippage_bps_modeled": 30.0,
+    "alpha_realization_ratio_modeled": 0.7
+  },
+  "signal_versions": [
+    1,
+    2,
+    3
+  ]
+}

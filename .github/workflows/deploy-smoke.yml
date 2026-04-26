@@ -1,0 +1,67 @@
+name: Deploy Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment_name:
+        description: GitHub environment name
+        required: true
+        default: staging
+      namespace:
+        description: Kubernetes namespace
+        required: true
+        default: trading-prod
+      deployment:
+        description: Deployment name
+        required: true
+        default: trading-backend
+      service:
+        description: Service name
+        required: true
+        default: trading-backend
+      context:
+        description: Optional kubectl context
+        required: false
+        default: ""
+
+jobs:
+  smoke:
+    name: Post-deploy Kubernetes Smoke
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install smoke dependencies
+        run: python -m pip install websockets
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Configure kubeconfig
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
+        run: |
+          test -n "$KUBECONFIG_B64"
+          mkdir -p "$HOME/.kube"
+          echo "$KUBECONFIG_B64" | base64 --decode > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+
+      - name: Run post-deploy smoke check
+        env:
+          API_TOKEN: ${{ secrets.DEPLOY_SMOKE_API_TOKEN }}
+        run: |
+          test -n "$API_TOKEN"
+          python scripts/k8s_post_deploy_smoke.py \
+            --namespace "${{ inputs.namespace }}" \
+            --deployment "${{ inputs.deployment }}" \
+            --service "${{ inputs.service }}" \
+            --context "${{ inputs.context }}" \
+            --token "$API_TOKEN"

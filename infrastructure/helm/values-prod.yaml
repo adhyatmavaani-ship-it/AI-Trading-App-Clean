@@ -1,0 +1,162 @@
+# Production environment values
+# Use with: helm install ... -f values-prod.yaml
+
+replicaCount: 3
+
+image:
+  digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"  # Pin immutable image digest in prod
+  pullPolicy: IfNotPresent
+
+canary:
+  enabled: false
+  weight: 10
+  analysis:
+    durationSeconds: 300
+    intervalSeconds: 15
+    maxErrorRate: 0.03
+    minTradeSuccessRate: 0.92
+    maxLatencyMs: 450
+    maxGrossExposurePct: 0.70
+    maxSymbolExposurePct: 0.30
+    maxThemeExposurePct: 0.40
+    maxClusterExposurePct: 0.40
+    maxBetaBucketExposurePct: 0.50
+    maxGrossExposureDriftPct: 0.06
+    maxClusterConcentrationDriftPct: 0.06
+    maxBetaBucketConcentrationDriftPct: 0.06
+    maxClusterTurnover: 0.40
+    maxFactorSleeveBudgetTurnover: 0.25
+    maxFactorSleeveBudgetGapPct: 0.15
+    minimumRequestSamples: 8
+    minimumTradeSamples: 0
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+  requests:
+    cpu: 1000m
+    memory: 1Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 25
+  targetCPUUtilizationPercentage: 65
+  targetMemoryUtilizationPercentage: 75
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+config:
+  ENVIRONMENT: "prod"
+  LOG_LEVEL: "INFO"
+  TRADING_MODE: "live"  # Enable live trading in production
+  REDIS_URL: "redis://redis-cluster.trading-system:6379/0"
+  BASE_RISK_PER_TRADE: "0.02"
+  DAILY_LOSS_LIMIT: "0.05"
+  GLOBAL_MAX_CAPITAL_LOSS: "0.10"
+  ROLLING_DRAWDOWN_LIMIT: "0.06"
+  PAUSE_DRAWDOWN_LIMIT: "0.10"
+  MAX_CONSECUTIVE_LOSSES: "3"
+  MAX_COIN_EXPOSURE_PCT: "0.20"
+  AI_MODEL_VERSION: "v1"
+  DEFAULT_STRATEGY: "ensemble"
+  ENABLED_STRATEGIES: "ensemble,hybrid_crypto,ema_crossover,rsi,breakout"
+  BINANCE_TESTNET: "false"  # Live Binance
+
+service:
+  type: LoadBalancer
+  port: 80
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  hosts:
+  - host: trading-api.example.com
+    paths:
+    - path: /
+      pathType: Prefix
+  tls:
+  - secretName: trading-api-tls
+    hosts:
+    - trading-api.example.com
+
+affinity:
+  podAntiAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:  # Stricter in prod
+    - labelSelector:
+        matchExpressions:
+        - key: app.kubernetes.io/name
+          operator: In
+          values:
+          - trading-backend
+      topologyKey: kubernetes.io/hostname
+
+prometheus:
+  enabled: true
+  scrapeInterval: 10s
+
+# High availability
+terminationGracePeriodSeconds: 45
+
+# Network policy (enable in prod)
+networkPolicy:
+  enabled: true
+  policyTypes:
+  - Ingress
+  - Egress
+
+rolloutMonitoring:
+  enabled: true
+  prometheus:
+    namespace: monitoring
+    serviceName: kube-prometheus-stack-prometheus
+    port: 9090
+  alertmanager:
+    namespace: monitoring
+    serviceName: kube-prometheus-stack-alertmanager
+    port: 9093
+  analysis:
+    durationSeconds: 300
+    intervalSeconds: 30
+    lookbackWindow: 5m
+    maxErrorRate: 0.03
+    minTradeSuccessRate: 0.92
+    maxLatencyMs: 450
+    maxGrossExposurePct: 0.70
+    maxSymbolExposurePct: 0.30
+    maxThemeExposurePct: 0.40
+    maxClusterExposurePct: 0.40
+    maxBetaBucketExposurePct: 0.50
+    maxGrossExposureDriftPct: 0.06
+    maxClusterConcentrationDriftPct: 0.06
+    maxBetaBucketConcentrationDriftPct: 0.06
+    maxClusterTurnover: 0.40
+    maxFactorSleeveBudgetTurnover: 0.25
+    maxFactorSleeveBudgetGapPct: 0.15
+    minimumRequestSamples: 12
+    minimumTradeSamples: 0
+    rollbackOnAlert: true
+    alertNames:
+    - TradingBackendPostPromotionHighErrorRate
+    - TradingBackendPostPromotionLowTradeSuccessRate
+    - TradingBackendPostPromotionHighLatency
+    - TradingBackendPostPromotionHighConcentration
+
+podMonitor:
+  enabled: true
+  interval: 10s
+  path: /v1/monitoring/metrics
+  additionalLabels: {}
+
+prometheusRule:
+  enabled: true
+  for: 2m
+  receiver: trading-backend-rollout
+  additionalLabels: {}

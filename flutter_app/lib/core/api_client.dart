@@ -1,0 +1,332 @@
+import 'package:dio/dio.dart';
+
+import '../models/batch.dart';
+import '../models/meta_analytics.dart';
+import '../models/meta_decision.dart';
+import '../models/portfolio_concentration.dart';
+import '../models/public_dashboard.dart';
+import '../models/signal.dart';
+import '../models/system_health.dart';
+import '../models/trade_timeline.dart';
+import '../models/user_pnl.dart';
+import 'auth_credentials_store.dart';
+import 'constants.dart';
+
+class ApiClient {
+  ApiClient({
+    required AuthCredentialsStore credentialsStore,
+    Future<AuthSession?> Function(AuthSession currentSession)? tokenRefresher,
+    String? baseUrl,
+  })  : _credentialsStore = credentialsStore,
+        _tokenRefresher = tokenRefresher,
+        _dio = Dio(
+          BaseOptions(
+            baseUrl: baseUrl ?? AppConstants.defaultApiBaseUrl,
+            connectTimeout: AppConstants.requestTimeout,
+            receiveTimeout: AppConstants.requestTimeout,
+            sendTimeout: AppConstants.requestTimeout,
+            headers: const <String, String>{
+              'Accept': 'application/json',
+            },
+          ),
+        ) {
+    _dio.interceptors.add(
+      InterceptorsWrapper(
+        onRequest: (options, handler) async {
+          options.headers['X-Client-Platform'] = 'flutter';
+          options.headers['X-App-Environment'] = const String.fromEnvironment(
+            'APP_ENV',
+            defaultValue: 'mobile',
+          );
+          final session = await _credentialsStore.loadSession();
+          if (session != null && session.accessToken.trim().isNotEmpty) {
+            _attachAuthHeaders(options, session);
+          }
+          handler.next(options);
+        },
+        onError: (error, handler) async {
+          if (_shouldRefresh(error)) {
+            final refreshed = await _refreshSession();
+            if (refreshed != null) {
+              try {
+                final retryResponse = await _retryRequest(
+                  error.requestOptions,
+                  refreshed,
+                );
+                handler.resolve(retryResponse);
+                return;
+              } on DioException catch (retryError) {
+                handler.next(retryError);
+                return;
+              }
+            }
+          }
+
+          handler.next(
+            DioException(
+              requestOptions: error.requestOptions,
+              response: error.response,
+              type: error.type,
+              error: _buildReadableError(error),
+              message: _buildReadableError(error),
+            ),
+          );
+        },
+      ),
+    );
+    _dio.interceptors.add(
+      LogInterceptor(
+        requestBody: false,
+        responseBody: false,
+        requestHeader: false,
+      ),
+    );
+  }
+
+  final Dio _dio;
+  final AuthCredentialsStore _credentialsStore;
+  final Future<AuthSession?> Function(AuthSession currentSession)?
+      _tokenRefresher;
+
+  Future<List<SignalModel>> getSignals({int limit = 25}) async {
+    final response = await _getWithRetry(
+      '/v1/signals/live',
+      queryParameters: <String, dynamic>{'limit': limit},
+    );
+    final items = response.data['items'] as List<dynamic>? ?? const [];
+    return items
+        .map((item) => SignalModel.fromJson(item as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<List<BatchModel>> getBatches({int limit = 25}) async {
+    final response = await _getWithRetry(
+      '/v1/vom/batches',
+      queryParameters: <String, dynamic>{'limit': limit},
+    );
+    final items = response.data['items'] as List<dynamic>? ?? const [];
+    return items
+        .map((item) => BatchModel.fromJson(item as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<UserPnLModel> getUserPnL(String userId) async {
+    final response = await _getWithRetry(
+      '/v1/user/pnl',
+      queryParameters: <String, dynamic>{'user_id': userId},
+    );
+    return UserPnLModel.fromJson(response.data as Map<String, dynamic>);
+  }
+
+  Future<TradeTimelineModel> getTradeTimeline(String tradeId) async {
+    final response = await _getWithRetry('/v1/trade/$tradeId/timeline');
+    return TradeTimelineModel.fromJson(response.data as Map<String, dynamic>);
+  }
+
+  Future<SystemHealthModel> getSystemHealth() async {
+    final response = await _getWithRetry('/v1/monitoring/system');
+    return SystemHealthModel.fromJson(response.data as Map<String, dynamic>);
+  }
+
+  Future<PortfolioConcentrationHistoryModel> getConcentrationHistory({
+    String window = '24h',
+    int limit = 24,
+  }) async {
+    final response = await _getWithRetry(
+      '/v1/monitoring/concentration',
+      queryParameters: <String, dynamic>{
+        'window': window,
+        'limit': limit,
+      },
+    );
+    return PortfolioConcentrationHistoryModel.fromJson(
+      response.data as Map<String, dynamic>,
+    );
+  }
+
+  Future<ModelStabilityConcentrationHistoryModel>
+      getModelStabilityConcentrationHistory({
+    String window = '24h',
+    int limit = 24,
+  }) async {
+    final response = await _getWithRetry(
+      '/v1/monitoring/model-stability/concentration',
+      queryParameters: <String, dynamic>{
+        'window': window,
+        'limit': limit,
+      },
+    );
+    return ModelStabilityConcentrationHistoryModel.fromJson(
+      response.data as Map<String, dynamic>,
+    );
+  }
+
+  Future<MetaDecisionModel> getMetaDecision(String tradeId) async {
+    final response = await _getWithRetry('/v1/meta/decision/$tradeId');
+    return MetaDecisionModel.fromJson(response.data as Map<String, dynamic>);
+  }
+
+  Future<MetaAnalyticsModel> getMetaAnalytics() async {
+    final response = await _getWithRetry('/v1/meta/analytics');
+    return MetaAnalyticsModel.fromJson(response.data as Map<String, dynamic>);
+  }
+
+  Future<PublicPerformanceModel> getPublicPerformance() async {
+    final response = await _getWithRetry('/v1/public/performance');
+    return PublicPerformanceModel.fromJson(
+      response.data as Map<String, dynamic>,
+    );
+  }
+
+  Future<List<PublicTradeModel>> getPublicTrades({int limit = 20}) async {
+    final response = await _getWithRetry(
+      '/v1/public/trades',
+      queryParameters: <String, dynamic>{'limit': limit},
+    );
+    final items = response.data['items'] as List<dynamic>? ?? const [];
+    return items
+        .map(
+          (item) => PublicTradeModel.fromJson(item as Map<String, dynamic>),
+        )
+        .toList();
+  }
+
+  Future<List<PublicDailyPointModel>> getPublicDaily({int limit = 90}) async {
+    final response = await _getWithRetry(
+      '/v1/public/daily',
+      queryParameters: <String, dynamic>{'limit': limit},
+    );
+    final items = response.data['items'] as List<dynamic>? ?? const [];
+    return items
+        .map(
+          (item) =>
+              PublicDailyPointModel.fromJson(item as Map<String, dynamic>),
+        )
+        .toList();
+  }
+
+  Future<Response<dynamic>> _getWithRetry(
+    String path, {
+    Map<String, dynamic>? queryParameters,
+  }) async {
+    DioException? lastError;
+    for (var attempt = 0; attempt < 3; attempt++) {
+      try {
+        return await _dio.get<dynamic>(
+          path,
+          queryParameters: queryParameters,
+        );
+      } on DioException catch (error) {
+        lastError = error;
+        if (attempt == 2) {
+          rethrow;
+        }
+        await Future<void>.delayed(
+          Duration(milliseconds: 300 * (attempt + 1)),
+        );
+      }
+    }
+    throw lastError ??
+        DioException(
+          requestOptions: RequestOptions(path: path),
+          message: 'Unknown network error',
+        );
+  }
+
+  String _buildReadableError(DioException error) {
+    final statusCode = error.response?.statusCode;
+    final detail = error.response?.data;
+    if (statusCode != null) {
+      return 'Request failed ($statusCode): $detail';
+    }
+    if (error.type == DioExceptionType.connectionError) {
+      return 'Unable to reach the trading backend. Check the deployed API URL and network access.';
+    }
+    if (error.type == DioExceptionType.connectionTimeout ||
+        error.type == DioExceptionType.receiveTimeout ||
+        error.type == DioExceptionType.sendTimeout) {
+      return 'The trading backend timed out. Please try again.';
+    }
+    return error.message ?? 'Unexpected network failure';
+  }
+
+  void _attachAuthHeaders(RequestOptions options, AuthSession session) {
+    options.headers.remove('X-API-Key');
+    options.headers.remove('Authorization');
+    switch (session.scheme) {
+      case AuthScheme.apiKey:
+        options.headers['X-API-Key'] = session.accessToken;
+        break;
+      case AuthScheme.bearer:
+        options.headers['Authorization'] = 'Bearer ${session.accessToken}';
+        break;
+    }
+  }
+
+  bool _shouldRefresh(DioException error) {
+    return error.response?.statusCode == 401 &&
+        error.requestOptions.extra['auth_retry'] != true &&
+        _tokenRefresher != null;
+  }
+
+  Future<AuthSession?> _refreshSession() async {
+    final tokenRefresher = _tokenRefresher;
+    if (tokenRefresher == null) {
+      return null;
+    }
+    final currentSession = await _credentialsStore.loadSession();
+    if (currentSession == null || !currentSession.hasRefreshToken) {
+      return null;
+    }
+    final refreshedSession = await tokenRefresher(currentSession);
+    if (refreshedSession == null ||
+        refreshedSession.accessToken.trim().isEmpty) {
+      await _credentialsStore.clear();
+      return null;
+    }
+    await _credentialsStore.saveSession(refreshedSession);
+    return refreshedSession;
+  }
+
+  Future<Response<dynamic>> _retryRequest(
+    RequestOptions requestOptions,
+    AuthSession session,
+  ) {
+    final headers = Map<String, dynamic>.from(requestOptions.headers);
+    final extra = Map<String, dynamic>.from(requestOptions.extra);
+    extra['auth_retry'] = true;
+    final requestCopy = RequestOptions(
+      path: requestOptions.path,
+      method: requestOptions.method,
+      baseUrl: requestOptions.baseUrl,
+      headers: headers,
+      extra: extra,
+    );
+    _attachAuthHeaders(requestCopy, session);
+    final retryOptions = Options(
+      method: requestOptions.method,
+      headers: requestCopy.headers,
+      responseType: requestOptions.responseType,
+      contentType: requestOptions.contentType,
+      sendTimeout: requestOptions.sendTimeout,
+      receiveTimeout: requestOptions.receiveTimeout,
+      extra: extra,
+      followRedirects: requestOptions.followRedirects,
+      listFormat: requestOptions.listFormat,
+      maxRedirects: requestOptions.maxRedirects,
+      persistentConnection: requestOptions.persistentConnection,
+      receiveDataWhenStatusError: requestOptions.receiveDataWhenStatusError,
+      requestEncoder: requestOptions.requestEncoder,
+      responseDecoder: requestOptions.responseDecoder,
+      validateStatus: requestOptions.validateStatus,
+    );
+
+    return _dio.request<dynamic>(
+      requestOptions.path,
+      data: requestOptions.data,
+      queryParameters: requestOptions.queryParameters,
+      options: retryOptions,
+      cancelToken: requestOptions.cancelToken,
+    );
+  }
+}

@@ -1,0 +1,67 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    match /users/{userId} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    match /trades/{tradeId} {
+      allow read: if isSignedIn() && resource.data.user_id == request.auth.uid;
+      allow write: if false;
+    }
+
+    match /signals/{signalId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    match /performance/{userId} {
+      allow read: if isSignedIn() && request.auth.uid == userId;
+      allow write: if false;
+    }
+
+    match /training_samples/{sampleId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    match /whale_events/{eventId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    match /liquidity/{snapshotId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    match /sentiment/{snapshotId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    match /security_scans/{scanId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    match /tax_records/{taxId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    match /micro_performance/{performanceId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    match /logs/{logId} {
+      allow read: if false;
+      allow write: if false;
+    }
+  }
+}

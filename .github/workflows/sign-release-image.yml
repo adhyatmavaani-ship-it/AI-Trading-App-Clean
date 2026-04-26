@@ -1,0 +1,50 @@
+name: Sign Release Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_manifest:
+        description: Release manifest path
+        required: true
+        default: deploy/releases/staging.json
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  sign:
+    name: Cosign Sign and Verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.7.0
+
+      - name: Resolve release manifest
+        id: resolve
+        run: python scripts/release_manifest.py resolve --manifest "${{ inputs.release_manifest }}" --github-output "$GITHUB_OUTPUT"
+
+      - name: Log in to registry
+        if: ${{ secrets.REGISTRY_USERNAME != '' && secrets.REGISTRY_PASSWORD != '' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.resolve.outputs.image_registry }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Cosign sign image digest
+        env:
+          COSIGN_YES: "true"
+        run: |
+          cosign sign "${{ steps.resolve.outputs.image_repository }}@${{ steps.resolve.outputs.image_digest }}"
+
+      - name: Verify signature after signing
+        run: python scripts/verify_image_signature.py --manifest "${{ inputs.release_manifest }}"
