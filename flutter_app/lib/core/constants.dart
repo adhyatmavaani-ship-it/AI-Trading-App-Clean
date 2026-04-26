@@ -1,7 +1,7 @@
 class AppConstants {
   static const String defaultApiBaseUrl = String.fromEnvironment(
     'API_BASE_URL',
-    defaultValue: 'https://your-app.onrender.com',
+    defaultValue: 'http://10.84.86.111:8000',
   );
 
   static const String _configuredWsBaseUrl = String.fromEnvironment(
