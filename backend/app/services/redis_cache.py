@@ -11,6 +11,7 @@ from redis import Redis
 
 
 logger = logging.getLogger(__name__)
+_REDIS_DISABLED_LOGGED = False
 
 
 class _InMemoryPipeline:
@@ -188,13 +189,19 @@ class _InMemoryRedisClient:
 
 class RedisCache:
     def __init__(self, url: str):
-        self.url = url
+        self.url = (url or "").strip()
         self._using_fallback = False
-        self.client = self._build_client(url)
+        self._redis_enabled = bool(self.url)
+        self.client = self._build_client(self.url)
 
     def _build_client(self, url: str):
+        normalized_url = (url or "").strip()
+        if not normalized_url:
+            self._using_fallback = True
+            self._log_disabled_once()
+            return _InMemoryRedisClient()
         try:
-            client = Redis.from_url(url, decode_responses=True)
+            client = Redis.from_url(normalized_url, decode_responses=True)
             client.ping()
             return client
         except Exception as exc:
@@ -204,16 +211,27 @@ class RedisCache:
                 extra={
                     "event": "redis_unavailable_falling_back_to_memory",
                     "context": {
-                        "redis_url": url,
+                        "redis_url": normalized_url,
                         "error": str(exc)[:200],
                     },
                 },
             )
             return _InMemoryRedisClient()
 
+    def _log_disabled_once(self) -> None:
+        global _REDIS_DISABLED_LOGGED
+        if _REDIS_DISABLED_LOGGED:
+            return
+        logger.info("Redis disabled, using in-memory mode")
+        _REDIS_DISABLED_LOGGED = True
+
     @property
     def using_fallback(self) -> bool:
         return self._using_fallback
+
+    @property
+    def redis_enabled(self) -> bool:
+        return self._redis_enabled
 
     def get_json(self, key: str) -> dict[str, Any] | None:
         raw = self.client.get(key)

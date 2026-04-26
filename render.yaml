@@ -9,6 +9,8 @@ services:
     envVars:
       - key: ENVIRONMENT
         value: prod
+      - key: APP_VERSION
+        value: 5c7a6e3
       - key: TRADING_MODE
         value: paper
       - key: REDIS_URL

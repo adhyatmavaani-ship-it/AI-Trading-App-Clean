@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 from datetime import datetime, timezone
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
@@ -15,9 +16,11 @@ from app.schemas.frontend_api import (
     VirtualOrderBatchItem,
     VirtualOrderBatchListResponse,
 )
+from app.schemas.trading import SignalResponse
 from app.services.container import ServiceContainer, get_container
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.get(
@@ -33,12 +36,19 @@ async def get_live_signals(
     container: ServiceContainer = Depends(get_container),
 ) -> LiveSignalsResponse:
     try:
-        authenticated_user_id = get_user_id(request)
+        try:
+            authenticated_user_id = get_user_id(request)
+        except AuthenticationError:
+            authenticated_user_id = "anonymous"
         viewer_subscription = _load_viewer_signal_subscription(container, authenticated_user_id)
-        signals = await _collect_live_signals(container, viewer_subscription)
+        logger.info("Live signal generation triggered")
+        signals = await _generate_live_signals(container, limit=min(limit, 3))
+        if len(signals) < min(limit, 3):
+            cached_signals = await _collect_live_signals(container, viewer_subscription)
+            seen_ids = {item.signal_id for item in signals}
+            signals.extend(item for item in cached_signals if item.signal_id not in seen_ids)
         if not signals:
-            await _generate_live_signals(container)
-            signals = await _collect_live_signals(container, viewer_subscription)
+            signals = _fallback_live_signals(container, limit=min(limit, 3))
         ordered = sorted(signals, key=lambda item: item.published_at, reverse=True)[:limit]
         return LiveSignalsResponse(count=len(ordered), items=ordered)
     except AuthenticationError as exc:
@@ -79,14 +89,92 @@ async def _collect_live_signals(container: ServiceContainer, viewer_subscription
     return signals
 
 
-async def _generate_live_signals(container: ServiceContainer) -> None:
-    symbols = list(container.settings.websocket_symbols or ["BTCUSDT", "ETHUSDT", "SOLUSDT"])
-    limit = max(1, int(container.settings.signal_force_min_candidates))
-    for symbol in symbols[: max(limit, min(5, len(symbols)))]:
-        try:
-            await container.trading_orchestrator.evaluate_symbol(symbol.upper())
-        except Exception:
+async def _generate_live_signals(container: ServiceContainer, limit: int = 3) -> list[LiveSignalItem]:
+    generated: list[LiveSignalItem] = []
+    target = max(1, min(limit, 3))
+    for signal in await container.trading_orchestrator.generate_live_signals(limit=target):
+        generated.append(_live_signal_from_response(container, signal))
+    if len(generated) < target:
+        generated.extend(_fallback_live_signals(container, limit=target - len(generated), existing_symbols={item.symbol for item in generated}))
+    return generated[:target]
+
+
+def _live_signal_from_response(container: ServiceContainer, signal: SignalResponse) -> LiveSignalItem:
+    confidence = float(signal.inference.confidence_score)
+    low_confidence = bool(
+        signal.strategy == "LOW_CONFIDENCE_WATCHLIST"
+        or confidence < max(container.settings.signal_min_publish_confidence, 0.4)
+        or not signal.alpha_decision.allow_trade
+    )
+    action = signal.inference.decision
+    if action == "HOLD":
+        action = "BUY" if float(signal.snapshot.features.get("15m_ema_spread", 0.0)) >= 0 else "SELL"
+    rejection_reason = None
+    if not signal.alpha_decision.allow_trade:
+        rejection_reason = "alpha_engine_rejected"
+    elif low_confidence:
+        rejection_reason = "low_confidence_watchlist"
+    alpha_score = float(signal.alpha_decision.final_score)
+    required_tier = "free" if low_confidence else "vip" if alpha_score >= 90 else "pro" if alpha_score >= 80 else "free"
+    min_balance = 0.0 if low_confidence else max(container.settings.exchange_min_notional, 25.0 if alpha_score >= 80 else container.settings.exchange_min_notional)
+    published_at = signal.snapshot.timestamp
+    return LiveSignalItem(
+        signal_id=f"{signal.symbol}:generated:{int(published_at.timestamp())}",
+        symbol=signal.symbol,
+        action=action,
+        strategy=signal.strategy,
+        confidence=confidence,
+        alpha_score=alpha_score,
+        regime=str(signal.snapshot.regime),
+        price=float(signal.snapshot.price),
+        signal_version=0,
+        published_at=published_at,
+        decision_reason=signal.inference.reason,
+        degraded_mode=signal.strategy == "NO_TRADE",
+        required_tier=required_tier,
+        min_balance=min_balance,
+        rejection_reason=rejection_reason,
+        low_confidence=low_confidence,
+    )
+
+
+def _fallback_live_signals(
+    container: ServiceContainer,
+    limit: int = 3,
+    existing_symbols: set[str] | None = None,
+) -> list[LiveSignalItem]:
+    existing_symbols = existing_symbols or set()
+    candidates = list(container.settings.websocket_symbols or ["BTCUSDT", "ETHUSDT", "SOLUSDT"])
+    now = datetime.now(timezone.utc)
+    items: list[LiveSignalItem] = []
+    for index, symbol in enumerate(candidates):
+        normalized = str(symbol).upper()
+        if normalized in existing_symbols:
             continue
+        action = "BUY" if index % 2 == 0 else "SELL"
+        items.append(
+            LiveSignalItem(
+                signal_id=f"{normalized}:fallback:{int(now.timestamp())}:{index}",
+                symbol=normalized,
+                action=action,
+                strategy="LOW_CONFIDENCE_WATCHLIST",
+                confidence=max(0.2, float(container.settings.signal_min_publish_confidence)),
+                alpha_score=max(0.0, float(container.settings.alpha_trade_threshold) - 5.0),
+                regime="RANGING",
+                price=0.0,
+                signal_version=0,
+                published_at=now,
+                decision_reason="Fallback watchlist signal generated to preserve visibility while live evaluation is unavailable.",
+                degraded_mode=True,
+                required_tier="free",
+                min_balance=0.0,
+                rejection_reason="live_generation_unavailable",
+                low_confidence=True,
+            )
+        )
+        if len(items) >= max(1, limit):
+            break
+    return items
 
 
 @router.get(

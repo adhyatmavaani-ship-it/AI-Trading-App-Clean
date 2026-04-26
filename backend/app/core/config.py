@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     service_name: str = "ai-trading-backend"
+    app_version: str = "unknown"
     environment: Literal["local", "dev", "staging", "prod"] = "local"
     log_level: str = "INFO"
     trading_mode: Literal["paper", "live"] = "paper"
@@ -23,7 +24,7 @@ class Settings(BaseSettings):
     pinecone_cloud: str = "aws"
     pinecone_region: str = "us-east-1"
 
-    redis_url: str = "redis://redis:6379/0"
+    redis_url: str = ""
     market_data_cache_ttl: int = 15
     model_dir: str = "artifacts"
 
@@ -123,7 +124,7 @@ class Settings(BaseSettings):
     solana_ws_url: str = ""
     base_ws_url: str = ""
     auto_trade_on_whale_signal: bool = False
-    alpha_trade_threshold: float = 60.0
+    alpha_trade_threshold: float = 40.0
     max_slippage_bps: int = 35
     trade_safety_max_slippage_bps: int = 35
     trade_safety_min_liquidity_coverage_ratio: float = 1.0
@@ -204,7 +205,7 @@ class Settings(BaseSettings):
     probability_factor_sleeve_priority_boost: float = 1.06
     probability_factor_sleeve_priority_floor: float = 0.92
     signal_safe_test_mode: bool = True
-    signal_min_publish_confidence: float = 0.30
+    signal_min_publish_confidence: float = 0.20
     signal_force_min_candidates: int = 1
     signal_diagnostics_limit: int = 10
 

@@ -15,16 +15,18 @@ router = APIRouter(tags=["health"])
 @router.get("/health")
 async def healthcheck() -> dict[str, str]:
     """Minimal healthcheck for load balancers."""
-    return {"status": "ok"}
+    settings = get_settings()
+    return {"status": "ok", "version": settings.app_version}
 
 
 @router.get("/health/live")
 async def liveness_check() -> dict[str, Any]:
     """Kubernetes liveness probe - is the service running?"""
+    settings = get_settings()
     return {
         "status": "alive",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "version": "1.0.0",
+        "version": settings.app_version,
     }
 
 
@@ -75,11 +77,13 @@ async def readiness_check(container: ServiceContainer = Depends(get_container)) 
 
     status = "ready" if all_ready else "not_ready"
     status_code = 200 if all_ready else 503
+    settings = get_settings()
 
     return JSONResponse(
         status_code=status_code,
         content={
             "status": status,
+            "version": settings.app_version,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "checks": checks,
             "all_ready": all_ready,
@@ -95,7 +99,7 @@ async def detailed_health(container: ServiceContainer = Depends(get_container)) 
     details: dict[str, Any] = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "service": settings.service_name,
-        "version": "1.0.0",
+        "version": settings.app_version,
         "environment": settings.environment,
         "trading_mode": settings.trading_mode,
         "dependencies": {},

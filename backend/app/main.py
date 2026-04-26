@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import signal
 from contextlib import asynccontextmanager
 
@@ -7,6 +8,7 @@ from fastapi import Depends, FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
+import uvicorn
 
 from app.api.routes import backtests, frontend, health, meta, monitoring, public, realtime, simulation, trading
 from app.core.config import get_settings
@@ -27,6 +29,10 @@ configure_logging(settings.log_level, settings.json_logs)
 _shutdown_event = asyncio.Event()
 
 
+def get_bind_port() -> int:
+    return int(os.environ.get("PORT", 10000))
+
+
 def _handle_shutdown_signal(signum, frame):
     """Handle SIGTERM/SIGINT for graceful shutdown."""
     logger.info(f"Received signal {signum}, initiating graceful shutdown...")
@@ -39,6 +45,7 @@ async def lifespan(app: FastAPI):
     # Startup
     await get_signal_websocket_manager().start()
     logger.info("Trading system startup - all services initialized")
+    logger.info(f"Server started on port {get_bind_port()}")
     yield
     # Shutdown - graceful cleanup
     logger.info("Trading system shutdown - cleaning up resources...")
@@ -147,3 +154,7 @@ app.include_router(realtime.router, prefix="/v1")
 @app.get("/")
 async def root() -> dict[str, str]:
     return {"service": settings.service_name, "status": "running"}
+
+
+if __name__ == "__main__":
+    uvicorn.run("app.main:app", host="0.0.0.0", port=get_bind_port())

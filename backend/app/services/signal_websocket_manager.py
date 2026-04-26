@@ -61,6 +61,8 @@ class SignalWebSocketManager:
     async def start(self) -> None:
         if not self.settings.websocket_listener_enabled:
             return
+        if not (self.settings.redis_url or "").strip():
+            return
         if self._listener_thread is not None and self._listener_thread.is_alive():
             return
         self._loop = asyncio.get_running_loop()
@@ -79,13 +81,16 @@ class SignalWebSocketManager:
         self._listener_thread = None
 
     def _listen_for_signals(self) -> None:
+        redis_url = (self.settings.redis_url or "").strip()
+        if not redis_url:
+            return
         reconnect_delay = max(float(self.settings.websocket_redis_reconnect_seconds), 0.1)
         while not self._listener_stop.is_set():
             redis_client: Redis | None = None
             pubsub = None
             try:
                 redis_client = Redis.from_url(
-                    self.settings.redis_url,
+                    redis_url,
                     decode_responses=True,
                 )
                 pubsub = redis_client.pubsub(ignore_subscribe_messages=True)

@@ -118,6 +118,17 @@ class TradingOrchestrator:
         log_method = logger.info if self.settings.trading_mode == "live" else logger.debug
         log_method("trade_recorded", extra=extra)
 
+    async def generate_live_signals(self, limit: int = 3) -> list[SignalResponse]:
+        symbols = list(self.settings.websocket_symbols or ["BTCUSDT", "ETHUSDT", "SOLUSDT"])
+        target = max(1, min(limit, 3))
+        generated: list[SignalResponse] = []
+        for symbol in symbols[: max(target, len(symbols))]:
+            try:
+                generated.append(await self.evaluate_symbol(symbol.upper()))
+            except Exception:
+                continue
+        return generated[:target]
+
     async def evaluate_symbol(self, symbol: str) -> SignalResponse:
         """Builds a probability-based signal and persists it for downstream execution."""
         frames = await self.market_data.fetch_multi_timeframe_ohlcv(symbol)
