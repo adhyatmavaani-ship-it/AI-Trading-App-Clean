@@ -27,6 +27,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
     """Validates API key/JWT and enforces authentication."""
 
     EXCLUDED_PATHS = {
+        "/",
         "/docs",
         "/redoc",
         "/openapi.json",
