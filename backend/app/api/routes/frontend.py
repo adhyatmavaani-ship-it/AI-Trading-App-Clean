@@ -110,7 +110,9 @@ def _live_signal_from_response(container: ServiceContainer, signal: SignalRespon
     if action == "HOLD":
         action = "BUY" if float(signal.snapshot.features.get("15m_ema_spread", 0.0)) >= 0 else "SELL"
     rejection_reason = None
-    if not signal.alpha_decision.allow_trade:
+    if signal.inference.model_version == "best_effort_watchlist":
+        rejection_reason = "best_effort_generation"
+    elif not signal.alpha_decision.allow_trade:
         rejection_reason = "alpha_engine_rejected"
     elif low_confidence:
         rejection_reason = "low_confidence_watchlist"
