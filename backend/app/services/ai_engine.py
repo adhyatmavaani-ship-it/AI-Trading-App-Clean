@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.special import expit
 
 from app.schemas.trading import AIInference, FeatureSnapshot
 from app.services.model_registry import ModelRegistry
@@ -12,6 +11,10 @@ try:  # pragma: no cover - environment dependent
     import torch
 except ModuleNotFoundError:  # pragma: no cover - environment dependent
     torch = None
+
+
+def _sigmoid(value: float) -> float:
+    return float(1.0 / (1.0 + np.exp(-value)))
 
 
 @dataclass
@@ -45,15 +48,15 @@ class AIEngine:
         buy_prob = float(probability_map.get("BUY", 0.0))
         sell_prob = float(probability_map.get("SELL", 0.0))
         hold_prob = float(probability_map.get("HOLD", 0.0))
-        forecast_buy = float(expit(forecast * 50))
-        forecast_sell = float(expit(-forecast * 50))
+        forecast_buy = _sigmoid(forecast * 50)
+        forecast_sell = _sigmoid(-forecast * 50)
         heuristic_buy = max(0.0, heuristic_score)
         heuristic_sell = max(0.0, -heuristic_score)
         ensemble_buy = 0.5 * buy_prob + 0.3 * forecast_buy + 0.2 * heuristic_buy
         ensemble_sell = 0.5 * sell_prob + 0.3 * forecast_sell + 0.2 * heuristic_sell
         ensemble_hold = max(0.0, 1 - max(ensemble_buy, ensemble_sell))
-        calibrated_buy = float(expit((ensemble_buy - 0.5) * 4))
-        calibrated_sell = float(expit((ensemble_sell - 0.5) * 4))
+        calibrated_buy = _sigmoid((ensemble_buy - 0.5) * 4)
+        calibrated_sell = _sigmoid((ensemble_sell - 0.5) * 4)
         calibrated_hold = float(min(1.0, max(0.0, ensemble_hold)))
 
         if max(calibrated_buy, calibrated_sell) < 0.55:
