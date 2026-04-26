@@ -151,7 +151,7 @@ app.include_router(realtime.router)
 app.include_router(realtime.router, prefix="/v1")
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 async def root() -> dict[str, str]:
     return {"service": settings.service_name, "status": "running"}
 
