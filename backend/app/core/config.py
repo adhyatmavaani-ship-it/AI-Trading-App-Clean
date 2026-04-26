@@ -1,12 +1,22 @@
+import os
 from functools import lru_cache
 from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
+def _default_app_version() -> str:
+    return (
+        os.environ.get("APP_VERSION")
+        or os.environ.get("RENDER_GIT_COMMIT")
+        or "unknown"
+    )
+
+
 class Settings(BaseSettings):
     service_name: str = "ai-trading-backend"
-    app_version: str = "unknown"
+    app_version: str = Field(default_factory=_default_app_version)
     environment: Literal["local", "dev", "staging", "prod"] = "local"
     log_level: str = "INFO"
     trading_mode: Literal["paper", "live"] = "paper"
