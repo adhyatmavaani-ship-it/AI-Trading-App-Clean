@@ -25,6 +25,14 @@ class Settings(BaseSettings):
     binance_api_key: str = ""
     binance_api_secret: str = ""
     binance_testnet: bool = True
+    primary_exchange: str = "binance"
+    backup_exchanges: list[str] = Field(default_factory=lambda: ["kraken", "coinbase"])
+    supported_quote_assets: list[str] = Field(default_factory=lambda: ["USDT", "USDC", "USD", "BTC", "ETH", "EUR", "GBP"])
+    kraken_api_key: str = ""
+    kraken_api_secret: str = ""
+    coinbase_api_key: str = ""
+    coinbase_api_secret: str = ""
+    coinbase_api_passphrase: str = ""
 
     firestore_project_id: str = ""
     google_application_credentials: str = ""

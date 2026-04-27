@@ -5,11 +5,10 @@ from decimal import Decimal, ROUND_DOWN, ROUND_UP
 import logging
 import random
 import time
-
-from binance.client import Client
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.core.config import Settings
+from app.services.exchange_adapters import CcxtExchangeAdapter, ExchangeAdapter
 from app.services.latency_monitor import LatencyMonitor
 from app.services.liquidity_slippage import LiquiditySlippageEngine
 from app.services.multi_chain_router import MultiChainRouter
@@ -35,15 +34,20 @@ class ExecutionEngine:
             chunk_delay_ms=self.settings.execution_chunk_delay_ms,
         )
         self.router = MultiChainRouter(self.settings)
-        self.client = None
+        self.exchange_clients: dict[str, ExchangeAdapter] = {}
         if self.settings.trading_mode == "paper":
             return
-        secret_manager = SecretManagerService(self.settings.secret_manager_project_id)
-        api_key = self.settings.binance_api_key or secret_manager.access_secret("binance-api-key")
-        api_secret = self.settings.binance_api_secret or secret_manager.access_secret("binance-api-secret")
-        self.client = Client(api_key, api_secret)
-        if self.settings.binance_testnet:
-            self.client.API_URL = "https://testnet.binance.vision/api"
+        self._hydrate_exchange_secrets()
+        for exchange_id in self._configured_exchanges():
+            try:
+                self.exchange_clients[exchange_id] = CcxtExchangeAdapter(self.settings, exchange_id)
+            except Exception as exc:
+                logger.warning(
+                    "exchange_adapter_init_failed",
+                    extra={"event": "exchange_adapter_init_failed", "context": {"exchange": exchange_id, "error": str(exc)[:200]}},
+                )
+        if not self.exchange_clients:
+            raise RuntimeError("No live exchange adapters could be initialized")
 
     @retry(wait=wait_exponential(min=1, max=8), stop=stop_after_attempt(3), reraise=True)
     def place_order(
@@ -56,62 +60,77 @@ class ExecutionEngine:
         order_book: dict | None = None,
         queue_context: dict | None = None,
     ) -> dict:
-        if self.client is None:
+        if not self.exchange_clients:
             raise RuntimeError("Live execution is unavailable while TRADING_MODE is not live")
-        self._throttle_exchange("binance:place_order")
         scheduled_delay_ms = int((queue_context or {}).get("scheduled_delay_ms", 0))
         if scheduled_delay_ms > 0:
             time.sleep(scheduled_delay_ms / 1000)
         route = self.router.route(symbol, side, quantity)
         if route["broadcast_delay_ms"]:
             time.sleep(route["broadcast_delay_ms"] / 1000)
-        started = time.perf_counter()
-        ticker = self.client.get_symbol_ticker(symbol=symbol)
-        self.latency_monitor.record_sync("binance_ticker", (time.perf_counter() - started) * 1000)
-        market_price = float(ticker["price"])
-        normalized_quantity, normalized_limit_price = self._normalize_order_request(
-            symbol=symbol,
-            side=side,
-            quantity=quantity,
-            order_type=order_type,
-            limit_price=limit_price,
-            reference_price=market_price,
-        )
-        allowed_slippage = market_price * (self.settings.slippage_bps / 10_000)
-        if order_book:
-            plan = self.slippage_engine.estimate(order_book, side, normalized_quantity)
-            if plan["chunks"] > 1:
-                return self.execute_chunked_order(
+        last_error: Exception | None = None
+        for exchange_id, exchange_client in self.exchange_clients.items():
+            try:
+                self._throttle_exchange(f"{exchange_id}:place_order")
+                started = time.perf_counter()
+                market_price = exchange_client.fetch_ticker_price(symbol)
+                self.latency_monitor.record_sync(f"{exchange_id}_ticker", (time.perf_counter() - started) * 1000)
+                normalized_quantity, normalized_limit_price = self._normalize_order_request(
                     symbol=symbol,
                     side=side,
-                    quantity=normalized_quantity,
+                    quantity=quantity,
                     order_type=order_type,
-                    market_price=market_price,
-                    plan=plan,
-                    queue_context=queue_context,
+                    limit_price=limit_price,
+                    reference_price=market_price,
+                    exchange_id=exchange_id,
                 )
-        if order_type == "LIMIT" and normalized_limit_price is not None:
-            if abs(normalized_limit_price - market_price) > allowed_slippage:
-                raise ValueError("Requested limit price exceeds slippage guardrail")
-            self._throttle_exchange("binance:create_limit_order")
-            order = self.client.create_order(
-                symbol=symbol,
-                side=side,
-                type=Client.ORDER_TYPE_LIMIT,
-                timeInForce=Client.TIME_IN_FORCE_GTC,
-                quantity=f"{normalized_quantity:.8f}",
-                price=f"{normalized_limit_price:.8f}",
-            )
-            if order.get("status") in {"NEW", "PARTIALLY_FILLED"}:
-                order = self.reconcile_order(symbol, int(order["orderId"]), side, normalized_quantity, market_price)
-            return order
-        self._throttle_exchange("binance:create_market_order")
-        return self.client.create_order(
-            symbol=symbol,
-            side=side,
-            type=Client.ORDER_TYPE_MARKET,
-            quantity=f"{normalized_quantity:.8f}",
-        )
+                allowed_slippage = market_price * (self.settings.slippage_bps / 10_000)
+                if order_book:
+                    plan = self.slippage_engine.estimate(order_book, side, normalized_quantity)
+                    if plan["chunks"] > 1:
+                        return self.execute_chunked_order(
+                            symbol=symbol,
+                            side=side,
+                            quantity=normalized_quantity,
+                            order_type=order_type,
+                            market_price=market_price,
+                            plan=plan,
+                            queue_context=queue_context,
+                            exchange_id=exchange_id,
+                        )
+                if order_type == "LIMIT" and normalized_limit_price is not None:
+                    if abs(normalized_limit_price - market_price) > allowed_slippage:
+                        raise ValueError("Requested limit price exceeds slippage guardrail")
+                    self._throttle_exchange(f"{exchange_id}:create_limit_order")
+                    order = exchange_client.create_order(
+                        symbol=symbol,
+                        side=side,
+                        order_type="LIMIT",
+                        quantity=normalized_quantity,
+                        limit_price=normalized_limit_price,
+                    )
+                    self._remember_order_exchange(order.get("orderId"), exchange_id)
+                    if order.get("status") in {"NEW", "PARTIALLY_FILLED"}:
+                        order = self.reconcile_order(symbol, str(order["orderId"]), side, normalized_quantity, market_price)
+                    return order
+                self._throttle_exchange(f"{exchange_id}:create_market_order")
+                order = exchange_client.create_order(
+                    symbol=symbol,
+                    side=side,
+                    order_type="MARKET",
+                    quantity=normalized_quantity,
+                )
+                self._remember_order_exchange(order.get("orderId"), exchange_id)
+                return order
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "exchange_order_failed",
+                    extra={"event": "exchange_order_failed", "context": {"exchange": exchange_id, "symbol": symbol, "error": str(exc)[:200]}},
+                )
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("No exchange clients available for execution")
 
     def place_virtual_order(
         self,
@@ -153,7 +172,10 @@ class ExecutionEngine:
         market_price: float,
         plan: dict,
         queue_context: dict | None = None,
+        exchange_id: str | None = None,
     ) -> dict:
+        exchange_key = exchange_id or self.settings.primary_exchange
+        exchange_client = self.exchange_clients[exchange_key]
         orders = []
         started = time.perf_counter()
         chunk_delays_ms: list[int] = []
@@ -166,15 +188,17 @@ class ExecutionEngine:
                 order_type=order_type,
                 limit_price=None,
                 reference_price=market_price,
+                exchange_id=exchange_key,
             )
-            self._throttle_exchange("binance:chunk_order")
-            order = self.client.create_order(
+            self._throttle_exchange(f"{exchange_key}:chunk_order")
+            order = exchange_client.create_order(
                 symbol=symbol,
                 side=side,
-                type=Client.ORDER_TYPE_MARKET,
-                quantity=f"{chunk_qty:.8f}",
+                order_type="MARKET",
+                quantity=chunk_qty,
             )
             orders.append(order)
+            self._remember_order_exchange(order.get("orderId"), exchange_key)
             if chunk_idx < plan["chunks"] - 1:
                 delay_seconds = random.randint(
                         self.settings.chunk_delay_min_seconds,
@@ -198,7 +222,7 @@ class ExecutionEngine:
         cumulative_quote = sum(float(order.get("cummulativeQuoteQty", 0.0)) for order in orders)
         avg_price = cumulative_quote / max(executed_qty, 1e-8) if cumulative_quote else market_price
         latency_ms = (time.perf_counter() - started) * 1000
-        self.latency_monitor.record_sync("binance_chunked_execution", latency_ms)
+        self.latency_monitor.record_sync(f"{exchange_key}_chunked_execution", latency_ms)
         return {
             "orderId": orders[-1]["orderId"],
             "status": "FILLED",
@@ -211,19 +235,24 @@ class ExecutionEngine:
             "executionLatencyMs": latency_ms,
             "chunkCount": plan["chunks"],
             "chunkDelaysMs": chunk_delays_ms,
+            "exchange": exchange_key,
         }
 
-    def fetch_order_status(self, symbol: str, order_id: int) -> dict:
-        if self.client is None:
+    def fetch_order_status(self, symbol: str, order_id: str | int) -> dict:
+        if not self.exchange_clients:
             raise RuntimeError("Live execution client not initialized")
-        self._throttle_exchange("binance:order_status")
+        exchange_id = self._order_exchange(order_id) or self.settings.primary_exchange
+        exchange_client = self.exchange_clients.get(exchange_id)
+        if exchange_client is None:
+            raise RuntimeError(f"Exchange client '{exchange_id}' is not initialized")
+        self._throttle_exchange(f"{exchange_id}:order_status")
         started = time.perf_counter()
-        status = self.client.get_order(symbol=symbol, orderId=order_id)
-        self.latency_monitor.record_sync("binance_order_status", (time.perf_counter() - started) * 1000)
+        status = exchange_client.fetch_order(symbol=symbol, order_id=str(order_id))
+        self.latency_monitor.record_sync(f"{exchange_id}_order_status", (time.perf_counter() - started) * 1000)
         return status
 
     def reconcile_order(
-        self, symbol: str, order_id: int, side: str, quantity: float, market_price: float
+        self, symbol: str, order_id: str | int, side: str, quantity: float, market_price: float
     ) -> dict:
         status = self.fetch_order_status(symbol, order_id)
         executed_qty = float(status.get("executedQty", 0))
@@ -239,11 +268,13 @@ class ExecutionEngine:
             extra={"event": "limit_order_fallback", "context": {"symbol": symbol, "order_id": order_id}},
         )
         if remaining_qty > 0:
-            self._throttle_exchange("binance:fallback_market_order")
-            fallback = self.client.create_order(
+            exchange_id = self._order_exchange(order_id) or self.settings.primary_exchange
+            exchange_client = self.exchange_clients[exchange_id]
+            self._throttle_exchange(f"{exchange_id}:fallback_market_order")
+            fallback = exchange_client.create_order(
                 symbol=symbol,
                 side=side,
-                type=Client.ORDER_TYPE_MARKET,
+                order_type="MARKET",
                 quantity=remaining_qty,
             )
             fallback["filledRatio"] = 1.0
@@ -251,6 +282,7 @@ class ExecutionEngine:
             fallback["feePaid"] = float(fallback.get("cummulativeQuoteQty", 0.0)) * (
                 self.settings.taker_fee_bps / 10_000
             )
+            self._remember_order_exchange(fallback.get("orderId"), exchange_id)
             return fallback
         status["filledRatio"] = min(1.0, executed_qty / max(original_qty, 1e-8))
         status["slippageBps"] = 0.0
@@ -276,8 +308,9 @@ class ExecutionEngine:
         order_type: str,
         limit_price: float | None,
         reference_price: float,
+        exchange_id: str,
     ) -> tuple[float, float | None]:
-        rules = self._symbol_rules(symbol)
+        rules = self._symbol_rules(symbol, exchange_id=exchange_id)
         normalized_quantity = self._normalize_quantity(
             quantity=quantity,
             step_size=rules["step_size"],
@@ -298,12 +331,13 @@ class ExecutionEngine:
             raise ValueError("Order does not satisfy exchange minimum notional")
         return normalized_quantity, normalized_limit_price
 
-    def _symbol_rules(self, symbol: str) -> dict[str, float]:
-        cache_key = f"binance:symbol_rules:{symbol.upper()}"
+    def _symbol_rules(self, symbol: str, *, exchange_id: str) -> dict[str, float]:
+        cache_key = f"{exchange_id}:symbol_rules:{symbol.upper()}"
         cached = self.cache.get_json(cache_key)
         if cached is not None:
             return {key: float(value) for key, value in cached.items()}
-        if self.client is None:
+        exchange_client = self.exchange_clients.get(exchange_id)
+        if exchange_client is None:
             return {
                 "min_qty": 0.0,
                 "max_qty": float("inf"),
@@ -311,18 +345,7 @@ class ExecutionEngine:
                 "tick_size": 0.00000001,
                 "min_notional": self.settings.exchange_min_notional,
             }
-        info = self.client.get_symbol_info(symbol.upper()) or {}
-        filters = {item.get("filterType"): item for item in info.get("filters", [])}
-        lot_size = filters.get("LOT_SIZE", {})
-        price_filter = filters.get("PRICE_FILTER", {})
-        min_notional_filter = filters.get("MIN_NOTIONAL") or filters.get("NOTIONAL") or {}
-        rules = {
-            "min_qty": float(lot_size.get("minQty", 0.0) or 0.0),
-            "max_qty": float(lot_size.get("maxQty", 0.0) or 0.0) or float("inf"),
-            "step_size": float(lot_size.get("stepSize", 0.00000001) or 0.00000001),
-            "tick_size": float(price_filter.get("tickSize", 0.00000001) or 0.00000001),
-            "min_notional": float(min_notional_filter.get("minNotional", self.settings.exchange_min_notional) or self.settings.exchange_min_notional),
-        }
+        rules = exchange_client.fetch_symbol_rules(symbol)
         serializable_rules = {
             key: value
             for key, value in rules.items()
@@ -365,3 +388,30 @@ class ExecutionEngine:
         if decimal_step <= 0:
             return decimal_value
         return decimal_value.quantize(decimal_step, rounding=rounding)
+
+    def _configured_exchanges(self) -> list[str]:
+        ordered = [self.settings.primary_exchange, *self.settings.backup_exchanges]
+        unique: list[str] = []
+        for exchange_id in ordered:
+            normalized = str(exchange_id).strip().lower()
+            if normalized and normalized not in unique:
+                unique.append(normalized)
+        return unique
+
+    def _hydrate_exchange_secrets(self) -> None:
+        secret_manager = SecretManagerService(self.settings.secret_manager_project_id)
+        if not self.settings.binance_api_key:
+            self.settings.binance_api_key = secret_manager.access_secret("binance-api-key")
+        if not self.settings.binance_api_secret:
+            self.settings.binance_api_secret = secret_manager.access_secret("binance-api-secret")
+
+    def _remember_order_exchange(self, order_id: str | None, exchange_id: str) -> None:
+        if not order_id:
+            return
+        self.cache.set(f"order:exchange:{order_id}", exchange_id, ttl=self.settings.monitor_state_ttl_seconds)
+
+    def _order_exchange(self, order_id: str | int) -> str | None:
+        value = self.cache.get(f"order:exchange:{order_id}")
+        if not value:
+            return None
+        return str(value)

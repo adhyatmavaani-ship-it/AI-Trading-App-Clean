@@ -20,6 +20,26 @@ class InMemoryCache:
         self.store[key] = value
 
 
+class StubExchangeClient:
+    def __init__(self, exchange_id: str, *, fail_price: bool = False):
+        self.exchange_id = exchange_id
+        self.fail_price = fail_price
+
+    def fetch_ticker_price(self, symbol: str) -> float:
+        if self.fail_price:
+            raise RuntimeError(f"{self.exchange_id} unavailable")
+        return 101.25
+
+    def fetch_order_book(self, *, symbol: str, limit: int = 20) -> dict:
+        return {
+            "bids": [{"price": 101.2, "qty": 4.0}],
+            "asks": [{"price": 101.3, "qty": 5.0}],
+        }
+
+    def fetch_ohlcv(self, *, symbol: str, interval: str, limit: int = 300):
+        raise NotImplementedError
+
+
 class MarketDataServiceTest(unittest.TestCase):
     def test_fetch_order_book_prefers_stream_cache(self):
         cache = InMemoryCache()
@@ -40,6 +60,25 @@ class MarketDataServiceTest(unittest.TestCase):
 
         self.assertEqual(order_book["bids"][0]["price"], 100.0)
         self.assertEqual(order_book["asks"][0]["price"], 100.1)
+
+    def test_fetch_latest_price_falls_back_to_backup_exchange(self):
+        cache = InMemoryCache()
+        service = MarketDataService(
+            Settings(
+                redis_url="redis://unused",
+                primary_exchange="binance",
+                backup_exchanges=["kraken"],
+            ),
+            cache,
+        )
+        service.exchange_clients = {
+            "binance": StubExchangeClient("binance", fail_price=True),
+            "kraken": StubExchangeClient("kraken"),
+        }
+
+        price = asyncio.run(service.fetch_latest_price("BTCUSDT"))
+
+        self.assertEqual(price, 101.25)
 
 
 if __name__ == "__main__":

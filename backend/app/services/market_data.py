@@ -5,11 +5,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
 
-import httpx
 import numpy as np
 import pandas as pd
 
 from app.core.config import Settings
+from app.services.exchange_adapters import CcxtExchangeAdapter, ExchangeAdapter
 from app.services.redis_cache import RedisCache
 
 logger = logging.getLogger(__name__)
@@ -19,6 +19,17 @@ logger = logging.getLogger(__name__)
 class MarketDataService:
     settings: Settings
     cache: RedisCache
+
+    def __post_init__(self) -> None:
+        self.exchange_clients: dict[str, ExchangeAdapter] = {}
+        for exchange_id in self._configured_exchanges():
+            try:
+                self.exchange_clients[exchange_id] = CcxtExchangeAdapter(self.settings, exchange_id, public_only=True)
+            except Exception as exc:
+                logger.warning(
+                    "market_data_exchange_init_failed",
+                    extra={"event": "market_data_exchange_init_failed", "context": {"exchange": exchange_id, "error": str(exc)[:200]}},
+                )
 
     def latest_stream_price(self, symbol: str) -> float | None:
         payload = self.cache.get_json(f"stream:{symbol.lower()}@trade")
@@ -45,91 +56,65 @@ class MarketDataService:
         cached_price = self.latest_stream_price(symbol)
         if cached_price is not None:
             return cached_price
-        async with httpx.AsyncClient(timeout=10) as client:
+        for exchange_id, client in self.exchange_clients.items():
             try:
-                response = await client.get(
-                    "https://api.binance.com/api/v3/ticker/price",
-                    params={"symbol": symbol},
-                )
-                response.raise_for_status()
-                return float(response.json()["price"])
+                return await asyncio.to_thread(client.fetch_ticker_price, symbol)
             except Exception:
                 logger.warning(
                     "market_data_price_fallback",
-                    extra={"event": "market_data_price_fallback", "context": {"symbol": symbol}},
+                    extra={"event": "market_data_price_fallback", "context": {"symbol": symbol, "exchange": exchange_id}},
                 )
-                return self._mock_latest_price(symbol)
+        return self._mock_latest_price(symbol)
 
     async def fetch_multi_timeframe_ohlcv(
         self, symbol: str, intervals: tuple[str, ...] = ("1m", "5m", "15m")
     ) -> dict[str, pd.DataFrame]:
-        async with httpx.AsyncClient(timeout=20) as client:
-            results = {}
-            pending_intervals: list[str] = []
-            for interval in intervals:
-                cache_key = f"ohlcv:{symbol}:{interval}"
-                cached = self.cache.get_json(cache_key)
-                if cached:
-                    frame = pd.DataFrame(cached["rows"])
-                    if not frame.empty and not self._frame_is_stale(frame, interval):
-                        results[interval] = frame
-                    else:
-                        pending_intervals.append(interval)
+        results = {}
+        pending_intervals: list[str] = []
+        for interval in intervals:
+            cache_key = f"ohlcv:{symbol}:{interval}"
+            cached = self.cache.get_json(cache_key)
+            if cached:
+                frame = pd.DataFrame(cached["rows"])
+                if not frame.empty and not self._frame_is_stale(frame, interval):
+                    results[interval] = frame
                 else:
                     pending_intervals.append(interval)
+            else:
+                pending_intervals.append(interval)
 
-            if pending_intervals:
-                responses = await asyncio.gather(
-                    *[
-                        client.get(
-                            "https://api.binance.com/api/v3/klines",
-                            params={"symbol": symbol, "interval": interval, "limit": 300},
-                        )
-                        for interval in pending_intervals
-                    ],
-                    return_exceptions=True,
+        for interval in pending_intervals:
+            frame = await self._fetch_ohlcv_with_fallback(symbol=symbol, interval=interval)
+            if frame.empty or self._frame_is_stale(frame, interval):
+                logger.warning(
+                    "market_data_ohlcv_fallback",
+                    extra={
+                        "event": "market_data_ohlcv_fallback",
+                        "context": {"symbol": symbol, "interval": interval},
+                    },
                 )
-                for interval, response in zip(pending_intervals, responses, strict=False):
-                    frame = self._response_frame(response)
-                    if frame.empty or self._frame_is_stale(frame, interval):
-                        logger.warning(
-                            "market_data_ohlcv_fallback",
-                            extra={
-                                "event": "market_data_ohlcv_fallback",
-                                "context": {"symbol": symbol, "interval": interval},
-                            },
-                        )
-                        frame = self._mock_ohlcv_frame(symbol=symbol, interval=interval)
-                    results[interval] = frame
-                    self.cache.set_json(
-                        f"ohlcv:{symbol}:{interval}",
-                        {"rows": frame.to_dict(orient="records")},
-                        self.settings.market_data_cache_ttl,
-                    )
-            return results
+                frame = self._mock_ohlcv_frame(symbol=symbol, interval=interval)
+            results[interval] = frame
+            self.cache.set_json(
+                f"ohlcv:{symbol}:{interval}",
+                {"rows": frame.to_dict(orient="records")},
+                self.settings.market_data_cache_ttl,
+            )
+        return results
 
     async def fetch_order_book(self, symbol: str) -> dict:
         cached_book = self.latest_stream_order_book(symbol)
         if cached_book is not None:
             return cached_book
-        async with httpx.AsyncClient(timeout=10) as client:
+        for exchange_id, client in self.exchange_clients.items():
             try:
-                response = await client.get(
-                    "https://api.binance.com/api/v3/depth",
-                    params={"symbol": symbol, "limit": 20},
-                )
-                response.raise_for_status()
-                payload = response.json()
-                return {
-                    "bids": [{"price": float(p), "qty": float(q)} for p, q in payload["bids"]],
-                    "asks": [{"price": float(p), "qty": float(q)} for p, q in payload["asks"]],
-                }
+                return await asyncio.to_thread(client.fetch_order_book, symbol=symbol, limit=20)
             except Exception:
                 logger.warning(
                     "market_data_order_book_fallback",
-                    extra={"event": "market_data_order_book_fallback", "context": {"symbol": symbol}},
+                    extra={"event": "market_data_order_book_fallback", "context": {"symbol": symbol, "exchange": exchange_id}},
                 )
-                return self._mock_order_book(self._mock_latest_price(symbol))
+        return self._mock_order_book(self._mock_latest_price(symbol))
 
     def _response_frame(self, response: object) -> pd.DataFrame:
         if isinstance(response, Exception):
@@ -206,3 +191,23 @@ class MarketDataService:
         if symbol_key in defaults:
             return defaults[symbol_key]
         return 100.0 + float(abs(hash(symbol_key)) % 1000)
+
+    async def _fetch_ohlcv_with_fallback(self, *, symbol: str, interval: str) -> pd.DataFrame:
+        for exchange_id, client in self.exchange_clients.items():
+            try:
+                return await asyncio.to_thread(client.fetch_ohlcv, symbol=symbol, interval=interval, limit=300)
+            except Exception:
+                logger.warning(
+                    "market_data_ohlcv_exchange_failed",
+                    extra={"event": "market_data_ohlcv_exchange_failed", "context": {"symbol": symbol, "interval": interval, "exchange": exchange_id}},
+                )
+        return pd.DataFrame()
+
+    def _configured_exchanges(self) -> list[str]:
+        ordered = [self.settings.primary_exchange, *self.settings.backup_exchanges]
+        unique: list[str] = []
+        for exchange_id in ordered:
+            normalized = str(exchange_id).strip().lower()
+            if normalized and normalized not in unique:
+                unique.append(normalized)
+        return unique

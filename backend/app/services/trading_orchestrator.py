@@ -1335,7 +1335,7 @@ class TradingOrchestrator:
             symbol = trade.get("symbol")
             if status in {"SUBMITTED", "OPENING"} and order_id and symbol and self.execution_engine is not None:
                 try:
-                    order_status = self.execution_engine.fetch_order_status(symbol=symbol, order_id=int(order_id))
+                    order_status = self.execution_engine.fetch_order_status(symbol=symbol, order_id=str(order_id))
                 except Exception:
                     trade["status"] = "FAILED"
                     self.redis_state_manager.save_active_trade(trade["trade_id"], trade)

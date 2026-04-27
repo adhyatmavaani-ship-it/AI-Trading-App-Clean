@@ -11,6 +11,7 @@ joblib
 ta
 httpx
 python-binance
+ccxt
 google-cloud-firestore
 google-cloud-secret-manager
 tenacity
