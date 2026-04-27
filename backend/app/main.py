@@ -4,6 +4,9 @@ import os
 import signal
 from contextlib import asynccontextmanager
 
+print("🔥 APP STARTED DEBUG 🔥")
+print("REDIS_URL LOADED:", os.getenv("REDIS_URL"))
+
 from fastapi import Depends, FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
