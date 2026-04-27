@@ -26,6 +26,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   void initState() {
     super.initState();
     _apiKeyController = TextEditingController();
+    Future<void>.microtask(() {
+      final userId = ref.read(activeUserIdProvider);
+      ref.read(appSettingsProvider.notifier).loadTradingControls(userId);
+    });
   }
 
   @override
@@ -103,24 +107,40 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         ),
         const SizedBox(height: 20),
         SectionCard(
-          title: 'Risk Controls',
+          title: 'Trading Controls',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
-              Text(
-                'Risk appetite ${(settings.riskSlider * 100).toStringAsFixed(0)}%',
-              ),
-              Slider(
-                value: settings.riskSlider,
-                min: 0.2,
-                max: 1.0,
-                divisions: 8,
-                onChanged: controller.updateRisk,
-              ),
-              const Text(
-                'UI only for now. This control can later bind to backend risk preferences.',
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('AI Trading Engine'),
+                subtitle: Text(
+                  settings.engineEnabled
+                      ? 'Engine is active. The system can scan and execute within your risk rules.'
+                      : 'Engine is paused by user control. No new trades should execute.',
+                ),
+                value: settings.engineEnabled,
+                onChanged: (value) async {
+                  final messenger = ScaffoldMessenger.of(context);
+                  await controller.saveEngineState(userId, enabled: value);
+                  if (!mounted) {
+                    return;
+                  }
+                  messenger.showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        value ? 'Trading engine enabled' : 'Trading engine paused',
+                      ),
+                    ),
+                  );
+                },
               ),
               const SizedBox(height: 16),
+              Text(
+                'Risk profile',
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+              const SizedBox(height: 8),
               SegmentedButton<String>(
                 segments: const <ButtonSegment<String>>[
                   ButtonSegment<String>(value: 'low', label: Text('Low')),

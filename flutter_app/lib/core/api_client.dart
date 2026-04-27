@@ -160,6 +160,28 @@ class ApiClient {
     return response.data as Map<String, dynamic>;
   }
 
+  Future<Map<String, dynamic>> getEngineState(String userId) async {
+    final response = await _getWithRetry(
+      '/v1/engine/state',
+      queryParameters: <String, dynamic>{'user_id': userId},
+    );
+    return response.data as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> updateEngineState(
+    String userId, {
+    required bool enabled,
+  }) async {
+    final response = await _dio.post<dynamic>(
+      '/v1/engine/state',
+      queryParameters: <String, dynamic>{
+        'user_id': userId,
+        'enabled': enabled,
+      },
+    );
+    return response.data as Map<String, dynamic>;
+  }
+
   Future<SystemDiagnosticsModel> getExchangeDiagnostics({
     String sampleSymbol = 'BTCUSDT',
   }) async {

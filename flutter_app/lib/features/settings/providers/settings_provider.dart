@@ -43,8 +43,33 @@ class AppSettingsNotifier extends StateNotifier<AppSettings> {
     String userId,
     String level,
   ) async {
-    await _repository.updateRiskProfile(userId, level: level);
-    state = state.copyWith(riskLevel: level);
+    final payload = await _repository.updateRiskProfile(userId, level: level);
+    state = state.copyWith(
+      riskLevel: (payload['level'] as String?) ?? level,
+    );
+  }
+
+  Future<void> loadTradingControls(String userId) async {
+    final results = await Future.wait<Map<String, dynamic>>(<Future<Map<String, dynamic>>>[
+      _repository.fetchRiskProfile(userId),
+      _repository.fetchEngineState(userId),
+    ]);
+    final risk = results[0];
+    final engine = results[1];
+    state = state.copyWith(
+      riskLevel: (risk['level'] as String?) ?? state.riskLevel,
+      engineEnabled: (engine['enabled'] as bool?) ?? state.engineEnabled,
+    );
+  }
+
+  Future<void> saveEngineState(
+    String userId, {
+    required bool enabled,
+  }) async {
+    final payload = await _repository.updateEngineState(userId, enabled: enabled);
+    state = state.copyWith(
+      engineEnabled: (payload['enabled'] as bool?) ?? enabled,
+    );
   }
 
   Future<Map<String, dynamic>> triggerMockPriceMove({

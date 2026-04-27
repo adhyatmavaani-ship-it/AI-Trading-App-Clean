@@ -2,6 +2,7 @@ class AppSettings {
   const AppSettings({
     this.riskSlider = 0.6,
     this.riskLevel = 'medium',
+    this.engineEnabled = true,
     this.autoplayEnabled = true,
     this.notificationsEnabled = true,
     this.hasStoredApiKey = false,
@@ -9,6 +10,7 @@ class AppSettings {
 
   final double riskSlider;
   final String riskLevel;
+  final bool engineEnabled;
   final bool autoplayEnabled;
   final bool notificationsEnabled;
   final bool hasStoredApiKey;
@@ -16,6 +18,7 @@ class AppSettings {
   AppSettings copyWith({
     double? riskSlider,
     String? riskLevel,
+    bool? engineEnabled,
     bool? autoplayEnabled,
     bool? notificationsEnabled,
     bool? hasStoredApiKey,
@@ -23,6 +26,7 @@ class AppSettings {
     return AppSettings(
       riskSlider: riskSlider ?? this.riskSlider,
       riskLevel: riskLevel ?? this.riskLevel,
+      engineEnabled: engineEnabled ?? this.engineEnabled,
       autoplayEnabled: autoplayEnabled ?? this.autoplayEnabled,
       notificationsEnabled: notificationsEnabled ?? this.notificationsEnabled,
       hasStoredApiKey: hasStoredApiKey ?? this.hasStoredApiKey,

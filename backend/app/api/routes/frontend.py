@@ -596,6 +596,72 @@ async def update_risk_profile(
 
 
 @router.get(
+    "/engine/state",
+    tags=["User Portfolio"],
+    summary="Get trading engine state",
+    description="Returns whether the authenticated user's trading engine is enabled or paused by a manual or automatic emergency stop.",
+)
+async def get_engine_state(
+    user_id: str = Query(..., description="User identifier whose engine state should be returned."),
+    request: Request = ...,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    try:
+        authenticated_user_id = get_user_id(request)
+        _ensure_user_access(authenticated_user_id, user_id)
+        controls = container.drawdown_protection.load_controls(user_id)
+        return {
+            "user_id": user_id,
+            "enabled": not controls.emergency_stop_active,
+            "manual_stop": bool(controls.emergency_stop_manual),
+            "auto_stop": bool(controls.emergency_stop_auto),
+            "reason": controls.emergency_stop_reason,
+            "updated_at": controls.updated_at.isoformat() if controls.updated_at else None,
+        }
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post(
+    "/engine/state",
+    tags=["User Portfolio"],
+    summary="Update trading engine state",
+    description="Enables or disables the authenticated user's trading engine using the manual emergency-stop control layer.",
+)
+async def update_engine_state(
+    user_id: str = Query(..., description="User identifier whose engine state should be updated."),
+    enabled: bool = Query(..., description="Whether trading should be enabled for the user."),
+    request: Request = ...,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    try:
+        authenticated_user_id = get_user_id(request)
+        _ensure_user_access(authenticated_user_id, user_id)
+        if enabled:
+            controls = container.drawdown_protection.clear_emergency_stop(user_id)
+        else:
+            controls = container.drawdown_protection.activate_emergency_stop(
+                user_id,
+                reason="manual_user_pause",
+                manual=True,
+            )
+        return {
+            "user_id": user_id,
+            "enabled": not controls.emergency_stop_active,
+            "manual_stop": bool(controls.emergency_stop_manual),
+            "auto_stop": bool(controls.emergency_stop_auto),
+            "reason": controls.emergency_stop_reason,
+            "updated_at": controls.updated_at.isoformat() if controls.updated_at else None,
+        }
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get(
     "/trade/{trade_id}/timeline",
     response_model=TradeTimelineResponse,
     tags=["Trade Timeline"],

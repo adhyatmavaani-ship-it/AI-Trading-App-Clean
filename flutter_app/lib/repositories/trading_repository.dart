@@ -58,6 +58,17 @@ class TradingRepository {
     return _apiClient.updateRiskProfile(userId, level: level);
   }
 
+  Future<Map<String, dynamic>> fetchEngineState(String userId) {
+    return _apiClient.getEngineState(userId);
+  }
+
+  Future<Map<String, dynamic>> updateEngineState(
+    String userId, {
+    required bool enabled,
+  }) {
+    return _apiClient.updateEngineState(userId, enabled: enabled);
+  }
+
   Future<SystemDiagnosticsModel> fetchExchangeDiagnostics({
     String sampleSymbol = 'BTCUSDT',
   }) {
