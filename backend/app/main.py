@@ -1,11 +1,12 @@
-import asyncio
-import logging
 import os
-import signal
-from contextlib import asynccontextmanager
 
 print("🔥 APP STARTED DEBUG 🔥")
 print("REDIS_URL LOADED:", os.getenv("REDIS_URL"))
+
+import asyncio
+import logging
+import signal
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
 from fastapi.exceptions import RequestValidationError
