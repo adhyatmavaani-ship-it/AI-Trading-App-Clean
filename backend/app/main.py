@@ -1,6 +1,8 @@
 import os
+import inspect
 
 print("🔥 APP STARTED DEBUG 🔥")
+print("FILE LOADED:", __file__)
 print("REDIS_URL LOADED:", os.getenv("REDIS_URL"))
 
 import asyncio
