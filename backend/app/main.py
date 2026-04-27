@@ -56,7 +56,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="AI Crypto Trading System",
-    version="1.0.0",
+    version=settings.app_version,
     description="Production-oriented AI-driven crypto trading backend.",
     lifespan=lifespan,
     swagger_ui_parameters={"persistAuthorization": True},
@@ -127,8 +127,8 @@ async def validation_exception_handler(request, exc: RequestValidationError):
 # Middleware (order matters - last added is first executed)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=settings.cors_allowed_origins,
+    allow_credentials=settings.cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -153,7 +153,12 @@ app.include_router(realtime.router, prefix="/v1")
 
 @app.api_route("/", methods=["GET", "HEAD"])
 async def root() -> dict[str, str]:
-    return {"service": settings.service_name, "status": "running"}
+    return {
+        "service": settings.service_name,
+        "status": "running",
+        "version": settings.app_version,
+        "environment": settings.environment,
+    }
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
-﻿"""Health check endpoints for system monitoring and Kubernetes integration."""
+"""Health check endpoints for system monitoring and Kubernetes integration."""
 
 from datetime import datetime, timezone
+import os
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -12,11 +13,15 @@ from app.services.container import ServiceContainer, get_container
 router = APIRouter(tags=["health"])
 
 
+def _render_commit() -> str:
+    return os.environ.get("RENDER_GIT_COMMIT", "")
+
+
 @router.get("/health")
 async def healthcheck() -> dict[str, str]:
     """Minimal healthcheck for load balancers."""
     settings = get_settings()
-    return {"status": "ok", "version": settings.app_version}
+    return {"status": "ok", "version": settings.app_version, "commit": _render_commit()}
 
 
 @router.get("/health/live")
@@ -27,6 +32,7 @@ async def liveness_check() -> dict[str, Any]:
         "status": "alive",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "version": settings.app_version,
+        "commit": _render_commit(),
     }
 
 
@@ -39,7 +45,6 @@ async def readiness_check(container: ServiceContainer = Depends(get_container)) 
     checks: dict[str, str] = {}
     all_ready = True
 
-    # Check Redis
     try:
         using_fallback = bool(getattr(container.cache, "using_fallback", False))
         if using_fallback:
@@ -49,31 +54,28 @@ async def readiness_check(container: ServiceContainer = Depends(get_container)) 
         else:
             checks["redis"] = "unhealthy"
             all_ready = False
-    except Exception as e:
-        checks["redis"] = f"error: {str(e)[:50]}"
+    except Exception as exc:
+        checks["redis"] = f"error: {str(exc)[:50]}"
         all_ready = False
 
-    # Check Firestore (optional)
     try:
         if container.firestore is None or getattr(container.firestore, "client", None) is None:
             checks["firestore"] = "disabled"
         else:
-            # Firestore client construction is the primary readiness dependency here.
             collection = container.firestore._collection("health")
             checks["firestore"] = "ready" if collection is not None else "unhealthy"
-    except Exception as e:
-        checks["firestore"] = f"error: {str(e)[:50]}"
+    except Exception as exc:
+        checks["firestore"] = f"error: {str(exc)[:50]}"
         all_ready = False
 
-    # Check market data service
     try:
         if hasattr(container.market_data, "latest_stream_price") and hasattr(container.market_data, "fetch_latest_price"):
             checks["market_data"] = "ready"
         else:
             checks["market_data"] = "unavailable"
             all_ready = False
-    except Exception as e:
-        checks["market_data"] = f"error: {str(e)[:50]}"
+    except Exception as exc:
+        checks["market_data"] = f"error: {str(exc)[:50]}"
         all_ready = False
 
     status = "ready" if all_ready else "not_ready"
@@ -85,6 +87,7 @@ async def readiness_check(container: ServiceContainer = Depends(get_container)) 
         content={
             "status": status,
             "version": settings.app_version,
+            "commit": _render_commit(),
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "checks": checks,
             "all_ready": all_ready,
@@ -101,6 +104,7 @@ async def detailed_health(container: ServiceContainer = Depends(get_container)) 
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "service": settings.service_name,
         "version": settings.app_version,
+        "commit": _render_commit(),
         "environment": settings.environment,
         "trading_mode": settings.trading_mode,
         "dependencies": {},
@@ -108,7 +112,6 @@ async def detailed_health(container: ServiceContainer = Depends(get_container)) 
         "limits": {},
     }
 
-    # Dependencies status
     try:
         using_fallback = bool(getattr(container.cache, "using_fallback", False))
         details["dependencies"]["redis"] = (
@@ -118,34 +121,25 @@ async def detailed_health(container: ServiceContainer = Depends(get_container)) 
             if container.cache.client.ping()
             else "disconnected"
         )
-    except Exception as e:
-        details["dependencies"]["redis"] = f"error: {str(e)[:50]}"
+    except Exception as exc:
+        details["dependencies"]["redis"] = f"error: {str(exc)[:50]}"
 
     try:
         if container.firestore and hasattr(container.firestore, "client") and container.firestore.client is not None:
             details["dependencies"]["firestore"] = "connected"
         else:
             details["dependencies"]["firestore"] = "not_configured"
-    except Exception as e:
-        details["dependencies"]["firestore"] = f"error: {str(e)[:50]}"
+    except Exception as exc:
+        details["dependencies"]["firestore"] = f"error: {str(exc)[:50]}"
 
-    # System metrics (from system monitor if available)
     if hasattr(container, "system_monitor"):
         try:
-            # Get latest metrics from monitor
-            details["system"]["active_trades"] = getattr(
-                container.system_monitor, "active_trades_count", 0
-            )
-            details["system"]["error_count"] = getattr(
-                container.system_monitor, "error_count", 0
-            )
-            details["system"]["success_rate"] = getattr(
-                container.system_monitor, "success_rate", 0.0
-            )
-        except Exception as e:
-            details["system"]["monitor_error"] = str(e)[:50]
+            details["system"]["active_trades"] = getattr(container.system_monitor, "active_trades_count", 0)
+            details["system"]["error_count"] = getattr(container.system_monitor, "error_count", 0)
+            details["system"]["success_rate"] = getattr(container.system_monitor, "success_rate", 0.0)
+        except Exception as exc:
+            details["system"]["monitor_error"] = str(exc)[:50]
 
-    # Configuration limits
     details["limits"] = {
         "daily_loss_limit": f"{settings.daily_loss_limit*100:.1f}%",
         "max_coin_exposure": f"{settings.max_coin_exposure_pct*100:.1f}%",
@@ -154,4 +148,3 @@ async def detailed_health(container: ServiceContainer = Depends(get_container)) 
     }
 
     return details
-

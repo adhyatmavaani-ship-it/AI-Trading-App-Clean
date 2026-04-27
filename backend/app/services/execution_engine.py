@@ -404,6 +404,16 @@ class ExecutionEngine:
             self.settings.binance_api_key = secret_manager.access_secret("binance-api-key")
         if not self.settings.binance_api_secret:
             self.settings.binance_api_secret = secret_manager.access_secret("binance-api-secret")
+        if not self.settings.kraken_api_key:
+            self.settings.kraken_api_key = secret_manager.access_secret("kraken-api-key")
+        if not self.settings.kraken_api_secret:
+            self.settings.kraken_api_secret = secret_manager.access_secret("kraken-api-secret")
+        if not self.settings.coinbase_api_key:
+            self.settings.coinbase_api_key = secret_manager.access_secret("coinbase-api-key")
+        if not self.settings.coinbase_api_secret:
+            self.settings.coinbase_api_secret = secret_manager.access_secret("coinbase-api-secret")
+        if not self.settings.coinbase_api_passphrase:
+            self.settings.coinbase_api_passphrase = secret_manager.access_secret("coinbase-api-passphrase")
 
     def _remember_order_exchange(self, order_id: str | None, exchange_id: str) -> None:
         if not order_id:

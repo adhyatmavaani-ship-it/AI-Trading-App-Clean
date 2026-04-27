@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     trading_mode: Literal["paper", "live"] = "paper"
     json_logs: bool = True
+    cors_allowed_origins: list[str] = Field(default_factory=lambda: ["*"])
+    cors_allow_credentials: bool = False
 
     binance_api_key: str = ""
     binance_api_secret: str = ""
