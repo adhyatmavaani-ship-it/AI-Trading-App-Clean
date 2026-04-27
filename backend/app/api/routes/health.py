@@ -21,7 +21,7 @@ def _render_commit() -> str:
 async def healthcheck() -> dict[str, str]:
     """Minimal healthcheck for load balancers."""
     settings = get_settings()
-    return {"status": "ok", "version": settings.app_version, "commit": _render_commit()}
+    return {"status": "ok", "version": settings.app_version_short, "commit": _render_commit()}
 
 
 @router.get("/health/live")
@@ -31,7 +31,7 @@ async def liveness_check() -> dict[str, Any]:
     return {
         "status": "alive",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "version": settings.app_version,
+        "version": settings.app_version_short,
         "commit": _render_commit(),
     }
 
@@ -86,7 +86,7 @@ async def readiness_check(container: ServiceContainer = Depends(get_container)) 
         status_code=status_code,
         content={
             "status": status,
-            "version": settings.app_version,
+            "version": settings.app_version_short,
             "commit": _render_commit(),
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "checks": checks,
@@ -103,7 +103,7 @@ async def detailed_health(container: ServiceContainer = Depends(get_container)) 
     details: dict[str, Any] = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "service": settings.service_name,
-        "version": settings.app_version,
+        "version": settings.app_version_short,
         "commit": _render_commit(),
         "environment": settings.environment,
         "trading_mode": settings.trading_mode,

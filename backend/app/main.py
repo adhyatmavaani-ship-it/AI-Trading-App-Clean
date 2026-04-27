@@ -56,7 +56,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="AI Crypto Trading System",
-    version=settings.app_version,
+    version=settings.app_version_short,
     description="Production-oriented AI-driven crypto trading backend.",
     lifespan=lifespan,
     swagger_ui_parameters={"persistAuthorization": True},
@@ -156,7 +156,7 @@ async def root() -> dict[str, str]:
     return {
         "service": settings.service_name,
         "status": "running",
-        "version": settings.app_version,
+        "version": settings.app_version_short,
         "environment": settings.environment,
     }
 

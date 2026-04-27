@@ -14,9 +14,17 @@ def _default_app_version() -> str:
     )
 
 
+def _short_app_version(value: str) -> str:
+    normalized = str(value or "").strip()
+    if len(normalized) == 40 and all(ch in "0123456789abcdef" for ch in normalized.lower()):
+        return normalized[:7]
+    return normalized or "unknown"
+
+
 class Settings(BaseSettings):
     service_name: str = "ai-trading-backend"
     app_version: str = Field(default_factory=_default_app_version)
+    app_version_short: str = Field(default_factory=lambda: _short_app_version(_default_app_version()))
     environment: Literal["local", "dev", "staging", "prod"] = "local"
     log_level: str = "INFO"
     trading_mode: Literal["paper", "live"] = "paper"
