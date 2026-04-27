@@ -1,37 +1,48 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-import numpy as np
-from sklearn.cluster import KMeans
+from app.core.config import Settings
 
 
 @dataclass
 class RegimeDetector:
-    """Clusters feature states into production-friendly market regimes."""
+    settings: Settings | None = None
 
-    cluster_model: KMeans | None = field(default=None, init=False)
+    def __post_init__(self) -> None:
+        self.settings = self.settings or Settings()
+
+    def detect_regime(self, data: dict[str, float]) -> tuple[str, float]:
+        atr = float(data.get("atr", 0.0) or 0.0)
+        avg_atr = float(data.get("avg_atr", atr) or atr)
+        ema_fast = float(data.get("ema_fast", 0.0) or 0.0)
+        ema_slow = float(data.get("ema_slow", 0.0) or 0.0)
+        price = float(data.get("price", max(ema_fast, ema_slow, 1.0)) or 1.0)
+        trend_strength = abs(ema_fast - ema_slow) / max(price, 1e-8)
+
+        if atr > avg_atr * float(self.settings.regime_high_vol_atr_multiplier):
+            confidence = min(1.0, atr / max(avg_atr * float(self.settings.regime_high_vol_atr_multiplier), 1e-8))
+            return "HIGH_VOL", max(0.55, confidence)
+
+        if trend_strength > float(self.settings.regime_trending_ema_spread_threshold):
+            confidence = min(1.0, trend_strength / max(float(self.settings.regime_trending_ema_spread_threshold), 1e-8))
+            return "TRENDING", max(0.55, confidence)
+
+        if atr < avg_atr * float(self.settings.regime_low_vol_atr_multiplier):
+            confidence = min(1.0, (avg_atr * float(self.settings.regime_low_vol_atr_multiplier)) / max(atr, 1e-8))
+            return "LOW_VOL", max(0.5, min(confidence, 0.95))
+
+        return "RANGING", 0.6
 
     def classify(self, trend_strength: float, volatility: float, mean_reversion: float) -> tuple[str, float]:
-        vector = np.array([[trend_strength, volatility, mean_reversion]], dtype=np.float32)
-        if self.cluster_model is None:
-            seeded = np.array(
-                [
-                    [0.8, 0.2, 0.2],
-                    [0.2, 0.2, 0.8],
-                    [0.4, 0.9, 0.5],
-                ],
-                dtype=np.float32,
-            )
-            self.cluster_model = KMeans(n_clusters=3, n_init=10, random_state=42)
-            self.cluster_model.fit(seeded)
-        cluster = int(self.cluster_model.predict(vector)[0])
-        centers = self.cluster_model.cluster_centers_
-        center = centers[cluster]
-        distance = float(np.linalg.norm(vector[0] - center))
-        confidence = float(1 / (1 + distance))
-        if center[1] > max(center[0], center[2]):
-            return "VOLATILE", confidence
-        if center[0] >= center[2]:
-            return "TRENDING", confidence
-        return "RANGING", confidence
+        synthetic = {
+            "atr": float(volatility),
+            "avg_atr": max(float(volatility), 1e-6),
+            "ema_fast": float(trend_strength + 1.0),
+            "ema_slow": 1.0,
+            "price": 1.0,
+        }
+        regime, confidence = self.detect_regime(synthetic)
+        if regime == "LOW_VOL" and float(mean_reversion) > 0.25:
+            return "RANGING", max(confidence, 0.55)
+        return regime, confidence

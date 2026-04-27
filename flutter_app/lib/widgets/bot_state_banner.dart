@@ -1,0 +1,120 @@
+import 'package:flutter/material.dart';
+
+import '../models/activity.dart';
+
+class BotStateBanner extends StatelessWidget {
+  const BotStateBanner({
+    super.key,
+    required this.activity,
+  });
+
+  final ActivityItemModel activity;
+
+  Color _accentColor() {
+    switch (activity.botState) {
+      case 'EXECUTING':
+        return const Color(0xFF8DE2C8);
+      case 'ANALYZING':
+        return const Color(0xFF7BC6FF);
+      case 'SCANNING':
+        return const Color(0xFFFFD28A);
+      default:
+        return const Color(0xFFB1C5D8);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = _accentColor();
+    final readiness = activity.readiness?.toStringAsFixed(0) ?? '--';
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(24),
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: <Color>[Color(0xFF14313C), Color(0xFF0B1B22)],
+        ),
+        border: Border.all(color: const Color(0xFF234655)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              Container(
+                width: 12,
+                height: 12,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: accent,
+                  boxShadow: <BoxShadow>[
+                    BoxShadow(
+                      color: accent.withOpacity(0.35),
+                      blurRadius: 14,
+                      spreadRadius: 1,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  '${activity.botState}  |  ${activity.mode} MODE',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
+              Chip(
+                label: Text('Readiness $readiness'),
+                backgroundColor: const Color(0xFF153540),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            activity.intent ?? activity.message,
+            style: Theme.of(context).textTheme.titleLarge,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            activity.message,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: const Color(0xFF9CB3C8),
+                ),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: <Widget>[
+              if (activity.symbol != null && activity.symbol!.isNotEmpty)
+                Chip(
+                  label: Text(activity.symbol!),
+                  backgroundColor: const Color(0xFF1A2432),
+                ),
+              if (activity.reason != null && activity.reason!.isNotEmpty)
+                Chip(
+                  label: Text(activity.reason!),
+                  backgroundColor: const Color(0xFF1B3042),
+                ),
+              if (activity.nextScan != null && activity.nextScan!.isNotEmpty)
+                Chip(
+                  label: Text('Next ${activity.nextScan!}'),
+                  backgroundColor: const Color(0xFF153540),
+                ),
+              Chip(
+                label: Text(
+                  activity.confidenceBuilding == true
+                      ? 'Confidence Building'
+                      : 'Waiting Safely',
+                ),
+                backgroundColor: const Color(0xFF173A2F),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}

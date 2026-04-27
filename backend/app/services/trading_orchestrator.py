@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from app.services.feature_pipeline import FeaturePipeline
     from app.services.firestore_repo import FirestoreRepository
     from app.services.alpha_engine import AlphaEngine
+    from app.services.analytics_service import AnalyticsService
     from app.services.latency_monitor import LatencyMonitor
     from app.services.liquidity_monitor import LiquidityMonitor
     from app.services.market_data import MarketDataService
@@ -49,6 +50,7 @@ if TYPE_CHECKING:
     from app.services.multi_chain_router import MultiChainRouter
     from app.services.performance_tracker import PerformanceTracker
     from app.services.paper_execution import PaperExecutionEngine
+    from app.services.portfolio_manager import PortfolioManager
     from app.services.portfolio_ledger import PortfolioLedgerService
     from app.services.redis_state_manager import RedisStateManager
     from app.services.risk_engine import RiskEngine
@@ -57,8 +59,10 @@ if TYPE_CHECKING:
     from app.services.security_scanner import SecurityScanner
     from app.services.sentiment_engine import SentimentEngine
     from app.services.self_healing_ppo import SelfHealingPPOService
+    from app.services.strategy_controller import StrategyController
     from app.services.strategy_engine import StrategyEngine
     from app.services.tax_engine import TaxEngine
+    from app.services.user_experience_engine import UserExperienceEngine
     from app.services.virtual_order_manager import VirtualOrderManager
     from app.services.whale_tracker import WhaleTracker
 
@@ -99,11 +103,38 @@ class TradingOrchestrator:
     self_healing_service: SelfHealingPPOService | None = None
     latency_monitor: LatencyMonitor | None = None
     meta_controller: MetaController | None = None
+    active_trade_monitor: object | None = None
+    analytics_service: AnalyticsService | None = None
+    strategy_controller: StrategyController | None = None
+    portfolio_manager: PortfolioManager | None = None
+    user_experience_engine: UserExperienceEngine | None = None
 
     def __post_init__(self) -> None:
         self.trade_safety_engine = LiquiditySlippageEngine(
             slippage_threshold_bps=float(self.settings.trade_safety_max_slippage_bps),
             chunk_delay_ms=self.settings.execution_chunk_delay_ms,
+        )
+
+    def update_active_trade_state(self, trade_id: str, payload: dict) -> None:
+        self.redis_state_manager.save_active_trade(trade_id, payload)
+        if payload.get("signal_id"):
+            self.redis_state_manager.remember_signal_trade(str(payload["signal_id"]), trade_id)
+        self.redis_state_manager.register_monitored_trade(
+            trade_id,
+            {
+                "trade_id": trade_id,
+                "symbol": payload.get("symbol"),
+                "user_id": payload.get("user_id"),
+            },
+        )
+
+    def annotate_trade_exit(self, *, trade_id: str, exit_reason: str, exit_type: str) -> None:
+        self.firestore.update_trade(
+            trade_id,
+            {
+                "exit_reason": exit_reason,
+                "exit_type": exit_type,
+            },
         )
 
     def _log_trade_recorded(self, *, trade_id: str, symbol: str, side: str) -> None:
@@ -119,14 +150,125 @@ class TradingOrchestrator:
         log_method = logger.info if self.settings.trading_mode == "live" else logger.debug
         log_method("trade_recorded", extra=extra)
 
+    def _publish_activity(
+        self,
+        *,
+        status: str,
+        message: str,
+        bot_state: str,
+        symbol: str | None = None,
+        next_scan: str | None = None,
+        confidence: float | None = None,
+        action: str | None = None,
+        intent: str | None = None,
+        confidence_building: bool | None = None,
+        readiness: float | None = None,
+        reason: str | None = None,
+        extra: dict | None = None,
+    ) -> None:
+        if self.user_experience_engine is None:
+            return
+        self.user_experience_engine.publish_activity(
+            status=status,
+            message=message,
+            bot_state=bot_state,
+            symbol=symbol,
+            next_scan=next_scan,
+            confidence=confidence,
+            action=action,
+            intent=intent,
+            confidence_building=confidence_building,
+            readiness=readiness,
+            reason=reason,
+            extra=extra,
+        )
+
     async def generate_live_signals(self, limit: int = 3) -> list[SignalResponse]:
         symbols = list(self.settings.websocket_symbols or ["BTCUSDT", "ETHUSDT", "SOLUSDT"])
-        target = max(1, min(limit, 3))
-        generated: list[SignalResponse] = []
-        for symbol in symbols[: max(target, len(symbols))]:
+        target = max(1, min(limit, int(self.settings.max_active_trades)))
+        ranked_symbols = sorted(
+            [str(symbol).upper() for symbol in symbols[: max(target, len(symbols))]],
+            key=lambda symbol: self._symbol_priority_multiplier(symbol),
+            reverse=True,
+        )
+        generated: list[tuple[float, SignalResponse]] = []
+        for index, symbol in enumerate(ranked_symbols):
+            next_scan = ranked_symbols[index + 1] if index + 1 < len(ranked_symbols) else None
+            self._publish_activity(
+                status="scanning",
+                message=f"{symbol} scan started",
+                bot_state="SCANNING",
+                symbol=symbol,
+                next_scan=next_scan,
+                intent=f"Scanning {symbol} for structure, momentum, and volume alignment",
+                readiness=0.0,
+            )
             try:
-                generated.append(await self.evaluate_symbol(symbol.upper()))
+                signal = await self.evaluate_symbol(symbol.upper())
+                score = float(signal.snapshot.features.get("strict_trade_score", 0.0) or 0.0)
+                readiness = max(0.0, min(100.0, score))
+                reason = str(signal.snapshot.features.get("strict_trade_reason", "setup still forming"))
+                confidence_building = score >= float(self.settings.strict_trade_score_threshold) - float(self.settings.activity_near_miss_score_delta)
+                intent = (
+                    f"Watching {symbol} for confirmation above the execution threshold"
+                    if confidence_building
+                    else f"Monitoring {symbol} while confluence builds"
+                )
+                if signal.strategy == "LOW_CONFIDENCE_WATCHLIST":
+                    if confidence_building:
+                        self._publish_activity(
+                            status="almost_trade",
+                            message=f"{symbol} almost triggered trade ({reason})",
+                            bot_state="WAITING",
+                            symbol=symbol,
+                            next_scan=next_scan,
+                            confidence=float(signal.inference.confidence_score),
+                            intent=intent,
+                            confidence_building=True,
+                            readiness=readiness,
+                            reason=reason,
+                            extra={"confidence_meter": round(float(signal.inference.confidence_score), 8), "strict_trade_score": round(score, 6), "regime": signal.snapshot.regime},
+                        )
+                    else:
+                        self._publish_activity(
+                            status="scanning",
+                            message=f"{symbol} checked -> {reason}, skipped",
+                            bot_state="WAITING",
+                            symbol=symbol,
+                            next_scan=next_scan,
+                            confidence=float(signal.inference.confidence_score),
+                            intent=intent,
+                            confidence_building=False,
+                            readiness=readiness,
+                            reason=reason,
+                            extra={"confidence_meter": round(float(signal.inference.confidence_score), 8), "strict_trade_score": round(score, 6), "regime": signal.snapshot.regime},
+                        )
+                    continue
+                self._publish_activity(
+                    status="opportunity_found",
+                    message=f"{symbol} setup accepted -> executing candidate",
+                    bot_state="ANALYZING",
+                    symbol=symbol,
+                    next_scan=next_scan,
+                    confidence=float(signal.inference.confidence_score),
+                    action="Executing trade",
+                    intent=f"{symbol} is ready for execution",
+                    confidence_building=True,
+                    readiness=max(readiness, 70.0),
+                    reason=reason,
+                    extra={"confidence_meter": round(float(signal.inference.confidence_score), 8), "strict_trade_score": round(score, 6), "regime": signal.snapshot.regime},
+                )
+                generated.append((score * self._symbol_priority_multiplier(symbol), signal))
             except Exception as exc:
+                self._publish_activity(
+                    status="scanning",
+                    message=f"{symbol} scan failed -> {type(exc).__name__}",
+                    bot_state="WAITING",
+                    symbol=symbol,
+                    next_scan=next_scan,
+                    intent=f"Retrying {symbol} analysis on the next cycle",
+                    reason=type(exc).__name__,
+                )
                 logger.exception(
                     "live_signal_generation_failed",
                     extra={
@@ -134,8 +276,16 @@ class TradingOrchestrator:
                         "context": {"symbol": symbol.upper(), "error": str(exc)[:200]},
                     },
                 )
-                generated.append(await self._best_effort_live_signal(symbol.upper(), exc))
-        return generated[:target]
+                continue
+        generated.sort(key=lambda item: item[0], reverse=True)
+        if not generated:
+            self._publish_activity(
+                status="waiting",
+                message="No safe trade found. Continuing scan.",
+                bot_state="WAITING",
+                intent="Waiting for high-confidence confluence before trading",
+            )
+        return [signal for _, signal in generated[:target]]
 
     async def _best_effort_live_signal(self, symbol: str, exc: Exception) -> SignalResponse:
         try:
@@ -211,6 +361,10 @@ class TradingOrchestrator:
         frames = await self.market_data.fetch_multi_timeframe_ohlcv(symbol)
         order_book = await self.market_data.fetch_order_book(symbol)
         snapshot = self.feature_pipeline.build(symbol, frames, order_book)
+        snapshot.features["regime"] = str(snapshot.regime)
+        snapshot.features["regime_confidence"] = float(snapshot.regime_confidence)
+        if self.strategy_controller is not None:
+            self.strategy_controller.record_regime(str(snapshot.regime), float(snapshot.regime_confidence), "system")
         diagnostics = {
             "symbol": symbol,
             "market_data": self._market_data_diagnostics(frames),
@@ -263,6 +417,22 @@ class TradingOrchestrator:
             "trade_probability": round(float(effective_inference.trade_probability), 6),
             "reason": effective_inference.reason,
         }
+        strict_gate = self._strict_trade_gate(
+            features=snapshot.features,
+            side=effective_inference.decision,
+            confidence=effective_inference.confidence_score,
+            regime=snapshot.regime,
+            volatility=snapshot.volatility,
+        )
+        snapshot.features.update(
+            {
+                "strict_trade_score": float(strict_gate["score"]),
+                "strict_trade_allowed": 1.0 if strict_gate["allow_trade"] else 0.0,
+                "strict_trade_confidence": float(effective_inference.confidence_score),
+                "strict_trade_reason": str(strict_gate["reason"]),
+            }
+        )
+        diagnostics["strict_gate"] = strict_gate
         strategy = self.strategy_engine.select(snapshot, effective_inference, frame=frames)
         rollout = self.rollout_manager.status()
         chain_route = self.multi_chain_router.route(symbol, effective_inference.decision, 0.0)
@@ -355,6 +525,9 @@ class TradingOrchestrator:
         if not micro_decision["allowed"]:
             strategy = "NO_TRADE"
             diagnostics["rejection_reasons"].extend([f"micro:{reason}" for reason in micro_decision.get("reasons", [])])
+        if not strict_gate["allow_trade"]:
+            strategy = "NO_TRADE"
+            diagnostics["rejection_reasons"].append(f"strict_gate:{strict_gate['reason_code']}")
         meta_decision = None
         if self.meta_controller is not None:
             meta_decision = self.meta_controller.govern_signal(
@@ -385,7 +558,7 @@ class TradingOrchestrator:
         risk_budget = risk.risk_budget * rollout.capital_fraction
         if meta_decision is not None:
             risk_budget *= meta_decision.capital_multiplier
-        final_action = self._final_signal_action(snapshot, effective_inference, strategy_decision)
+        final_action = "HOLD" if strategy == "NO_TRADE" else self._final_signal_action(snapshot, effective_inference, strategy_decision)
         final_confidence = max(
             float(strategy_decision.metadata.get("adjusted_confidence", strategy_decision.confidence) or 0.0),
             float(effective_inference.confidence_score),
@@ -409,6 +582,7 @@ class TradingOrchestrator:
             "risk_budget": risk_budget,
             "reason": effective_inference.reason,
             "feature_snapshot": snapshot.features,
+            "strict_trade_gate": strict_gate,
             "atr": snapshot.atr,
             "regime_confidence": snapshot.regime_confidence,
             "expected_return": effective_inference.expected_return,
@@ -617,6 +791,17 @@ class TradingOrchestrator:
                 return TradeResponse(**cached_response)
         try:
             latest_price = await self.market_data.fetch_latest_price(request.symbol)
+            self._publish_activity(
+                status="analyzing",
+                message=f"{request.symbol.upper()} under validation",
+                bot_state="ANALYZING",
+                symbol=request.symbol,
+                confidence=float(request.confidence),
+                intent=f"Validating {request.symbol.upper()} before execution",
+                readiness=max(70.0, min(100.0, float(request.feature_snapshot.get('strict_trade_score', 70.0) or 70.0))),
+                confidence_building=True,
+                reason=str(request.feature_snapshot.get("strict_trade_reason", "execution checks in progress")),
+            )
             quantity = request.quantity or (request.requested_notional or 0.0) / max(latest_price, 1e-8)
             if quantity <= 0:
                 raise ValueError("quantity or requested_notional is required")
@@ -629,6 +814,8 @@ class TradingOrchestrator:
                 raise ValueError(f"Trading is paused by emergency stop: {protection_controls.emergency_stop_reason or 'manual'}")
             if self._degraded_mode():
                 raise ValueError("Trading is paused because execution latency is degraded")
+            if float(request.confidence) < float(self.settings.strict_trade_confidence_floor):
+                raise ValueError("Trade confidence is below the strict execution floor")
             if not request.alpha_context.security.tradable:
                 raise ValueError("Security scanner blocked trade")
             whale_signal = self._whale_direction(request.alpha_context)
@@ -659,6 +846,70 @@ class TradingOrchestrator:
                 }
             )
             self.system_monitor.update_portfolio_concentration(portfolio_summary)
+            if int(portfolio_summary.get("active_trades", 0) or 0) >= int(self.settings.max_active_trades):
+                raise ValueError("Maximum active trades reached")
+            if float((portfolio_summary.get("symbol_exposure_pct") or {}).get(request.symbol.upper(), 0.0) or 0.0) > 0.0:
+                raise ValueError("An active trade already exists for this symbol")
+            active_trades = [
+                trade
+                for trade in self.redis_state_manager.restore_active_trades()
+                if str(trade.get("user_id", "") or "") == request.user_id
+            ]
+            portfolio_correlation = await self._portfolio_correlation(
+                user_id=request.user_id,
+                symbol=request.symbol,
+                features=request.feature_snapshot,
+            )
+            symbol_score = float(request.feature_snapshot.get("factor_sleeve_recent_win_rate", 0.5) or 0.5)
+            if self._symbol_allocation_multiplier(request.symbol) > 1.0:
+                symbol_score = max(symbol_score, 0.65)
+            portfolio_risk_fraction = float(self.settings.portfolio_base_risk_per_trade)
+            portfolio_risk_multiplier = 1.0
+            portfolio_assessment = {
+                "allow_trade": True,
+                "risk_fraction": portfolio_risk_fraction,
+                "multiplier": portfolio_risk_multiplier,
+                "reason": "",
+                "correlated_count": 0,
+                "correlation_risk": round(float(portfolio_correlation), 8),
+            }
+            if self.portfolio_manager is not None:
+                portfolio_risk_fraction = self.portfolio_manager.compute_allocation(
+                    confidence=float(request.confidence),
+                    regime=str(request.feature_snapshot.get("regime", request.feature_snapshot.get("regime_type", "RANGING"))),
+                    symbol_score=symbol_score,
+                    drawdown_pct=float(drawdown_status.rolling_drawdown),
+                )
+                portfolio_assessment = self.portfolio_manager.assess_new_trade(
+                    active_trades=active_trades,
+                    symbol=request.symbol,
+                    side=request.side,
+                    proposed_risk_fraction=portfolio_risk_fraction,
+                    gross_exposure_pct=float(portfolio_summary.get("gross_exposure_pct", 0.0) or 0.0),
+                    correlation_to_portfolio=portfolio_correlation,
+                )
+                if not portfolio_assessment["allow_trade"]:
+                    raise ValueError(portfolio_assessment["reason"] or "Portfolio intelligence blocked trade")
+                portfolio_risk_fraction = float(portfolio_assessment["risk_fraction"])
+                portfolio_risk_multiplier = portfolio_risk_fraction / max(float(self.settings.portfolio_base_risk_per_trade), 1e-8)
+            request.feature_snapshot.update(
+                {
+                    "portfolio_risk_fraction": float(portfolio_risk_fraction),
+                    "portfolio_risk_multiplier": float(portfolio_risk_multiplier),
+                    "portfolio_correlation_risk": float(portfolio_assessment.get("correlation_risk", portfolio_correlation)),
+                    "portfolio_correlated_count": float(portfolio_assessment.get("correlated_count", 0)),
+                    "portfolio_drawdown": float(drawdown_status.rolling_drawdown),
+                }
+            )
+            strict_gate = self._strict_trade_gate(
+                features=request.feature_snapshot,
+                side=request.side,
+                confidence=request.confidence,
+                regime=str(request.feature_snapshot.get("regime", request.feature_snapshot.get("regime_type", "RANGING"))),
+                volatility=float(request.feature_snapshot.get("volatility", request.expected_risk or 0.0)),
+            )
+            if not strict_gate["allow_trade"]:
+                raise ValueError(f"Strict trade gate rejected trade: {strict_gate['reason']}")
             if hasattr(self.model_stability, "update_concentration_state"):
                 self.model_stability.update_concentration_state(portfolio_summary)
             self._apply_portfolio_context_to_feature_snapshot(
@@ -718,6 +969,10 @@ class TradingOrchestrator:
             if not micro_validation["allowed"]:
                 raise ValueError(f"Micro mode rejected trade: {','.join(micro_validation['reasons'])}")
             effective_capital_multiplier = capital_multiplier * (meta_decision.capital_multiplier if meta_decision is not None else 1.0)
+            adaptive_config = self._adaptive_strategy_config()
+            effective_capital_multiplier *= float(adaptive_config.get("capital_allocation_multiplier", 1.0) or 1.0)
+            effective_capital_multiplier *= self._symbol_allocation_multiplier(request.symbol)
+            effective_capital_multiplier *= portfolio_risk_multiplier
             size_plan = self.micro_mode_controller.determine_trade_size(
                 user_id=request.user_id,
                 account_equity=account_equity,
@@ -757,11 +1012,7 @@ class TradingOrchestrator:
                 balance=account_equity,
                 requested_notional=capped_notional,
                 current_portfolio_exposure_pct=float(portfolio_summary.get("gross_exposure_pct", 0.0)),
-                correlation_to_portfolio=await self._portfolio_correlation(
-                    user_id=request.user_id,
-                    symbol=request.symbol,
-                    features=request.feature_snapshot,
-                ),
+                correlation_to_portfolio=portfolio_correlation,
                 current_symbol_exposure_pct=current_symbol_exposure,
                 side=request.side,
                 current_side_exposure_pct=current_side_exposure,
@@ -781,6 +1032,14 @@ class TradingOrchestrator:
                 latest_price=latest_price,
                 order_book=order_book,
                 request=request,
+            )
+            self._publish_activity(
+                status="opportunity_found",
+                message=f"{request.symbol.upper()} passed validation -> submitting order",
+                bot_state="EXECUTING",
+                symbol=request.symbol,
+                confidence=float(request.confidence),
+                action="Executing trade",
             )
             shard_id = self.shard_manager.shard_id(request.user_id)
             execution_priority = self.shard_manager.queue_priority(
@@ -824,6 +1083,7 @@ class TradingOrchestrator:
                 executed_price=executed_price,
                 expected_return=request.expected_return or 0.0,
                 macro_bias=macro_bias,
+                feature_snapshot=request.feature_snapshot,
             )
             response = TradeResponse(
                 trade_id=str(order["orderId"]),
@@ -902,8 +1162,15 @@ class TradingOrchestrator:
                     "expected_return": request.expected_return,
                     "expected_risk": request.expected_risk,
                     "features": request.feature_snapshot,
+                    "regime": str(request.feature_snapshot.get("regime", request.feature_snapshot.get("regime_type", "RANGING"))).upper(),
                     "signal_id": request.signal_id,
                     "rollout_capital_fraction": rollout.capital_fraction,
+                    "entry_reason": request.reason,
+                    "exit_reason": "",
+                    "max_profit": 0.0,
+                    "exit_type": "",
+                    "risk_fraction": float(portfolio_risk_fraction),
+                    "portfolio_correlation_risk": float(portfolio_assessment.get("correlation_risk", portfolio_correlation)),
                     "alpha": request.alpha_context.model_dump(),
                     "alpha_decision": request.alpha_decision.model_dump(),
                     "chain_route": route,
@@ -1004,12 +1271,36 @@ class TradingOrchestrator:
                 symbol=request.symbol,
                 side=request.side,
             )
+            self._publish_activity(
+                status="executed",
+                message=f"{request.symbol.upper()} trade executed",
+                bot_state="EXECUTING",
+                symbol=request.symbol,
+                confidence=float(request.confidence),
+                action=response.status,
+                intent=f"Managing live {request.symbol.upper()} position",
+                readiness=100.0,
+                confidence_building=True,
+                reason="Trade passed all execution gates",
+                extra={"trade_id": response.trade_id},
+            )
             return response
-        except Exception:
+        except Exception as exc:
             self.system_monitor.increment_error()
             self.system_monitor.record_api_call(success=False)
             if signal_lock_key is not None and not order_submitted and not recovery_state_persisted:
                 self.cache.delete(signal_lock_key)
+            self._publish_activity(
+                status="scanning",
+                message=f"{request.symbol.upper()} rejected -> {str(exc)}",
+                bot_state="WAITING",
+                symbol=request.symbol,
+                confidence=float(request.confidence),
+                intent=f"Re-evaluating {request.symbol.upper()} on future scans",
+                readiness=max(0.0, min(100.0, float(request.feature_snapshot.get('strict_trade_score', 0.0) or 0.0))),
+                confidence_building=False,
+                reason=str(exc),
+            )
             raise
 
     def record_trade_outcome(self, user_id: str, trade_id: str, pnl: float) -> None:
@@ -1045,6 +1336,7 @@ class TradingOrchestrator:
         self.cache.set("position:active_count", str(current_active), ttl=self.settings.monitor_state_ttl_seconds)
         self.system_monitor.set_active_trades(current_active)
         self.redis_state_manager.clear_active_trade(trade_id)
+        self.redis_state_manager.unregister_monitored_trade(trade_id)
         if self.meta_controller is not None:
             self.meta_controller.record_trade_outcome(user_id=user_id, active_trade=active_trade, pnl=pnl)
         micro_performance = self.micro_mode_controller.record_trade_outcome(
@@ -1151,6 +1443,8 @@ class TradingOrchestrator:
                 closed_quantity=closed_quantity,
                 exit_fee=exit_fee,
             )
+            exit_reason = str(active_trade.get("exit_reason", "") or reason)
+            exit_type = str(active_trade.get("exit_type", "") or ("early_exit" if reason != "manual_close" else "manual"))
             drawdown = self.drawdown_protection.update(user_id, close_payload["current_equity"])
 
             self.performance_tracker.record_signal_outcome(
@@ -1179,6 +1473,7 @@ class TradingOrchestrator:
                 current_active = max(0, int(self.cache.get("position:active_count") or 0) - 1)
                 self.cache.set("position:active_count", str(current_active), ttl=self.settings.monitor_state_ttl_seconds)
                 self.system_monitor.set_active_trades(current_active)
+                self.redis_state_manager.unregister_monitored_trade(trade_id)
                 if self.meta_controller is not None:
                     self.meta_controller.record_trade_outcome(user_id=user_id, active_trade=active_trade, pnl=close_payload["realized_pnl"])
                 micro_performance = self.micro_mode_controller.record_trade_outcome(
@@ -1204,7 +1499,9 @@ class TradingOrchestrator:
                         "trade_id": trade_id,
                         "user_id": user_id,
                         "profit": close_payload["realized_pnl"],
-                        "close_reason": reason,
+                        "close_reason": exit_reason,
+                        "exit_reason": exit_reason,
+                        "exit_type": exit_type,
                         **micro_performance,
                         **paper_live,
                     }
@@ -1222,7 +1519,10 @@ class TradingOrchestrator:
                         "equity_after_trade": close_payload["current_equity"],
                         "drawdown_state": drawdown.state,
                         "model_degraded": stability.degraded,
-                        "close_reason": reason,
+                        "close_reason": exit_reason,
+                        "exit_reason": exit_reason,
+                        "exit_type": exit_type,
+                        "max_profit": float(active_trade.get("max_profit", 0.0) or 0.0),
                         **micro_performance,
                         **paper_live,
                     },
@@ -1252,8 +1552,20 @@ class TradingOrchestrator:
                         {
                             "outcome": 1.0 if close_payload["realized_pnl"] > 0 else 0.0,
                             "realized_pnl": close_payload["realized_pnl"],
-                            "close_reason": reason,
+                            "close_reason": exit_reason,
+                            "exit_reason": exit_reason,
+                            "exit_type": exit_type,
                         },
+                    )
+                if self.analytics_service is not None:
+                    self.analytics_service.record_closed_trade(
+                        user_id=user_id,
+                        trade_id=trade_id,
+                        active_trade=active_trade,
+                        close_payload=close_payload,
+                        exit_price=exit_price,
+                        exit_reason=exit_reason,
+                        exit_type=exit_type,
                     )
                 if self_healing_report := (
                     self.self_healing_service.handle_trade_outcome(trade_id, active_trade, close_payload["realized_pnl"])
@@ -1270,6 +1582,8 @@ class TradingOrchestrator:
                     )
                 self._mark_trade_closed(trade_id, close_payload)
             else:
+                refreshed_trade = self.redis_state_manager.load_active_trade(trade_id) or {}
+                self.update_active_trade_state(trade_id, refreshed_trade) if refreshed_trade else None
                 self.firestore.update_trade(
                     trade_id,
                     {
@@ -1278,6 +1592,10 @@ class TradingOrchestrator:
                         "exit_fee": exit_fee,
                         "closed_quantity": close_payload["closed_quantity"],
                         "remaining_quantity": close_payload["remaining_quantity"],
+                        "close_reason": exit_reason,
+                        "exit_reason": exit_reason,
+                        "exit_type": exit_type,
+                        "max_profit": float(active_trade.get("max_profit", 0.0) or 0.0),
                         "realized_pnl_partial": close_payload["realized_pnl"],
                         "close_reason": reason,
                         "equity_after_trade": close_payload["current_equity"],
@@ -1652,6 +1970,7 @@ class TradingOrchestrator:
             "entry": response.executed_price,
             "executed_quantity": response.executed_quantity,
             "stop_loss": response.stop_loss,
+            "initial_stop_loss": float(existing.get("initial_stop_loss", response.stop_loss) or response.stop_loss),
             "trailing_stop_pct": response.trailing_stop_pct,
             "take_profit": response.take_profit,
             "status": "OPENING",
@@ -1666,8 +1985,21 @@ class TradingOrchestrator:
             "actual_slippage_bps": response.slippage_bps,
             "fees": response.fee_paid,
             "feature_snapshot": request.feature_snapshot,
+            "regime": str(request.feature_snapshot.get("regime", request.feature_snapshot.get("regime_type", "RANGING"))).upper(),
             "probability_features": self._extract_probability_features(request.feature_snapshot),
             "confidence": request.confidence,
+            "entry_reason": request.reason,
+            "exit_reason": str(existing.get("exit_reason", "") or ""),
+            "max_profit": float(existing.get("max_profit", 0.0) or 0.0),
+            "exit_type": str(existing.get("exit_type", "") or ""),
+            "risk_fraction": float(request.feature_snapshot.get("portfolio_risk_fraction", existing.get("risk_fraction", 0.0)) or 0.0),
+            "portfolio_correlation_risk": float(
+                request.feature_snapshot.get(
+                    "portfolio_correlation_risk",
+                    existing.get("portfolio_correlation_risk", 0.0),
+                )
+                or 0.0
+            ),
             "trade_success_probability": float(
                 request.feature_snapshot.get("trade_success_probability", request.confidence)
             ),
@@ -1694,7 +2026,7 @@ class TradingOrchestrator:
             "scheduled_delay_ms": scheduled_delay_ms,
             "exchange_status": response.status,
         }
-        self.redis_state_manager.save_active_trade(response.trade_id, payload)
+        self.update_active_trade_state(response.trade_id, payload)
         self.redis_state_manager.remember_order(
             response.trade_id,
             {
@@ -2091,20 +2423,28 @@ class TradingOrchestrator:
         executed_price: float,
         expected_return: float,
         macro_bias: dict,
+        feature_snapshot: dict[str, float] | None = None,
     ) -> tuple[float, float, float]:
-        trailing_stop_pct = 0.004
-        stop_loss = executed_price * (0.994 if side == "BUY" else 1.006)
-        take_profit_pct = max(0.008, abs(expected_return) * 1.5 if expected_return else 0.008)
-        if side == "SELL":
-            take_profit = executed_price * (1 - take_profit_pct)
+        feature_snapshot = feature_snapshot or {}
+        atr = float(feature_snapshot.get("atr", feature_snapshot.get("15m_atr", feature_snapshot.get("5m_atr", 0.0))) or 0.0)
+        adaptive = self._adaptive_strategy_config()
+        stop_loss_multiplier = float(adaptive.get("stop_loss_multiplier", 1.0) or 1.0)
+        if atr > 0:
+            if side == "BUY":
+                stop_loss = min(executed_price - (2.0 * atr * stop_loss_multiplier), executed_price * 0.99)
+            else:
+                stop_loss = max(executed_price + (2.0 * atr * stop_loss_multiplier), executed_price * 1.01)
+            trailing_stop_pct = max(0.0025, min(0.05, (2.5 * atr * stop_loss_multiplier) / max(executed_price, 1e-8)))
         else:
-            take_profit = executed_price * (1 + take_profit_pct)
+            trailing_stop_pct = 0.004
+            stop_loss = executed_price * (0.994 if side == "BUY" else 1.006)
+        take_profit = 0.0
         if macro_bias["regime"] == "BEARISH":
             if side == "BUY":
                 trailing_stop_pct = 0.0025
                 stop_loss = max(stop_loss, executed_price * (1 - trailing_stop_pct))
             else:
-                take_profit = executed_price * (1 - take_profit_pct * 1.35)
+                trailing_stop_pct = max(0.0025, trailing_stop_pct * 0.85)
         return round(stop_loss, 8), round(trailing_stop_pct, 6), round(take_profit, 8)
 
     def _whale_direction(self, alpha: AlphaContext) -> str:
@@ -2123,6 +2463,148 @@ class TradingOrchestrator:
         if not alpha_decision["allow_trade"]:
             return "Blocked: alpha engine rejected return/risk profile"
         return f"Approved: alpha final score {alpha_decision['final_score']:.2f}"
+
+    def _strict_trade_gate(
+        self,
+        *,
+        features: dict[str, float],
+        side: str,
+        confidence: float,
+        regime: str,
+        volatility: float,
+    ) -> dict[str, object]:
+        normalized_side = str(side or "HOLD").upper()
+        if normalized_side not in {"BUY", "SELL"}:
+            return {
+                "score": 0.0,
+                "allow_trade": False,
+                "reason": "No directional setup",
+                "reason_code": "no_direction",
+                "components": {},
+            }
+        confidence_ok = float(confidence) >= float(self.settings.strict_trade_confidence_floor)
+        if not features:
+            return {
+                "score": round(float(confidence) * 100, 6),
+                "allow_trade": bool(confidence_ok),
+                "reason": "Indicator snapshot unavailable; using confidence floor only" if confidence_ok else "Confidence below strict floor",
+                "reason_code": "confidence_only" if confidence_ok else "confidence_below_floor",
+                "components": {"confidence_floor_passed": 1.0 if confidence_ok else 0.0},
+            }
+        indicator_keys = {
+            "15m_structure_bullish",
+            "15m_structure_bearish",
+            "5m_structure_bullish",
+            "5m_structure_bearish",
+            "15m_mfi",
+            "5m_mfi",
+            "15m_volume_avg_20",
+            "5m_volume_avg_20",
+        }
+        if not any(key in features for key in indicator_keys):
+            return {
+                "score": round(float(confidence) * 100, 6),
+                "allow_trade": bool(confidence_ok),
+                "reason": "Strict indicators missing; using confidence floor only" if confidence_ok else "Confidence below strict floor",
+                "reason_code": "confidence_only" if confidence_ok else "confidence_below_floor",
+                "components": {"confidence_floor_passed": 1.0 if confidence_ok else 0.0},
+            }
+        bullish_structure = bool(float(features.get("15m_structure_bullish", features.get("5m_structure_bullish", 0.0)) or 0.0) >= 1.0)
+        bearish_structure = bool(float(features.get("15m_structure_bearish", features.get("5m_structure_bearish", 0.0)) or 0.0) >= 1.0)
+        structure_ok = bullish_structure if normalized_side == "BUY" else bearish_structure
+        adaptive = self._adaptive_strategy_config()
+        structure_weight = float(adaptive.get("confluence_weight_structure", self.settings.confluence_weight_structure))
+        momentum_weight = float(adaptive.get("confluence_weight_momentum", self.settings.confluence_weight_momentum))
+        volume_weight = float(adaptive.get("confluence_weight_volume", self.settings.confluence_weight_volume))
+        total_weight = max(structure_weight + momentum_weight + volume_weight, 1e-8)
+
+        volume = float(features.get("15m_volume", features.get("5m_volume", 0.0)) or 0.0)
+        volume_avg = float(features.get("15m_volume_avg_20", features.get("5m_volume_avg_20", volume)) or volume)
+        volume_ratio = volume / max(volume_avg, 1e-8)
+        volume_ok = volume_ratio >= float(self.settings.strict_trade_volume_spike_threshold)
+
+        mfi = float(features.get("15m_mfi", features.get("5m_mfi", 50.0)) or 50.0)
+        momentum_ok = 50.0 < mfi < 80.0 if normalized_side == "BUY" else 20.0 < mfi < 50.0
+
+        adx = float(features.get("15m_adx", features.get("5m_adx", 0.0)) or 0.0)
+        trend_regime_ok = str(regime or "RANGING").upper() == "TRENDING" and adx >= float(self.settings.strict_trade_structure_adx_floor)
+
+        volatility_ok = float(volatility) > 0.0 and float(volatility) <= float(self.settings.trade_safety_max_volatility)
+
+        score = 0.0
+        score += 70.0 * (structure_weight / total_weight) if structure_ok else 0.0
+        score += 70.0 * (volume_weight / total_weight) if volume_ok else 0.0
+        score += 70.0 * (momentum_weight / total_weight) if momentum_ok else 0.0
+        score += 20.0 if trend_regime_ok else 0.0
+        score += 10.0 if volatility_ok else 0.0
+
+        components = {
+            "market_structure": round(70.0 * (structure_weight / total_weight), 6) if structure_ok else 0.0,
+            "volume_spike": round(70.0 * (volume_weight / total_weight), 6) if volume_ok else 0.0,
+            "mfi_momentum": round(70.0 * (momentum_weight / total_weight), 6) if momentum_ok else 0.0,
+            "trend_regime": 20.0 if trend_regime_ok else 0.0,
+            "acceptable_volatility": 10.0 if volatility_ok else 0.0,
+            "confidence_floor_passed": 1.0 if confidence_ok else 0.0,
+            "volume_ratio": round(volume_ratio, 6),
+            "mfi": round(mfi, 6),
+            "adx": round(adx, 6),
+            "adaptive_weight_structure": round(structure_weight, 6),
+            "adaptive_weight_momentum": round(momentum_weight, 6),
+            "adaptive_weight_volume": round(volume_weight, 6),
+        }
+
+        reason_parts: list[str] = []
+        if structure_ok:
+            reason_parts.append("structure aligned")
+        if volume_ok:
+            reason_parts.append("volume spike")
+        if momentum_ok:
+            reason_parts.append("MFI momentum")
+        if trend_regime_ok:
+            reason_parts.append("clean trend regime")
+        if volatility_ok:
+            reason_parts.append("volatility acceptable")
+
+        if not confidence_ok:
+            reason_code = "confidence_below_floor"
+            reason = "Confidence below strict floor"
+        elif score < float(self.settings.strict_trade_score_threshold):
+            reason_code = "score_below_threshold"
+            reason = f"Score {score:.1f} below threshold"
+        else:
+            reason_code = "passed"
+            reason = " + ".join(reason_parts) or "strict gate passed"
+        return {
+            "score": round(score, 6),
+            "allow_trade": bool(confidence_ok and score >= float(self.settings.strict_trade_score_threshold)),
+            "reason": reason,
+            "reason_code": reason_code,
+            "components": components,
+        }
+
+    def _adaptive_strategy_config(self) -> dict:
+        if self.strategy_controller is not None:
+            return self.strategy_controller.current_config("system")
+        cached = self.cache.get_json("strategy:adaptive_config:system")
+        if cached:
+            return cached
+        return {
+            "confluence_weight_structure": float(self.settings.confluence_weight_structure),
+            "confluence_weight_momentum": float(self.settings.confluence_weight_momentum),
+            "confluence_weight_volume": float(self.settings.confluence_weight_volume),
+            "trailing_aggressiveness": float(self.settings.trailing_aggressiveness),
+            "symbol_priorities": {},
+        }
+
+    def _symbol_priority_multiplier(self, symbol: str) -> float:
+        normalized = str(symbol or "").upper().strip()
+        adaptive = self._adaptive_strategy_config()
+        return float(adaptive.get("symbol_priorities", {}).get(normalized, 1.0) or 1.0)
+
+    def _symbol_allocation_multiplier(self, symbol: str) -> float:
+        normalized = str(symbol or "").upper().strip()
+        adaptive = self._adaptive_strategy_config()
+        return float(adaptive.get("symbol_allocations", {}).get(normalized, 1.0) or 1.0)
 
     def _final_signal_action(self, snapshot, inference, strategy_decision) -> str:
         if strategy_decision.signal in {"BUY", "SELL"}:

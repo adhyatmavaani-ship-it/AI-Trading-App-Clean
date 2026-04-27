@@ -94,7 +94,7 @@ class SignalWebSocketManager:
                     decode_responses=True,
                 )
                 pubsub = redis_client.pubsub(ignore_subscribe_messages=True)
-                pubsub.subscribe(self.settings.signal_broadcast_channel)
+                pubsub.subscribe(self.settings.signal_broadcast_channel, self.settings.live_activity_channel)
                 while not self._listener_stop.is_set():
                     message = pubsub.get_message(timeout=1.0)
                     if not message or message.get("type") != "message":
@@ -110,7 +110,7 @@ class SignalWebSocketManager:
                             extra={
                                 "event": "websocket_signal_decode_failed",
                                 "context": {
-                                    "channel": self.settings.signal_broadcast_channel,
+                                    "channels": [self.settings.signal_broadcast_channel, self.settings.live_activity_channel],
                                 },
                             },
                         )

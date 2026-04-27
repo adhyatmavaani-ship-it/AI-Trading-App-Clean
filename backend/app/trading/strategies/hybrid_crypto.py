@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 
 import pandas as pd
+import ta
 
 from app.trading.strategies.base import BaseStrategy, StrategyDecision
 
@@ -12,21 +13,17 @@ class HybridCryptoStrategy(BaseStrategy):
 
     def __init__(
         self,
-        trend_fast_period: int = 50,
-        trend_slow_period: int = 200,
-        rsi_period: int = 14,
-        breakout_lookback: int = 20,
+        structure_lookback: int = 20,
         volume_window: int = 20,
-        min_volume_spike: float = 1.4,
-        swing_lookback: int = 10,
+        min_volume_spike: float = 1.5,
+        atr_window: int = 14,
+        chandelier_multiplier: float = 2.5,
     ):
-        self.trend_fast_period = trend_fast_period
-        self.trend_slow_period = trend_slow_period
-        self.rsi_period = rsi_period
-        self.breakout_lookback = breakout_lookback
+        self.structure_lookback = structure_lookback
         self.volume_window = volume_window
         self.min_volume_spike = min_volume_spike
-        self.swing_lookback = swing_lookback
+        self.atr_window = atr_window
+        self.chandelier_multiplier = chandelier_multiplier
 
     def evaluate(
         self,
@@ -34,76 +31,102 @@ class HybridCryptoStrategy(BaseStrategy):
         parameters: dict[str, int | float] | None = None,
     ) -> StrategyDecision:
         parameters = parameters or {}
-        trend_fast_period = int(parameters.get("trend_fast_period", self.trend_fast_period))
-        trend_slow_period = int(parameters.get("trend_slow_period", self.trend_slow_period))
-        rsi_period = int(parameters.get("rsi_period", self.rsi_period))
-        breakout_lookback = int(parameters.get("breakout_lookback", self.breakout_lookback))
+        structure_lookback = int(parameters.get("structure_lookback", self.structure_lookback))
         volume_window = int(parameters.get("volume_window", self.volume_window))
         min_volume_spike = float(parameters.get("min_volume_spike", self.min_volume_spike))
-        swing_lookback = int(parameters.get("swing_lookback", self.swing_lookback))
+        atr_window = int(parameters.get("atr_window", self.atr_window))
+        chandelier_multiplier = float(parameters.get("chandelier_multiplier", self.chandelier_multiplier))
+
         lower_frame, higher_frame = self._resolve_frames(data)
-        if len(lower_frame) < max(breakout_lookback + 2, rsi_period + 2):
+        if len(lower_frame) < max(structure_lookback + 5, volume_window + 3, atr_window + 3):
             return self._hold("insufficient_lower_timeframe_data")
-        if len(higher_frame) < trend_slow_period + 2:
+        if len(higher_frame) < structure_lookback + 3:
             return self._hold("insufficient_higher_timeframe_data")
 
-        trend_signal, trend_strength = self._trend_signal(higher_frame, trend_fast_period, trend_slow_period)
-        if trend_signal == "HOLD":
-            return self._hold("no_higher_timeframe_trend")
+        structure_signal, structure_strength = self._structure_signal(higher_frame, structure_lookback)
+        if structure_signal == "HOLD":
+            return self._hold("no_structure_break")
 
-        rsi_series = self._rsi_series(lower_frame["close"].astype(float), rsi_period)
-        if rsi_series.empty or pd.isna(rsi_series.iloc[-1]):
-            return self._hold("rsi_unavailable")
-        current_rsi = float(rsi_series.iloc[-1])
-        recent_rsi = rsi_series.tail(12).dropna()
-        pullback_rsi = float(recent_rsi.min()) if trend_signal == "BUY" else float(recent_rsi.max())
+        mfi_series = self._mfi_series(lower_frame)
+        if mfi_series.empty or pd.isna(mfi_series.iloc[-1]):
+            return self._hold("mfi_unavailable")
+        current_mfi = float(mfi_series.iloc[-1])
+        momentum_signal, momentum_strength, momentum_penalty = self._momentum_signal(structure_signal, current_mfi)
+        if momentum_signal != structure_signal:
+            return self._hold("momentum_not_aligned")
 
-        breakout_signal, breakout_strength = self._breakout_signal(lower_frame, breakout_lookback)
-        if breakout_signal != trend_signal:
-            return self._hold("breakout_not_aligned")
-
-        entry_ready, rsi_score = self._rsi_pullback_score(trend_signal, pullback_rsi)
-        if not entry_ready:
-            return self._hold("pullback_not_ready")
+        divergence_penalty, divergence_flag = self._divergence_penalty(
+            lower_frame["close"].astype(float),
+            mfi_series,
+            structure_signal,
+        )
+        if divergence_penalty >= 0.18:
+            return self._hold("mfi_divergence_warning")
 
         volume_ratio = self._volume_ratio(lower_frame, volume_window)
         if volume_ratio < min_volume_spike:
             return self._hold("volume_confirmation_missing")
         volume_score = min(1.0, volume_ratio / max(min_volume_spike * 1.5, 1e-8))
 
-        confidence = (
-            0.45 * trend_strength
-            + 0.25 * rsi_score
-            + 0.20 * breakout_strength
-            + 0.10 * volume_score
-        )
-        stop_loss = self._swing_stop_loss(lower_frame, trend_signal, swing_lookback)
         current_price = float(lower_frame["close"].astype(float).iloc[-1])
+        atr = self._atr(lower_frame, atr_window)
+        if atr <= 0:
+            return self._hold("atr_unavailable")
+
+        stop_loss = self._hybrid_stop_loss(current_price, atr, structure_signal)
+        if not math.isfinite(stop_loss):
+            return self._hold("invalid_stop_loss")
         risk_distance = abs(current_price - stop_loss)
         if risk_distance <= 0:
             return self._hold("invalid_stop_loss")
-        take_profit = (
-            current_price + (risk_distance * 2)
-            if trend_signal == "BUY"
-            else current_price - (risk_distance * 2)
+
+        trailing_sl = self._chandelier_stop(
+            frame=lower_frame,
+            signal=structure_signal,
+            atr=atr,
+            multiplier=chandelier_multiplier,
         )
+        if not math.isfinite(trailing_sl):
+            return self._hold("invalid_trailing_stop")
+
+        liquidity_sweep = self._liquidity_sweep_signal(lower_frame, structure_signal, structure_lookback, min_volume_spike)
+
+        confidence = (
+            0.40 * structure_strength
+            + 0.25 * momentum_strength
+            + 0.20 * volume_score
+            + 0.15 * (1.0 if liquidity_sweep else 0.0)
+        )
+        confidence = max(0.0, min(0.98, confidence - divergence_penalty - momentum_penalty))
+
+        reason_parts = [
+            "Structure breakout",
+            "MFI momentum",
+            "volume confirmation",
+        ]
+        if liquidity_sweep:
+            reason_parts.append("liquidity sweep reversal")
+        if divergence_flag:
+            reason_parts.append("minor MFI divergence penalty")
 
         return self._decision(
-            trend_signal,
-            min(0.99, confidence),
-            trend_strength=round(trend_strength, 6),
-            rsi=round(current_rsi, 4),
-            pullback_rsi=round(pullback_rsi, 4),
-            rsi_score=round(rsi_score, 6),
-            breakout_strength=round(breakout_strength, 6),
+            structure_signal,
+            confidence,
+            reason=" + ".join(reason_parts),
+            structure_signal=structure_signal,
+            structure_strength=round(structure_strength, 6),
+            mfi=round(current_mfi, 4),
+            mfi_strength=round(momentum_strength, 6),
+            mfi_extreme_penalty=round(momentum_penalty, 6),
             volume_ratio=round(volume_ratio, 6),
+            divergence_penalty=round(divergence_penalty, 6),
+            liquidity_sweep="true" if liquidity_sweep else "false",
             stop_loss=round(stop_loss, 8),
-            take_profit=round(take_profit, 8),
-            risk_reward_ratio="2.0",
-            trend_fast_period=trend_fast_period,
-            trend_slow_period=trend_slow_period,
-            rsi_period=rsi_period,
-            breakout_lookback=breakout_lookback,
+            trailing_sl=round(trailing_sl, 8),
+            take_profit=0.0,
+            risk_reward_ratio="dynamic",
+            structure_lookback=structure_lookback,
+            atr=round(atr, 8),
         )
 
     def _resolve_frames(
@@ -147,56 +170,68 @@ class HybridCryptoStrategy(BaseStrategy):
             return working.reset_index(drop=True)
         return aggregated.reset_index(drop=True)
 
-    def _trend_signal(self, frame: pd.DataFrame, trend_fast_period: int, trend_slow_period: int) -> tuple[str, float]:
-        closes = frame["close"].astype(float)
-        ema_fast = closes.ewm(span=trend_fast_period, adjust=False).mean()
-        ema_slow = closes.ewm(span=trend_slow_period, adjust=False).mean()
-        current_fast = float(ema_fast.iloc[-1])
-        current_slow = float(ema_slow.iloc[-1])
-        current_close = float(closes.iloc[-1])
-        spread = (current_fast - current_slow) / max(current_close, 1e-8)
-        strength = min(1.0, abs(spread) * 120)
-        if current_fast > current_slow:
-            return "BUY", max(0.2, strength)
-        if current_fast < current_slow:
-            return "SELL", max(0.2, strength)
-        return "HOLD", 0.0
-
-    def _rsi_series(self, closes: pd.Series, period: int) -> pd.Series:
-        delta = closes.diff()
-        gains = delta.clip(lower=0.0)
-        losses = -delta.clip(upper=0.0)
-        avg_gain = gains.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-        avg_loss = losses.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-        rs = avg_gain / avg_loss.replace(0.0, 1e-8)
-        return 100 - (100 / (1 + rs))
-
-    def _breakout_signal(self, frame: pd.DataFrame, breakout_lookback: int) -> tuple[str, float]:
+    def _structure_signal(self, frame: pd.DataFrame, lookback: int) -> tuple[str, float]:
         highs = frame["high"].astype(float)
         lows = frame["low"].astype(float)
         closes = frame["close"].astype(float)
-        breakout_high = highs.rolling(breakout_lookback).max().shift(1).iloc[-1]
-        breakout_low = lows.rolling(breakout_lookback).min().shift(1).iloc[-1]
+        current_high = float(highs.iloc[-1])
+        current_low = float(lows.iloc[-1])
+        previous_high = float(highs.tail(lookback + 1).iloc[:-1].max())
+        previous_low = float(lows.tail(lookback + 1).iloc[:-1].min())
         current_close = float(closes.iloc[-1])
-        current_range = max(float((highs - lows).rolling(breakout_lookback).mean().iloc[-1] or 0.0), current_close * 0.003)
-        if pd.notna(breakout_high) and current_close > float(breakout_high):
-            strength = min(1.0, (current_close - float(breakout_high)) / max(current_range, 1e-8))
-            return "BUY", max(0.25, strength)
-        if pd.notna(breakout_low) and current_close < float(breakout_low):
-            strength = min(1.0, (float(breakout_low) - current_close) / max(current_range, 1e-8))
-            return "SELL", max(0.25, strength)
+
+        if current_high > previous_high and self._higher_high_sequence(frame):
+            strength = min(1.0, (current_close - previous_high) / max(current_close * 0.02, 1e-8))
+            return "BUY", max(0.55, strength)
+        if current_low < previous_low and self._lower_low_sequence(frame):
+            strength = min(1.0, (previous_low - current_close) / max(current_close * 0.02, 1e-8))
+            return "SELL", max(0.55, strength)
         return "HOLD", 0.0
 
-    def _rsi_pullback_score(self, trend_signal: str, rsi_value: float) -> tuple[bool, float]:
-        if trend_signal == "BUY":
-            if not 40.0 <= rsi_value <= 65.0:
-                return False, 0.0
-            distance = abs(rsi_value - 52.0)
-            return True, max(0.2, 1.0 - distance / 18.0)
-        if not 35.0 <= rsi_value <= 60.0:
-            return False, 0.0
-        distance = abs(rsi_value - 48.0)
-        return True, max(0.2, 1.0 - distance / 18.0)
+    def _higher_high_sequence(self, frame: pd.DataFrame, candles: int = 4) -> bool:
+        highs = frame["high"].astype(float).tail(candles).tolist()
+        lows = frame["low"].astype(float).tail(candles).tolist()
+        return all(curr >= prev for prev, curr in zip(highs, highs[1:], strict=False)) and all(curr >= prev for prev, curr in zip(lows, lows[1:], strict=False))
+
+    def _lower_low_sequence(self, frame: pd.DataFrame, candles: int = 4) -> bool:
+        highs = frame["high"].astype(float).tail(candles).tolist()
+        lows = frame["low"].astype(float).tail(candles).tolist()
+        return all(curr <= prev for prev, curr in zip(highs, highs[1:], strict=False)) and all(curr <= prev for prev, curr in zip(lows, lows[1:], strict=False))
+
+    def _mfi_series(self, frame: pd.DataFrame, window: int = 14) -> pd.Series:
+        return ta.volume.money_flow_index(
+            high=frame["high"].astype(float),
+            low=frame["low"].astype(float),
+            close=frame["close"].astype(float),
+            volume=frame["volume"].astype(float),
+            window=window,
+        )
+
+    def _momentum_signal(self, structure_signal: str, mfi_value: float) -> tuple[str, float, float]:
+        if structure_signal == "BUY":
+            if mfi_value <= 50.0:
+                return "HOLD", 0.0, 0.0
+            strength = max(0.35, min(1.0, (mfi_value - 50.0) / 20.0))
+            penalty = 0.08 if mfi_value >= 80.0 else 0.0
+            return "BUY", strength, penalty
+        if mfi_value >= 50.0:
+            return "HOLD", 0.0, 0.0
+        strength = max(0.35, min(1.0, (50.0 - mfi_value) / 20.0))
+        penalty = 0.08 if mfi_value <= 20.0 else 0.0
+        return "SELL", strength, penalty
+
+    def _divergence_penalty(self, closes: pd.Series, mfi_series: pd.Series, signal: str) -> tuple[float, bool]:
+        recent_close = closes.tail(5).astype(float)
+        recent_mfi = mfi_series.tail(5).astype(float)
+        if len(recent_close) < 5 or len(recent_mfi) < 5:
+            return 0.0, False
+        price_change = float(recent_close.iloc[-1] - recent_close.iloc[0])
+        mfi_change = float(recent_mfi.iloc[-1] - recent_mfi.iloc[0])
+        if signal == "BUY" and price_change > 0 and mfi_change < 0:
+            return 0.12, True
+        if signal == "SELL" and price_change < 0 and mfi_change > 0:
+            return 0.12, True
+        return 0.0, False
 
     def _volume_ratio(self, frame: pd.DataFrame, volume_window: int) -> float:
         volume = frame["volume"].astype(float)
@@ -204,9 +239,61 @@ class HybridCryptoStrategy(BaseStrategy):
         current = float(volume.iloc[-1])
         return current / max(baseline, 1e-8)
 
-    def _swing_stop_loss(self, frame: pd.DataFrame, signal: str, swing_lookback: int) -> float:
-        highs = frame["high"].astype(float).tail(swing_lookback)
-        lows = frame["low"].astype(float).tail(swing_lookback)
+    def _atr(self, frame: pd.DataFrame, window: int) -> float:
+        atr_series = ta.volatility.average_true_range(
+            high=frame["high"].astype(float),
+            low=frame["low"].astype(float),
+            close=frame["close"].astype(float),
+            window=window,
+        )
+        atr_value = float(atr_series.iloc[-1]) if not atr_series.empty else 0.0
+        return max(0.0, atr_value)
+
+    def _hybrid_stop_loss(self, entry_price: float, atr: float, signal: str) -> float:
         if signal == "BUY":
-            return float(lows.min())
-        return float(highs.max())
+            initial_sl = entry_price - (2.0 * atr)
+            max_sl_cap = entry_price * 0.99
+            return min(initial_sl, max_sl_cap)
+        initial_sl = entry_price + (2.0 * atr)
+        min_sl_cap = entry_price * 1.01
+        return max(initial_sl, min_sl_cap)
+
+    def _chandelier_stop(
+        self,
+        *,
+        frame: pd.DataFrame,
+        signal: str,
+        atr: float,
+        multiplier: float,
+        window: int = 22,
+    ) -> float:
+        if signal == "BUY":
+            highest_high = float(frame["high"].astype(float).tail(window).max())
+            return highest_high - (multiplier * atr)
+        lowest_low = float(frame["low"].astype(float).tail(window).min())
+        return lowest_low + (multiplier * atr)
+
+    def _liquidity_sweep_signal(
+        self,
+        frame: pd.DataFrame,
+        signal: str,
+        lookback: int,
+        min_volume_spike: float,
+    ) -> bool:
+        if len(frame) < lookback + 4:
+            return False
+        recent = frame.tail(3).reset_index(drop=True)
+        prior = frame.iloc[: -3]
+        prior_high = float(prior["high"].astype(float).tail(lookback).max())
+        prior_low = float(prior["low"].astype(float).tail(lookback).min())
+        volume_ratio = self._volume_ratio(frame, min(lookback, self.volume_window))
+        if volume_ratio < min_volume_spike:
+            return False
+
+        if signal == "BUY":
+            swept = float(recent["low"].min()) < prior_low
+            reclaimed = float(recent["close"].iloc[-1]) > prior_low
+            return swept and reclaimed
+        swept = float(recent["high"].max()) > prior_high
+        reclaimed = float(recent["close"].iloc[-1]) < prior_high
+        return swept and reclaimed

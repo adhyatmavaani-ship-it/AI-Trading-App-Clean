@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import '../models/activity.dart';
 import 'auth_credentials_store.dart';
 import '../models/signal.dart';
 import 'constants.dart';
@@ -17,18 +18,34 @@ class WebSocketService {
 
   final AuthCredentialsStore _credentialsStore;
   final String _baseUrl;
-  final StreamController<SignalModel> _controller =
-      StreamController<SignalModel>.broadcast();
+  final StreamController<Map<String, dynamic>> _eventController =
+      StreamController<Map<String, dynamic>>.broadcast();
 
   WebSocketChannel? _channel;
   StreamSubscription<dynamic>? _channelSubscription;
   Timer? _reconnectTimer;
   bool _isDisposed = false;
+  bool _connectionRequested = false;
   int _reconnectAttempt = 0;
 
   Stream<SignalModel> connectSignals() {
-    unawaited(_connect());
-    return _controller.stream;
+    return connectEvents()
+        .where((event) => (event['type'] as String?) != 'activity')
+        .map(SignalModel.fromJson);
+  }
+
+  Stream<ActivityItemModel> connectActivity() {
+    return connectEvents()
+        .where((event) => (event['type'] as String?) == 'activity')
+        .map(ActivityItemModel.fromJson);
+  }
+
+  Stream<Map<String, dynamic>> connectEvents() {
+    if (!_connectionRequested) {
+      _connectionRequested = true;
+      unawaited(_connect());
+    }
+    return _eventController.stream;
   }
 
   Future<void> _connect() async {
@@ -48,13 +65,13 @@ class WebSocketService {
         _reconnectAttempt = 0;
         try {
           final decoded = jsonDecode(data as String) as Map<String, dynamic>;
-          _controller.add(SignalModel.fromJson(decoded));
+          _eventController.add(decoded);
         } catch (error, stackTrace) {
-          _controller.addError(error, stackTrace);
+          _eventController.addError(error, stackTrace);
         }
       },
       onError: (Object error, StackTrace stackTrace) {
-        _controller.addError(error, stackTrace);
+        _eventController.addError(error, stackTrace);
         _scheduleReconnect();
       },
       onDone: _scheduleReconnect,
@@ -87,6 +104,6 @@ class WebSocketService {
     await _channelSubscription?.cancel();
     await _channel?.sink.close();
     _reconnectTimer?.cancel();
-    await _controller.close();
+    await _eventController.close();
   }
 }

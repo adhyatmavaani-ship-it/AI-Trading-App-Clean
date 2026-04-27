@@ -1,15 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../features/activity/providers/activity_providers.dart';
 import '../features/meta/providers/meta_providers.dart';
 import '../features/monitoring/providers/monitoring_providers.dart';
 import '../features/signals/providers/signal_providers.dart';
 import '../features/trade/providers/trade_providers.dart';
+import '../models/activity.dart';
 import '../models/portfolio_concentration.dart';
 import '../models/signal.dart';
+import '../widgets/activity_feed_tile.dart';
 import '../widgets/batch_tile.dart';
+import '../widgets/bot_state_banner.dart';
 import '../widgets/metric_card.dart';
 import '../widgets/meta_widgets.dart';
+import '../widgets/readiness_tile.dart';
 import '../widgets/section_card.dart';
 import '../widgets/signal_tile.dart';
 import '../widgets/state_widgets.dart';
@@ -24,6 +29,12 @@ class PulseScreen extends ConsumerStatefulWidget {
 class _PulseScreenState extends ConsumerState<PulseScreen> {
   ProviderSubscription<AsyncValue<List<SignalModel>>>? _initialSubscription;
   ProviderSubscription<AsyncValue<SignalModel>>? _streamSubscription;
+  ProviderSubscription<AsyncValue<List<ActivityItemModel>>>?
+      _initialActivitySubscription;
+  ProviderSubscription<AsyncValue<List<ReadinessCardModel>>>?
+      _initialReadinessSubscription;
+  ProviderSubscription<AsyncValue<ActivityItemModel>>?
+      _activityStreamSubscription;
 
   @override
   void initState() {
@@ -46,12 +57,40 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
         ref.read(signalFeedProvider.notifier).setError(error);
       });
     });
+    _initialActivitySubscription =
+        ref.listenManual(initialActivityHistoryProvider, (previous, next) {
+      next.whenData((items) {
+        ref.read(activityFeedProvider.notifier).hydrate(items);
+      });
+      next.whenOrNull(error: (error, _) {
+        ref.read(activityFeedProvider.notifier).setError(error);
+      });
+    });
+    _initialReadinessSubscription =
+        ref.listenManual(initialReadinessBoardProvider, (previous, next) {
+      next.whenData((items) {
+        ref.read(readinessBoardProvider.notifier).hydrate(items);
+      });
+    });
+    _activityStreamSubscription =
+        ref.listenManual(activityStreamProvider, (previous, next) {
+      next.whenData((activity) {
+        ref.read(activityFeedProvider.notifier).ingest(activity);
+        ref.read(readinessBoardProvider.notifier).ingest(activity);
+      });
+      next.whenOrNull(error: (error, _) {
+        ref.read(activityFeedProvider.notifier).setError(error);
+      });
+    });
   }
 
   @override
   void dispose() {
     _initialSubscription?.close();
     _streamSubscription?.close();
+    _initialActivitySubscription?.close();
+    _initialReadinessSubscription?.close();
+    _activityStreamSubscription?.close();
     super.dispose();
   }
 
@@ -146,6 +185,8 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
   @override
   Widget build(BuildContext context) {
     final feed = ref.watch(signalFeedProvider);
+    final activityFeed = ref.watch(activityFeedProvider);
+    final readinessBoard = ref.watch(readinessBoardProvider);
     final batchesAsync = ref.watch(batchesProvider);
     final healthAsync = ref.watch(systemHealthProvider);
     final concentrationWindow = ref.watch(concentrationWindowProvider);
@@ -157,6 +198,8 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
     return RefreshIndicator(
       onRefresh: () async {
         ref.invalidate(initialSignalsProvider);
+        ref.invalidate(initialActivityHistoryProvider);
+        ref.invalidate(initialReadinessBoardProvider);
         ref.invalidate(batchesProvider);
         ref.invalidate(systemHealthProvider);
         ref.invalidate(concentrationHistoryProvider);
@@ -196,6 +239,65 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
               child: LoadingState(label: 'Loading platform health'),
             ),
             error: (error, _) => ErrorState(message: error.toString()),
+          ),
+          const SizedBox(height: 20),
+          if (activityFeed.latest != null)
+            BotStateBanner(activity: activityFeed.latest!)
+          else
+            const SectionCard(
+              title: 'Bot State',
+              child: EmptyState(
+                title: 'Waiting for activity',
+                subtitle:
+                    'The perception engine will publish scanning intent here once the backend starts evaluating symbols.',
+              ),
+            ),
+          const SizedBox(height: 20),
+          SectionCard(
+            title: 'Trade Readiness Board',
+            trailing: Chip(
+              label: Text('${readinessBoard.length} tracked'),
+              backgroundColor: const Color(0xFF153540),
+            ),
+            child: readinessBoard.isEmpty
+                ? const EmptyState(
+                    title: 'No readiness board yet',
+                    subtitle:
+                        'Symbols will appear here as the engine scans and scores setup quality.',
+                  )
+                : SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: readinessBoard
+                          .map(
+                            (card) => Padding(
+                              padding: const EdgeInsets.only(right: 12),
+                              child: ReadinessTile(card: card),
+                            ),
+                          )
+                          .toList(),
+                    ),
+                  ),
+          ),
+          const SizedBox(height: 20),
+          SectionCard(
+            title: 'Live Activity Feed',
+            trailing: Chip(
+              label: Text('${activityFeed.items.length} events'),
+              backgroundColor: const Color(0xFF153540),
+            ),
+            child: activityFeed.items.isEmpty
+                ? const EmptyState(
+                    title: 'No activity yet',
+                    subtitle:
+                        'Scanning, rejections, almost-trades, and executions will appear here in real time.',
+                  )
+                : Column(
+                    children: activityFeed.items
+                        .take(10)
+                        .map((item) => ActivityFeedTile(activity: item))
+                        .toList(),
+                  ),
           ),
           const SizedBox(height: 20),
           SectionCard(
@@ -275,7 +377,9 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
                           const SizedBox(height: 12),
                           Text(
                             latest.severityReason!,
-                            style: Theme.of(context).textTheme.bodyMedium
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodyMedium
                                 ?.copyWith(color: const Color(0xFF9CB3C8)),
                           ),
                         ],
@@ -299,7 +403,8 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
                               )
                               .toList(),
                         ),
-                        if (latest.factorUniverseSymbols.isNotEmpty) ...<Widget>[
+                        if (latest
+                            .factorUniverseSymbols.isNotEmpty) ...<Widget>[
                           const SizedBox(height: 16),
                           Text(
                             'Active Factor Universe',
@@ -344,34 +449,42 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
                             const SizedBox(height: 8),
                             Text(
                               'Dominant sleeve: ${latest.dominantFactorSleeve}',
-                              style: Theme.of(context).textTheme.bodyMedium
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodyMedium
                                   ?.copyWith(color: const Color(0xFF9CB3C8)),
                             ),
                           ],
                         ],
-                        if (latest.factorSleeveBudgetTargets.isNotEmpty) ...<Widget>[
+                        if (latest
+                            .factorSleeveBudgetTargets.isNotEmpty) ...<Widget>[
                           const SizedBox(height: 16),
                           Text(
                             'Sleeve Budget Rotation',
                             style: Theme.of(context).textTheme.titleMedium,
                           ),
                           if (latest.dominantOverBudgetSleeve != null ||
-                              latest.dominantUnderBudgetSleeve != null) ...<Widget>[
+                              latest.dominantUnderBudgetSleeve !=
+                                  null) ...<Widget>[
                             const SizedBox(height: 8),
                             Text(
                               'Over budget: ${latest.dominantOverBudgetSleeve ?? '-'}  |  '
                               'Under budget: ${latest.dominantUnderBudgetSleeve ?? '-'}',
-                              style: Theme.of(context).textTheme.bodyMedium
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodyMedium
                                   ?.copyWith(color: const Color(0xFF9CB3C8)),
                             ),
                           ],
                           const SizedBox(height: 8),
                           Column(
-                            children: latest.factorSleeveBudgetTargets.entries.map((entry) {
+                            children: latest.factorSleeveBudgetTargets.entries
+                                .map((entry) {
                               final actualShare =
                                   latest.factorAttribution[entry.key] ?? 0.0;
                               final delta =
-                                  latest.factorSleeveBudgetDeltas[entry.key] ?? 0.0;
+                                  latest.factorSleeveBudgetDeltas[entry.key] ??
+                                      0.0;
                               final targetShare = entry.value;
                               final isPositive = delta >= 0;
                               return ListTile(
@@ -395,7 +508,8 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
                             }).toList(),
                           ),
                         ],
-                        if (latest.factorSleevePerformance.isNotEmpty) ...<Widget>[
+                        if (latest
+                            .factorSleevePerformance.isNotEmpty) ...<Widget>[
                           const SizedBox(height: 16),
                           Text(
                             'Sleeve Performance',
@@ -405,10 +519,11 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
                           Wrap(
                             spacing: 8,
                             runSpacing: 8,
-                            children: latest.factorSleevePerformance.entries.map((entry) {
-                              final pnl =
-                                  (entry.value['realized_pnl'] as num?)?.toDouble() ??
-                                      0.0;
+                            children: latest.factorSleevePerformance.entries
+                                .map((entry) {
+                              final pnl = (entry.value['realized_pnl'] as num?)
+                                      ?.toDouble() ??
+                                  0.0;
                               final wins =
                                   (entry.value['wins'] as num?)?.toInt() ?? 0;
                               final losses =
@@ -445,7 +560,9 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
                                     dense: true,
                                     contentPadding: EdgeInsets.zero,
                                     title: Text(
-                                      snapshot.updatedAt?.toLocal().toString() ??
+                                      snapshot.updatedAt
+                                              ?.toLocal()
+                                              .toString() ??
                                           'Unknown time',
                                     ),
                                     subtitle: Text(
@@ -525,7 +642,9 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
                     if (latestState.severityReason != null) ...<Widget>[
                       Text(
                         latestState.severityReason!,
-                        style: Theme.of(context).textTheme.bodyMedium
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodyMedium
                             ?.copyWith(color: const Color(0xFF9CB3C8)),
                       ),
                       const SizedBox(height: 16),

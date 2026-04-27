@@ -65,3 +65,21 @@ class RedisStateManager:
             if order:
                 orders.append(order)
         return orders
+
+    def register_monitored_trade(self, trade_id: str, payload: dict | None = None) -> None:
+        self.cache.set_json(
+            f"monitor:trade:{trade_id}",
+            payload or {"trade_id": trade_id},
+            ttl=self.settings.monitor_state_ttl_seconds,
+        )
+
+    def unregister_monitored_trade(self, trade_id: str) -> None:
+        self.cache.delete(f"monitor:trade:{trade_id}")
+
+    def restore_monitored_trades(self) -> list[dict]:
+        trades: list[dict] = []
+        for key in self.cache.keys("monitor:trade:*"):
+            trade = self.cache.get_json(key)
+            if trade:
+                trades.append(trade)
+        return trades

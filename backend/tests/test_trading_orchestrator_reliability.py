@@ -23,6 +23,7 @@ from app.services.micro_mode_controller import MicroModeController
 from app.services.multi_chain_router import MultiChainRouter
 from app.services.paper_execution import PaperExecutionEngine
 from app.services.performance_tracker import PerformanceTracker
+from app.services.portfolio_manager import PortfolioManager
 from app.services.portfolio_ledger import PortfolioLedgerService
 from app.services.redis_state_manager import RedisStateManager
 from app.services.risk_engine import RiskEngine
@@ -207,6 +208,7 @@ class TradingOrchestratorReliabilityTest(unittest.TestCase):
         signal_broadcaster = SignalBroadcaster(settings, cache, execution_queue_manager)
         redis_state_manager = RedisStateManager(settings, cache)
         portfolio_ledger = PortfolioLedgerService(settings, cache, market_data, redis_state_manager, firestore)
+        portfolio_manager = PortfolioManager(settings)
         orchestrator = TradingOrchestrator(
             settings=settings,
             market_data=market_data,
@@ -233,6 +235,7 @@ class TradingOrchestratorReliabilityTest(unittest.TestCase):
             performance_tracker=PerformanceTracker(cache, firestore),
             firestore=firestore,
             portfolio_ledger=portfolio_ledger,
+            portfolio_manager=portfolio_manager,
             virtual_order_manager=virtual_order_manager,
             shard_manager=shard_manager,
             execution_queue_manager=execution_queue_manager,
@@ -465,7 +468,7 @@ class TradingOrchestratorReliabilityTest(unittest.TestCase):
             )
         request = TradeRequest(
             user_id="u1",
-            symbol="BTCUSDT",
+            symbol="ETHUSDT",
             side="BUY",
             order_type="MARKET",
             confidence=0.8,
@@ -480,6 +483,100 @@ class TradingOrchestratorReliabilityTest(unittest.TestCase):
 
         self.assertLess(saved_trade["requested_notional"], 5000.0)
         self.assertGreater(response.executed_quantity, 0.0)
+        self.assertGreater(saved_trade["risk_fraction"], 0.0)
+
+    def test_strict_confidence_floor_blocks_trade(self):
+        orchestrator, _ = self._build_orchestrator()
+        request = TradeRequest(
+            user_id="u1",
+            symbol="BTCUSDT",
+            side="BUY",
+            order_type="MARKET",
+            confidence=0.65,
+            reason="confidence floor test",
+            requested_notional=100.0,
+        )
+
+        with self.assertRaisesRegex(ValueError, "confidence"):
+            asyncio.run(orchestrator.execute_signal(request))
+
+    def test_duplicate_symbol_trade_is_blocked(self):
+        orchestrator, _ = self._build_orchestrator()
+        orchestrator.redis_state_manager.save_active_trade(
+            "open-btc",
+            {
+                "trade_id": "open-btc",
+                "user_id": "u1",
+                "symbol": "BTCUSDT",
+                "side": "BUY",
+                "entry": 100.0,
+                "executed_quantity": 10.0,
+                "notional": 1000.0,
+                "fees": 0.0,
+            },
+        )
+        orchestrator.portfolio_ledger.record_trade_open(
+            user_id="u1",
+            trade_id="open-btc",
+            symbol="BTCUSDT",
+            side="BUY",
+            entry_price=100.0,
+            executed_quantity=10.0,
+            notional=1000.0,
+            fee_paid=0.0,
+        )
+        request = TradeRequest(
+            user_id="u1",
+            symbol="BTCUSDT",
+            side="BUY",
+            order_type="MARKET",
+            confidence=0.8,
+            reason="same coin block",
+            requested_notional=100.0,
+        )
+
+        with self.assertRaisesRegex(ValueError, "active trade already exists"):
+            asyncio.run(orchestrator.execute_signal(request))
+
+    def test_max_active_trades_blocks_new_trade(self):
+        orchestrator, _ = self._build_orchestrator()
+        for index, symbol in enumerate(["BTCUSDT", "ETHUSDT", "SOLUSDT"], start=1):
+            trade_id = f"open-{index}"
+            orchestrator.redis_state_manager.save_active_trade(
+                trade_id,
+                {
+                    "trade_id": trade_id,
+                    "user_id": "u1",
+                    "symbol": symbol,
+                    "side": "BUY",
+                    "entry": 100.0,
+                    "executed_quantity": 5.0,
+                    "notional": 500.0,
+                    "fees": 0.0,
+                },
+            )
+            orchestrator.portfolio_ledger.record_trade_open(
+                user_id="u1",
+                trade_id=trade_id,
+                symbol=symbol,
+                side="BUY",
+                entry_price=100.0,
+                executed_quantity=5.0,
+                notional=500.0,
+                fee_paid=0.0,
+            )
+        request = TradeRequest(
+            user_id="u1",
+            symbol="XRPUSDT",
+            side="BUY",
+            order_type="MARKET",
+            confidence=0.8,
+            reason="max active trades test",
+            requested_notional=100.0,
+        )
+
+        with self.assertRaisesRegex(ValueError, "Maximum active trades reached"):
+            asyncio.run(orchestrator.execute_signal(request))
 
     def test_portfolio_controls_block_trade_when_total_exposure_is_full(self):
         orchestrator, _ = self._build_orchestrator()

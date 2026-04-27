@@ -57,6 +57,49 @@ async def get_live_signals(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@router.get(
+    "/activity/live",
+    tags=["Signals"],
+    summary="Get latest bot activity",
+    description="Returns the latest scanning or execution activity emitted by the user experience engine.",
+)
+async def get_live_activity(
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    activity_engine = getattr(container, "user_experience_engine", None)
+    return activity_engine.latest() if activity_engine is not None else {}
+
+
+@router.get(
+    "/activity/history",
+    tags=["Signals"],
+    summary="Get recent bot activity feed",
+    description="Returns recent scanning, rejection, almost-trade, and execution activity messages.",
+)
+async def get_activity_history(
+    limit: int = Query(default=25, ge=1, le=200, description="Maximum number of activity items to return."),
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    activity_engine = getattr(container, "user_experience_engine", None)
+    items = activity_engine.history(limit=limit) if activity_engine is not None else []
+    return {"count": len(items), "items": items}
+
+
+@router.get(
+    "/activity/readiness",
+    tags=["Signals"],
+    summary="Get symbol readiness board",
+    description="Returns the latest readiness and intent state for the most recently scanned symbols.",
+)
+async def get_activity_readiness(
+    limit: int = Query(default=8, ge=1, le=50, description="Maximum number of readiness cards to return."),
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    activity_engine = getattr(container, "user_experience_engine", None)
+    items = activity_engine.readiness(limit=limit) if activity_engine is not None else []
+    return {"count": len(items), "items": items}
+
+
 async def _collect_live_signals(container: ServiceContainer, viewer_subscription: dict) -> list[LiveSignalItem]:
     signals: list[LiveSignalItem] = []
     for key in container.cache.keys("signal:latest:*"):
@@ -255,6 +298,97 @@ async def get_user_pnl(
             fees_paid=ledger_snapshot["fees_paid"],
             positions=ledger_snapshot["positions"],
         )
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get(
+    "/trades/active",
+    tags=["User Portfolio"],
+    summary="List active trades",
+    description="Returns currently active trades for the authenticated user.",
+)
+async def get_active_trades(
+    user_id: str = Query(..., description="User identifier whose active trades should be returned."),
+    request: Request = ...,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    try:
+        authenticated_user_id = get_user_id(request)
+        _ensure_user_access(authenticated_user_id, user_id)
+        analytics = getattr(container, "analytics_service", None)
+        items = analytics.active_trades(user_id) if analytics is not None else []
+        return {"count": len(items), "items": items}
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get(
+    "/trades/history",
+    tags=["User Portfolio"],
+    summary="List trade history",
+    description="Returns closed trade analytics records for the authenticated user.",
+)
+async def get_trade_history(
+    user_id: str = Query(..., description="User identifier whose trade history should be returned."),
+    limit: int = Query(default=100, ge=1, le=500, description="Maximum number of history rows to return."),
+    request: Request = ...,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    try:
+        authenticated_user_id = get_user_id(request)
+        _ensure_user_access(authenticated_user_id, user_id)
+        analytics = getattr(container, "analytics_service", None)
+        items = analytics.trade_history(user_id, limit=limit) if analytics is not None else []
+        return {"count": len(items), "items": items}
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get(
+    "/analytics/summary",
+    tags=["User Portfolio"],
+    summary="Get analytics summary",
+    description="Returns win rate, drawdown, expectancy, and other core trading metrics for the authenticated user.",
+)
+async def get_analytics_summary(
+    user_id: str = Query(..., description="User identifier whose analytics summary should be returned."),
+    request: Request = ...,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    try:
+        authenticated_user_id = get_user_id(request)
+        _ensure_user_access(authenticated_user_id, user_id)
+        analytics = getattr(container, "analytics_service", None)
+        return analytics.summary(user_id) if analytics is not None else {}
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get(
+    "/analytics/performance",
+    tags=["User Portfolio"],
+    summary="Get analytics performance",
+    description="Returns performance breakdowns, feedback-loop insights, and future-ready confluence weights for the authenticated user.",
+)
+async def get_analytics_performance(
+    user_id: str = Query(..., description="User identifier whose analytics performance should be returned."),
+    request: Request = ...,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    try:
+        authenticated_user_id = get_user_id(request)
+        _ensure_user_access(authenticated_user_id, user_id)
+        analytics = getattr(container, "analytics_service", None)
+        return analytics.performance(user_id) if analytics is not None else {}
     except AuthenticationError as exc:
         raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
     except Exception as exc:  # pragma: no cover

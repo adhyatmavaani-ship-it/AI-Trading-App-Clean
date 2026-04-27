@@ -23,6 +23,7 @@ from app.core.logging import configure_logging
 from app.middleware.auth import AuthMiddleware, get_api_key
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.request_context import RequestContextMiddleware
+from app.services.container import get_container
 from app.services.signal_websocket_manager import get_signal_websocket_manager
 
 logger = logging.getLogger(__name__)
@@ -49,12 +50,17 @@ def _handle_shutdown_signal(signum, frame):
 async def lifespan(app: FastAPI):
     """Manage application lifecycle - startup and shutdown."""
     # Startup
+    container = get_container()
     await get_signal_websocket_manager().start()
+    await container.active_trade_monitor.start()
+    await container.strategy_optimizer.start()
     logger.info("Trading system startup - all services initialized")
     logger.info(f"Server started on port {get_bind_port()}")
     yield
     # Shutdown - graceful cleanup
     logger.info("Trading system shutdown - cleaning up resources...")
+    await container.strategy_optimizer.stop()
+    await container.active_trade_monitor.stop()
     await get_signal_websocket_manager().stop()
     await asyncio.sleep(0.1)  # Allow time for in-flight requests
     logger.info("Shutdown complete")

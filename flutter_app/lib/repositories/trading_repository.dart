@@ -3,6 +3,7 @@ import 'dart:async';
 import '../core/api_client.dart';
 import '../core/constants.dart';
 import '../core/websocket_service.dart';
+import '../models/activity.dart';
 import '../models/batch.dart';
 import '../models/meta_analytics.dart';
 import '../models/meta_decision.dart';
@@ -29,6 +30,39 @@ class TradingRepository {
 
   Stream<SignalModel> watchSignals() {
     return _webSocketService.connectSignals();
+  }
+
+  Future<ActivityItemModel?> fetchLiveActivity() {
+    return _apiClient.getLiveActivity();
+  }
+
+  Future<List<ActivityItemModel>> fetchActivityHistory({int limit = 25}) {
+    return _apiClient.getActivityHistory(limit: limit);
+  }
+
+  Future<List<ReadinessCardModel>> fetchReadinessBoard({int limit = 8}) {
+    return _apiClient.getActivityReadiness(limit: limit);
+  }
+
+  Stream<ActivityItemModel> watchActivity() {
+    return _webSocketService.connectActivity();
+  }
+
+  Stream<List<ActivityItemModel>> watchActivityHistory(
+      {int limit = 25}) async* {
+    yield await fetchActivityHistory(limit: limit);
+    while (true) {
+      await Future<void>.delayed(AppConstants.pollingInterval);
+      yield await fetchActivityHistory(limit: limit);
+    }
+  }
+
+  Stream<List<ReadinessCardModel>> watchReadinessBoard({int limit = 8}) async* {
+    yield await fetchReadinessBoard(limit: limit);
+    while (true) {
+      await Future<void>.delayed(AppConstants.pollingInterval);
+      yield await fetchReadinessBoard(limit: limit);
+    }
   }
 
   Future<List<BatchModel>> fetchBatches({int limit = 25}) {

@@ -5,6 +5,7 @@ from functools import lru_cache
 from app.core.config import get_settings
 from app.services.ai_engine import AIEngine
 from app.services.alpha_engine import AlphaEngine
+from app.services.analytics_service import AnalyticsService
 from app.services.alerting import AlertingService
 from app.services.allocation_engine import AllocationEngine
 from app.services.backtesting import BacktestingEngine
@@ -27,6 +28,7 @@ from app.services.narrative_macro_intelligence import NarrativeMacroIntelligence
 from app.services.generative_simulation_engine import GenerativeSimulationEngine
 from app.services.paper_execution import PaperExecutionEngine
 from app.services.performance_tracker import PerformanceTracker
+from app.services.portfolio_manager import PortfolioManager
 from app.services.portfolio_ledger import PortfolioLedgerService
 from app.services.model_registry import ModelRegistry
 from app.services.regime_detector import RegimeDetector
@@ -42,13 +44,17 @@ from app.services.sentiment_engine import SentimentEngine
 from app.services.shadow_liquidity_engine import ShadowLiquiditySentinel
 from app.services.self_healing_ppo import SelfHealingPPOService
 from app.services.simulation_tester import SimulationTester
+from app.services.strategy_controller import StrategyController
 from app.services.strategy_engine import StrategyEngine
 from app.services.system_monitor import SystemMonitorService
 from app.services.tax_engine import TaxEngine
 from app.services.trade_probability import TradeProbabilityEngine
 from app.services.trading_orchestrator import TradingOrchestrator
+from app.services.user_experience_engine import UserExperienceEngine
 from app.services.virtual_order_manager import VirtualOrderManager
 from app.services.whale_tracker import WhaleTracker
+from app.workers.strategy_optimizer_worker import StrategyOptimizerWorker
+from app.workers.trade_monitor_worker import ActiveTradeMonitorWorker
 
 
 class ServiceContainer:
@@ -58,7 +64,7 @@ class ServiceContainer:
         firestore = FirestoreRepository(settings.firestore_project_id)
         registry = ModelRegistry(settings)
         market_data = MarketDataService(settings, cache)
-        feature_pipeline = FeaturePipeline(RegimeDetector())
+        feature_pipeline = FeaturePipeline(RegimeDetector(settings))
         ai_engine = AIEngine(registry)
         trade_probability_engine = TradeProbabilityEngine(
             settings=settings,
@@ -101,6 +107,19 @@ class ServiceContainer:
             market_data=market_data,
             redis_state_manager=redis_state_manager,
             firestore=firestore,
+        )
+        portfolio_manager = PortfolioManager(settings)
+        user_experience_engine = UserExperienceEngine(settings=settings, cache=cache)
+        analytics_service = AnalyticsService(
+            settings=settings,
+            cache=cache,
+            redis_state_manager=redis_state_manager,
+            firestore=firestore,
+        )
+        strategy_controller = StrategyController(
+            settings=settings,
+            analytics=analytics_service,
+            cache=cache,
         )
         allocation_engine = AllocationEngine(precision=settings.virtual_order_precision)
         virtual_order_manager = VirtualOrderManager(settings, cache, allocation_engine)
@@ -162,6 +181,7 @@ class ServiceContainer:
             redis_state_manager=redis_state_manager,
             performance_tracker=performance_tracker,
             portfolio_ledger=portfolio_ledger,
+            portfolio_manager=portfolio_manager,
             firestore=firestore,
             virtual_order_manager=virtual_order_manager,
             shard_manager=shard_manager,
@@ -170,7 +190,22 @@ class ServiceContainer:
             self_healing_service=self_healing_service,
             latency_monitor=latency_monitor,
             meta_controller=meta_controller,
+            analytics_service=analytics_service,
+            strategy_controller=strategy_controller,
+            user_experience_engine=user_experience_engine,
         )
+        active_trade_monitor = ActiveTradeMonitorWorker(
+            settings=settings,
+            redis_state_manager=redis_state_manager,
+            market_data=market_data,
+            feature_pipeline=feature_pipeline,
+            trading_orchestrator=self.trading_orchestrator,
+        )
+        strategy_optimizer = StrategyOptimizerWorker(
+            settings=settings,
+            strategy_controller=strategy_controller,
+        )
+        self.trading_orchestrator.active_trade_monitor = active_trade_monitor
         self.trading_orchestrator.reconcile_startup_state()
         self.backtesting_engine = BacktestingEngine(
             settings=settings,
@@ -207,6 +242,7 @@ class ServiceContainer:
         self.redis_state_manager = redis_state_manager
         self.performance_tracker = performance_tracker
         self.portfolio_ledger = portfolio_ledger
+        self.portfolio_manager = portfolio_manager
         self.allocation_engine = allocation_engine
         self.virtual_order_manager = virtual_order_manager
         self.shard_manager = shard_manager
@@ -215,6 +251,11 @@ class ServiceContainer:
         self.signal_websocket_manager = signal_websocket_manager
         self.meta_controller = meta_controller
         self.trade_probability_engine = trade_probability_engine
+        self.analytics_service = analytics_service
+        self.strategy_controller = strategy_controller
+        self.user_experience_engine = user_experience_engine
+        self.active_trade_monitor = active_trade_monitor
+        self.strategy_optimizer = strategy_optimizer
         self.simulation_tester = SimulationTester(
             settings=settings,
             orchestrator=self.trading_orchestrator,

@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 
 import '../models/batch.dart';
+import '../models/activity.dart';
 import '../models/meta_analytics.dart';
 import '../models/meta_decision.dart';
 import '../models/portfolio_concentration.dart';
@@ -96,6 +97,41 @@ class ApiClient {
     final items = response.data['items'] as List<dynamic>? ?? const [];
     return items
         .map((item) => SignalModel.fromJson(item as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<ActivityItemModel?> getLiveActivity() async {
+    final response = await _getWithRetry('/v1/activity/live');
+    final data = response.data as Map<String, dynamic>;
+    if (data.isEmpty) {
+      return null;
+    }
+    return ActivityItemModel.fromJson(data);
+  }
+
+  Future<List<ActivityItemModel>> getActivityHistory({int limit = 25}) async {
+    final response = await _getWithRetry(
+      '/v1/activity/history',
+      queryParameters: <String, dynamic>{'limit': limit},
+    );
+    final items = response.data['items'] as List<dynamic>? ?? const [];
+    return items
+        .map(
+          (item) => ActivityItemModel.fromJson(item as Map<String, dynamic>),
+        )
+        .toList();
+  }
+
+  Future<List<ReadinessCardModel>> getActivityReadiness({int limit = 8}) async {
+    final response = await _getWithRetry(
+      '/v1/activity/readiness',
+      queryParameters: <String, dynamic>{'limit': limit},
+    );
+    final items = response.data['items'] as List<dynamic>? ?? const [];
+    return items
+        .map(
+          (item) => ReadinessCardModel.fromJson(item as Map<String, dynamic>),
+        )
         .toList();
   }
 
