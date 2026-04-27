@@ -195,6 +195,30 @@ class Settings(BaseSettings):
     websocket_symbols: list[str] = Field(
         default_factory=lambda: ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
     )
+    market_universe_symbols: list[str] = Field(
+        default_factory=lambda: [
+            "BTCUSDT",
+            "ETHUSDT",
+            "SOLUSDT",
+            "BNBUSDT",
+            "XRPUSDT",
+            "ADAUSDT",
+            "DOGEUSDT",
+            "AVAXUSDT",
+            "LINKUSDT",
+            "DOTUSDT",
+            "MATICUSDT",
+            "PEPEUSDT",
+            "SUIUSDT",
+            "ARBUSDT",
+            "OPUSDT",
+            "APTUSDT",
+            "NEARUSDT",
+            "ATOMUSDT",
+        ]
+    )
+    market_universe_scan_limit: int = 18
+    market_universe_refresh_seconds: float = 5.0
     dual_track_bias_ttl_seconds: int = 900
     dual_track_warmup_ttl_seconds: int = 120
     dual_track_brain_poll_seconds: int = 5

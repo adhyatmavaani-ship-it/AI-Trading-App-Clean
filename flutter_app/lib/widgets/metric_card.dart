@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../core/trading_palette.dart';
+
 class MetricCard extends StatelessWidget {
   final String label;
   final String value;
@@ -19,12 +21,19 @@ class MetricCard extends StatelessWidget {
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: const Color(0xFF1F424D)),
+        border: Border.all(color: TradingPalette.panelBorder),
         gradient: const LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: <Color>[Color(0xFF13313A), Color(0xFF0A1E24)],
+          colors: <Color>[Color(0xFF141A35), Color(0xCC0B0F25)],
         ),
+        boxShadow: const <BoxShadow>[
+          BoxShadow(
+            color: Color(0x2200FFA3),
+            blurRadius: 18,
+            offset: Offset(0, 10),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -32,7 +41,7 @@ class MetricCard extends StatelessWidget {
           Row(
             children: <Widget>[
               if (icon != null) ...<Widget>[
-                Icon(icon, size: 18, color: const Color(0xFF8DE2C8)),
+                Icon(icon, size: 18, color: TradingPalette.neonGreen),
                 const SizedBox(width: 8),
               ],
               Expanded(

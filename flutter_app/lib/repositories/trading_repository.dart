@@ -9,6 +9,7 @@ import '../models/batch.dart';
 import '../models/backtest_job.dart';
 import '../models/meta_analytics.dart';
 import '../models/meta_decision.dart';
+import '../models/market_chart.dart';
 import '../models/portfolio_concentration.dart';
 import '../models/public_dashboard.dart';
 import '../models/signal.dart';
@@ -45,6 +46,24 @@ class TradingRepository {
 
   Future<List<ReadinessCardModel>> fetchReadinessBoard({int limit = 8}) {
     return _apiClient.getActivityReadiness(limit: limit);
+  }
+
+  Future<MarketChartModel> fetchMarketCandles({
+    required String symbol,
+    String interval = '5m',
+    int limit = 96,
+    String userId = 'alice',
+  }) {
+    return _apiClient.getMarketCandles(
+      symbol: symbol,
+      interval: interval,
+      limit: limit,
+      userId: userId,
+    );
+  }
+
+  Future<MarketUniverseModel> fetchMarketUniverse({int limit = 18}) {
+    return _apiClient.getMarketUniverse(limit: limit);
   }
 
   Future<Map<String, dynamic>> fetchRiskProfile(String userId) {

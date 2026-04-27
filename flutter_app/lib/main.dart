@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core/auth_credentials_store.dart';
+import 'core/trading_palette.dart';
 import 'screens/app_shell.dart';
 
 Future<void> main() async {
@@ -37,15 +38,71 @@ class TradingApp extends StatelessWidget {
       title: 'AI Trading Platform',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF157A6E),
-          brightness: Brightness.dark,
+        colorScheme: const ColorScheme.dark(
+          primary: TradingPalette.neonGreen,
+          secondary: TradingPalette.electricBlue,
+          surface: TradingPalette.panelSoft,
+          error: TradingPalette.neonRed,
+          onPrimary: TradingPalette.midnight,
+          onSecondary: TradingPalette.textPrimary,
+          onSurface: TradingPalette.textPrimary,
+          onError: TradingPalette.textPrimary,
         ),
-        scaffoldBackgroundColor: const Color(0xFF081217),
+        scaffoldBackgroundColor: TradingPalette.midnight,
         appBarTheme: const AppBarTheme(
-          backgroundColor: Color(0xFF081217),
+          backgroundColor: Colors.transparent,
           elevation: 0,
           centerTitle: false,
+        ),
+        cardColor: TradingPalette.panel,
+        dividerColor: TradingPalette.panelBorder,
+        textTheme: const TextTheme(
+          headlineSmall: TextStyle(
+            color: TradingPalette.textPrimary,
+            fontWeight: FontWeight.w700,
+          ),
+          titleLarge: TextStyle(
+            color: TradingPalette.textPrimary,
+            fontWeight: FontWeight.w700,
+          ),
+          titleMedium: TextStyle(
+            color: TradingPalette.textPrimary,
+            fontWeight: FontWeight.w600,
+          ),
+          bodyMedium: TextStyle(
+            color: TradingPalette.textMuted,
+          ),
+          labelLarge: TextStyle(
+            color: TradingPalette.textMuted,
+            fontWeight: FontWeight.w600,
+          ),
+          labelMedium: TextStyle(
+            color: TradingPalette.textMuted,
+          ),
+          labelSmall: TextStyle(
+            color: TradingPalette.textMuted,
+          ),
+        ),
+        chipTheme: ChipThemeData(
+          backgroundColor: TradingPalette.panelSoft,
+          disabledColor: TradingPalette.panelSoft,
+          selectedColor: TradingPalette.deepNavy,
+          secondarySelectedColor: TradingPalette.deepNavy,
+          side: const BorderSide(color: TradingPalette.panelBorder),
+          labelStyle: const TextStyle(color: TradingPalette.textPrimary),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(999),
+          ),
+        ),
+        navigationBarTheme: NavigationBarThemeData(
+          backgroundColor: TradingPalette.deepNavy.withOpacity(0.94),
+          indicatorColor: TradingPalette.panelBorder,
+          labelTextStyle: WidgetStateProperty.all(
+            const TextStyle(
+              color: TradingPalette.textMuted,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
         ),
         useMaterial3: true,
       ),

@@ -3,6 +3,7 @@ import 'package:dio/dio.dart';
 import '../models/batch.dart';
 import '../models/backtest_job.dart';
 import '../models/activity.dart';
+import '../models/market_chart.dart';
 import '../models/meta_analytics.dart';
 import '../models/meta_decision.dart';
 import '../models/portfolio_concentration.dart';
@@ -136,6 +137,32 @@ class ApiClient {
           (item) => ReadinessCardModel.fromJson(item as Map<String, dynamic>),
         )
         .toList();
+  }
+
+  Future<MarketChartModel> getMarketCandles({
+    required String symbol,
+    String interval = '5m',
+    int limit = 96,
+    String userId = 'alice',
+  }) async {
+    final response = await _getWithRetry(
+      '/v1/market/candles',
+      queryParameters: <String, dynamic>{
+        'symbol': symbol,
+        'interval': interval,
+        'limit': limit,
+        'user_id': userId,
+      },
+    );
+    return MarketChartModel.fromJson(response.data as Map<String, dynamic>);
+  }
+
+  Future<MarketUniverseModel> getMarketUniverse({int limit = 18}) async {
+    final response = await _getWithRetry(
+      '/v1/market/universe',
+      queryParameters: <String, dynamic>{'limit': limit},
+    );
+    return MarketUniverseModel.fromJson(response.data as Map<String, dynamic>);
   }
 
   Future<Map<String, dynamic>> getRiskProfile(String userId) async {

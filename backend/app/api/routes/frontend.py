@@ -165,6 +165,128 @@ async def get_activity_readiness(
     return {"count": len(items), "items": items}
 
 
+@router.get(
+    "/market/candles",
+    tags=["Market"],
+    summary="Get live market candles for chart rendering",
+    description="Returns cached or exchange-backed OHLCV candles plus AI trade markers so the Flutter chart can render a TradingView-style market panel.",
+)
+async def get_market_candles(
+    symbol: str = Query(default="BTCUSDT", description="Market symbol to chart."),
+    interval: str = Query(default="5m", pattern=r"^(1m|5m|15m|1h)$", description="Candle interval to return."),
+    limit: int = Query(default=96, ge=16, le=240, description="Maximum number of candles to return."),
+    user_id: str | None = Query(default=None, description="Optional user whose AI trade markers should be included."),
+    request: Request = ...,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    try:
+        authenticated_user_id = get_user_id(request)
+        target_user_id = str(user_id or authenticated_user_id).strip()
+        _ensure_user_access(authenticated_user_id, target_user_id)
+        normalized_symbol = str(symbol or "BTCUSDT").upper().strip()
+        normalized_interval = str(interval or "5m").lower().strip()
+        frames = await container.market_data.fetch_multi_timeframe_ohlcv(
+            normalized_symbol,
+            intervals=(normalized_interval,),
+        )
+        frame = frames.get(normalized_interval)
+        if frame is None or frame.empty:
+            return {
+                "symbol": normalized_symbol,
+                "interval": normalized_interval,
+                "candles": [],
+                "markers": [],
+                "latest_price": 0.0,
+                "change_pct": 0.0,
+            }
+        trimmed = frame.tail(limit).copy()
+        for column in ("open", "high", "low", "close", "volume"):
+            trimmed[column] = trimmed[column].astype(float)
+        latest_price = float(trimmed["close"].iloc[-1])
+        previous_price = float(trimmed["close"].iloc[-2] if len(trimmed) > 1 else latest_price)
+        change_pct = ((latest_price / max(previous_price, 1e-8)) - 1.0) * 100.0
+        candles = [
+            {
+                "timestamp": int(row.get("close_time", row.get("open_time", 0)) or 0),
+                "open": round(float(row["open"]), 8),
+                "high": round(float(row["high"]), 8),
+                "low": round(float(row["low"]), 8),
+                "close": round(float(row["close"]), 8),
+                "volume": round(float(row["volume"]), 8),
+            }
+            for row in trimmed.to_dict(orient="records")
+        ]
+        analytics = getattr(container, "analytics_service", None)
+        active_trades = analytics.active_trades(target_user_id) if analytics is not None else []
+        history_trades = analytics.trade_history(target_user_id, limit=120) if analytics is not None else []
+        markers: list[dict[str, object]] = []
+        for trade in [*active_trades, *history_trades]:
+            if str(trade.get("symbol", "")).upper() != normalized_symbol:
+                continue
+            trade_id = str(trade.get("trade_id", "") or "")
+            entry = float(trade.get("entry", 0.0) or 0.0)
+            exit_price = float(trade.get("exit", 0.0) or 0.0)
+            side = str(trade.get("side", "") or "BUY")
+            opened_at = trade.get("opened_at") or trade.get("created_at") or trade.get("submitted_at")
+            closed_at = trade.get("closed_at") or trade.get("updated_at")
+            if entry > 0 and opened_at:
+                markers.append(
+                    {
+                        "type": "entry",
+                        "trade_id": trade_id,
+                        "side": side,
+                        "price": round(entry, 8),
+                        "timestamp": opened_at,
+                    }
+                )
+            if exit_price > 0 and closed_at:
+                markers.append(
+                    {
+                        "type": "exit",
+                        "trade_id": trade_id,
+                        "side": side,
+                        "price": round(exit_price, 8),
+                        "timestamp": closed_at,
+                        "exit_reason": trade.get("exit_reason"),
+                    }
+                )
+        return {
+            "symbol": normalized_symbol,
+            "interval": normalized_interval,
+            "latest_price": round(latest_price, 8),
+            "change_pct": round(change_pct, 4),
+            "candles": candles,
+            "markers": markers,
+        }
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get(
+    "/market/universe",
+    tags=["Market"],
+    summary="Get tradable market universe snapshot",
+    description="Returns top liquid symbols and derived categories like top gainers, high volatility, and AI picks for the frontend market board.",
+)
+async def get_market_universe(
+    limit: int = Query(default=18, ge=6, le=50, description="Maximum number of symbols to scan."),
+    request: Request = ...,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    try:
+        get_user_id(request)
+        scanner = getattr(container, "market_universe_scanner", None)
+        if scanner is None:
+            return {"count": 0, "items": [], "categories": {}}
+        return await scanner.snapshot(limit=limit)
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @router.post(
     "/test/mock-price-move",
     tags=["Diagnostics"],

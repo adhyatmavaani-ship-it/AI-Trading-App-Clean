@@ -20,6 +20,7 @@ from app.services.firestore_repo import FirestoreRepository
 from app.services.latency_monitor import LatencyMonitor
 from app.services.liquidity_monitor import LiquidityMonitor
 from app.services.market_data import MarketDataService
+from app.services.market_universe_scanner import MarketUniverseScanner
 from app.services.meta_controller import MetaController
 from app.services.model_stability import ModelStabilityService
 from app.services.micro_mode_controller import MicroModeController
@@ -113,6 +114,11 @@ class ServiceContainer:
         )
         portfolio_manager = PortfolioManager(settings)
         user_experience_engine = UserExperienceEngine(settings=settings, cache=cache)
+        market_universe_scanner = MarketUniverseScanner(
+            settings=settings,
+            market_data=market_data,
+            user_experience_engine=user_experience_engine,
+        )
         analytics_service = AnalyticsService(
             settings=settings,
             cache=cache,
@@ -270,6 +276,7 @@ class ServiceContainer:
         self.analytics_service = analytics_service
         self.strategy_controller = strategy_controller
         self.user_experience_engine = user_experience_engine
+        self.market_universe_scanner = market_universe_scanner
         self.risk_controller = risk_controller
         self.active_trade_monitor = active_trade_monitor
         self.strategy_optimizer = strategy_optimizer

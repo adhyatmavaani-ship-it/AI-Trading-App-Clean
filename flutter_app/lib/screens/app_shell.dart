@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../core/trading_palette.dart';
 import 'backtest_screen.dart';
 import 'dashboard_screen.dart';
 import 'pnl_screen.dart';
@@ -32,7 +33,19 @@ class _AppShellState extends State<AppShell> {
       appBar: AppBar(
         title: const Text('AI Crypto Pulse'),
       ),
-      body: SafeArea(child: _screens[_index]),
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: <Color>[
+              TradingPalette.deepNavy,
+              TradingPalette.midnight,
+            ],
+          ),
+        ),
+        child: SafeArea(child: _screens[_index]),
+      ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _index,
         onDestinationSelected: (int value) {

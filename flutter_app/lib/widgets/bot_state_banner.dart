@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../core/trading_palette.dart';
 import '../models/activity.dart';
 
 class BotStateBanner extends StatelessWidget {
@@ -13,13 +14,13 @@ class BotStateBanner extends StatelessWidget {
   Color _accentColor() {
     switch (activity.botState) {
       case 'EXECUTING':
-        return const Color(0xFF8DE2C8);
+        return TradingPalette.neonGreen;
       case 'ANALYZING':
-        return const Color(0xFF7BC6FF);
+        return TradingPalette.electricBlue;
       case 'SCANNING':
-        return const Color(0xFFFFD28A);
+        return TradingPalette.amber;
       default:
-        return const Color(0xFFB1C5D8);
+        return TradingPalette.textMuted;
     }
   }
 
@@ -34,9 +35,9 @@ class BotStateBanner extends StatelessWidget {
         gradient: const LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: <Color>[Color(0xFF14313C), Color(0xFF0B1B22)],
+          colors: <Color>[Color(0xFF141A35), Color(0xCC090D1F)],
         ),
-        border: Border.all(color: const Color(0xFF234655)),
+        border: Border.all(color: TradingPalette.panelBorder),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -80,7 +81,7 @@ class BotStateBanner extends StatelessWidget {
           Text(
             activity.message,
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: const Color(0xFF9CB3C8),
+                  color: TradingPalette.textMuted,
                 ),
           ),
           const SizedBox(height: 12),
@@ -91,17 +92,17 @@ class BotStateBanner extends StatelessWidget {
               if (activity.symbol != null && activity.symbol!.isNotEmpty)
                 Chip(
                   label: Text(activity.symbol!),
-                  backgroundColor: const Color(0xFF1A2432),
+                  backgroundColor: TradingPalette.panelSoft,
                 ),
               if (activity.reason != null && activity.reason!.isNotEmpty)
                 Chip(
                   label: Text(activity.reason!),
-                  backgroundColor: const Color(0xFF1B3042),
+                  backgroundColor: TradingPalette.panelSoft,
                 ),
               if (activity.nextScan != null && activity.nextScan!.isNotEmpty)
                 Chip(
                   label: Text('Next ${activity.nextScan!}'),
-                  backgroundColor: const Color(0xFF153540),
+                  backgroundColor: TradingPalette.panelSoft,
                 ),
               Chip(
                 label: Text(
@@ -109,7 +110,7 @@ class BotStateBanner extends StatelessWidget {
                       ? 'Confidence Building'
                       : 'Waiting Safely',
                 ),
-                backgroundColor: const Color(0xFF173A2F),
+                backgroundColor: const Color(0x3314FFB8),
               ),
             ],
           ),
