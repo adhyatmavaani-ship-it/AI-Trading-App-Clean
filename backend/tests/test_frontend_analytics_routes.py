@@ -48,10 +48,53 @@ class StubUserExperienceEngine:
         ][:limit]
 
 
+class StubMarketData:
+    def __init__(self):
+        self.last_move = None
+
+    def diagnostics(self):
+        return {"resolved_mode": "simulated", "last_fetch_details": {}}
+
+    async def fetch_latest_price(self, symbol: str):
+        return 100.0
+
+    async def fetch_order_book(self, symbol: str):
+        return {"bids": [{"price": 99.5, "qty": 1.0}], "asks": [{"price": 100.5, "qty": 1.0}]}
+
+    async def fetch_multi_timeframe_ohlcv(self, symbol: str, intervals=("1m", "5m", "15m")):
+        return {interval: [] for interval in intervals}
+
+    def inject_test_market_move(self, symbol: str, *, change: float, volume_multiplier: float = 3.0, intervals=("1m", "5m", "15m", "1h")):
+        self.last_move = {
+            "symbol": symbol,
+            "change": change,
+            "volume_multiplier": volume_multiplier,
+            "intervals": list(intervals),
+        }
+        return {
+            "symbol": symbol,
+            "reference_price": 100.0,
+            "updated_price": 98.0,
+            "change": change,
+            "volume_multiplier": volume_multiplier,
+            "updated_intervals": {"5m": 300},
+        }
+
+
+class StubActiveTradeMonitor:
+    def __init__(self):
+        self.runs = 0
+
+    async def run_once(self):
+        self.runs += 1
+
+
 class StubContainer:
     def __init__(self):
         self.analytics_service = StubAnalyticsService()
         self.user_experience_engine = StubUserExperienceEngine()
+        self.market_data = StubMarketData()
+        self.active_trade_monitor = StubActiveTradeMonitor()
 
 
 @unittest.skipUnless(FASTAPI_AVAILABLE, "fastapi is not installed")
@@ -113,6 +156,18 @@ class FrontendAnalyticsRoutesTest(unittest.TestCase):
         response = self.client.get("/v1/activity/readiness", headers={"X-API-Key": "route-token"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["items"][0]["symbol"], "ETHUSDT")
+
+    def test_mock_price_move_endpoint(self):
+        response = self.client.post(
+            "/v1/test/mock-price-move",
+            headers={"X-API-Key": "route-token"},
+            json={"symbol": "BTCUSDT", "change": -0.02},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["symbol"], "BTCUSDT")
+        self.assertTrue(payload["monitor_ran"])
+        self.assertEqual(payload["move"]["change"], -0.02)
 
 
 if __name__ == "__main__":

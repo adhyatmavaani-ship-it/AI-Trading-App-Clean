@@ -54,8 +54,8 @@ class SimulationTester:
                     price_forecast_return=random.uniform(-0.02, 0.02),
                     expected_return=random.uniform(-0.015, 0.02),
                     expected_risk=volatility,
-                    trade_probability=random.uniform(0.52, 0.9),
-                    confidence_score=random.uniform(0.52, 0.9),
+                    trade_probability=random.uniform(0.72, 0.95),
+                    confidence_score=random.uniform(0.72, 0.95),
                     decision="BUY" if random.random() > 0.48 else "SELL",
                     model_version="v1",
                     model_breakdown={"simulated": 1.0},
@@ -101,6 +101,7 @@ class SimulationTester:
                 if volatility > 0.05:
                     pnl -= risk.position_notional * 0.01
                 current_equity += pnl
+                self.orchestrator.record_trade_outcome("sim-user", response.trade_id, pnl)
                 equity_curve.append(current_equity)
                 profits.append(pnl)
                 wins += int(pnl > 0)

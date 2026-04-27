@@ -539,6 +539,15 @@ class PortfolioLedgerService:
                 active_index_changed = True
                 continue
             active_trades.append(trade)
+        if not active_trades:
+            fallback_trades = [
+                trade
+                for trade in self.redis_state_manager.restore_active_trades()
+                if str(trade.get("user_id", "") or "") == user_id
+            ]
+            if fallback_trades:
+                active_trades = fallback_trades
+                active_index_changed = True
         if active_index_changed:
             self.cache.set_json(
                 self._active_index_key(user_id),
@@ -1171,26 +1180,32 @@ class PortfolioLedgerService:
             ttl=self.settings.monitor_state_ttl_seconds,
         )
         if self.firestore is not None and hasattr(self.firestore, "save_portfolio_concentration_snapshot"):
-            self.firestore.save_portfolio_concentration_snapshot(user_id, snapshot)
+            try:
+                self.firestore.save_portfolio_concentration_snapshot(user_id, snapshot)
+            except RuntimeError:
+                pass
         if self.firestore is not None and hasattr(self.firestore, "save_factor_attribution_snapshot"):
-            self.firestore.save_factor_attribution_snapshot(
-                user_id,
-                {
-                    "updated_at": snapshot.get("updated_at"),
-                    "factor_universe_symbols": list(snapshot.get("factor_universe_symbols") or []),
-                    "factor_weights": dict(snapshot.get("factor_weights") or {}),
-                    "factor_attribution": dict(snapshot.get("factor_attribution") or {}),
-                    "factor_sleeve_budget_targets": dict(snapshot.get("factor_sleeve_budget_targets") or {}),
-                    "factor_sleeve_budget_deltas": dict(snapshot.get("factor_sleeve_budget_deltas") or {}),
-                    "factor_sleeve_budget_turnover": float(snapshot.get("factor_sleeve_budget_turnover", 0.0) or 0.0),
-                    "max_factor_sleeve_budget_gap_pct": float(snapshot.get("max_factor_sleeve_budget_gap_pct", 0.0) or 0.0),
-                    "dominant_over_budget_sleeve": snapshot.get("dominant_over_budget_sleeve"),
-                    "dominant_under_budget_sleeve": snapshot.get("dominant_under_budget_sleeve"),
-                    "dominant_factor_sleeve": snapshot.get("dominant_factor_sleeve"),
-                    "factor_regime": snapshot.get("factor_regime"),
-                    "factor_model": snapshot.get("factor_model"),
-                },
-            )
+            try:
+                self.firestore.save_factor_attribution_snapshot(
+                    user_id,
+                    {
+                        "updated_at": snapshot.get("updated_at"),
+                        "factor_universe_symbols": list(snapshot.get("factor_universe_symbols") or []),
+                        "factor_weights": dict(snapshot.get("factor_weights") or {}),
+                        "factor_attribution": dict(snapshot.get("factor_attribution") or {}),
+                        "factor_sleeve_budget_targets": dict(snapshot.get("factor_sleeve_budget_targets") or {}),
+                        "factor_sleeve_budget_deltas": dict(snapshot.get("factor_sleeve_budget_deltas") or {}),
+                        "factor_sleeve_budget_turnover": float(snapshot.get("factor_sleeve_budget_turnover", 0.0) or 0.0),
+                        "max_factor_sleeve_budget_gap_pct": float(snapshot.get("max_factor_sleeve_budget_gap_pct", 0.0) or 0.0),
+                        "dominant_over_budget_sleeve": snapshot.get("dominant_over_budget_sleeve"),
+                        "dominant_under_budget_sleeve": snapshot.get("dominant_under_budget_sleeve"),
+                        "dominant_factor_sleeve": snapshot.get("dominant_factor_sleeve"),
+                        "factor_regime": snapshot.get("factor_regime"),
+                        "factor_model": snapshot.get("factor_model"),
+                    },
+                )
+            except RuntimeError:
+                pass
 
     def _record_factor_sleeve_outcome(self, *, user_id: str, symbol: str, pnl: float) -> None:
         sleeve = self._factor_sleeve_for_symbol(user_id=user_id, symbol=symbol)

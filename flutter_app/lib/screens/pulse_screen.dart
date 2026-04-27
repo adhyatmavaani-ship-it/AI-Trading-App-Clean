@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'dart:async';
 
 import '../features/activity/providers/activity_providers.dart';
 import '../features/meta/providers/meta_providers.dart';
@@ -35,6 +36,7 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
       _initialReadinessSubscription;
   ProviderSubscription<AsyncValue<ActivityItemModel>>?
       _activityStreamSubscription;
+  Timer? _autoRefreshTimer;
 
   @override
   void initState() {
@@ -82,6 +84,10 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
         ref.read(activityFeedProvider.notifier).setError(error);
       });
     });
+    _autoRefreshTimer = Timer.periodic(
+      const Duration(seconds: 15),
+      (_) => _triggerAutoRefresh(),
+    );
   }
 
   @override
@@ -91,7 +97,22 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
     _initialActivitySubscription?.close();
     _initialReadinessSubscription?.close();
     _activityStreamSubscription?.close();
+    _autoRefreshTimer?.cancel();
     super.dispose();
+  }
+
+  void _triggerAutoRefresh() {
+    if (!mounted) {
+      return;
+    }
+    ref.invalidate(initialSignalsProvider);
+    ref.invalidate(initialActivityHistoryProvider);
+    ref.invalidate(initialReadinessBoardProvider);
+    ref.invalidate(batchesProvider);
+    ref.invalidate(systemHealthProvider);
+    ref.invalidate(concentrationHistoryProvider);
+    ref.invalidate(modelStabilityConcentrationHistoryProvider);
+    ref.invalidate(metaAnalyticsProvider);
   }
 
   List<Widget> _concentrationBadges(
@@ -197,12 +218,7 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
 
     return RefreshIndicator(
       onRefresh: () async {
-        ref.invalidate(initialSignalsProvider);
-        ref.invalidate(initialActivityHistoryProvider);
-        ref.invalidate(initialReadinessBoardProvider);
-        ref.invalidate(batchesProvider);
-        ref.invalidate(systemHealthProvider);
-        ref.invalidate(concentrationHistoryProvider);
+        _triggerAutoRefresh();
       },
       child: ListView(
         padding: const EdgeInsets.all(20),

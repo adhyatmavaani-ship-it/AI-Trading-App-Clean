@@ -3,13 +3,16 @@ import 'dart:async';
 import '../core/api_client.dart';
 import '../core/constants.dart';
 import '../core/websocket_service.dart';
+import '../models/active_trade.dart';
 import '../models/activity.dart';
 import '../models/batch.dart';
+import '../models/backtest_job.dart';
 import '../models/meta_analytics.dart';
 import '../models/meta_decision.dart';
 import '../models/portfolio_concentration.dart';
 import '../models/public_dashboard.dart';
 import '../models/signal.dart';
+import '../models/system_diagnostics.dart';
 import '../models/system_health.dart';
 import '../models/trade_timeline.dart';
 import '../models/user_pnl.dart';
@@ -44,6 +47,61 @@ class TradingRepository {
     return _apiClient.getActivityReadiness(limit: limit);
   }
 
+  Future<Map<String, dynamic>> fetchRiskProfile(String userId) {
+    return _apiClient.getRiskProfile(userId);
+  }
+
+  Future<Map<String, dynamic>> updateRiskProfile(
+    String userId, {
+    required String level,
+  }) {
+    return _apiClient.updateRiskProfile(userId, level: level);
+  }
+
+  Future<SystemDiagnosticsModel> fetchExchangeDiagnostics({
+    String sampleSymbol = 'BTCUSDT',
+  }) {
+    return _apiClient.getExchangeDiagnostics(sampleSymbol: sampleSymbol);
+  }
+
+  Stream<SystemDiagnosticsModel> watchExchangeDiagnostics({
+    String sampleSymbol = 'BTCUSDT',
+  }) async* {
+    yield await fetchExchangeDiagnostics(sampleSymbol: sampleSymbol);
+    while (true) {
+      await Future<void>.delayed(AppConstants.pollingInterval);
+      yield await fetchExchangeDiagnostics(sampleSymbol: sampleSymbol);
+    }
+  }
+
+  Future<List<ActiveTradeModel>> fetchActiveTrades(String userId) {
+    return _apiClient.getActiveTrades(userId);
+  }
+
+  Future<Map<String, dynamic>> triggerMockPriceMove({
+    required String symbol,
+    required double change,
+    String? userId,
+    double volumeMultiplier = 3.0,
+    bool runMonitor = true,
+  }) {
+    return _apiClient.triggerMockPriceMove(
+      symbol: symbol,
+      change: change,
+      userId: userId,
+      volumeMultiplier: volumeMultiplier,
+      runMonitor: runMonitor,
+    );
+  }
+
+  Stream<List<ActiveTradeModel>> watchActiveTrades(String userId) async* {
+    yield await fetchActiveTrades(userId);
+    while (true) {
+      await Future<void>.delayed(AppConstants.pollingInterval);
+      yield await fetchActiveTrades(userId);
+    }
+  }
+
   Stream<ActivityItemModel> watchActivity() {
     return _webSocketService.connectActivity();
   }
@@ -67,6 +125,37 @@ class TradingRepository {
 
   Future<List<BatchModel>> fetchBatches({int limit = 25}) {
     return _apiClient.getBatches(limit: limit);
+  }
+
+  Future<BacktestJobStatusModel> runBacktest(
+    BacktestRunRequestModel request,
+  ) {
+    return _apiClient.runBacktest(request);
+  }
+
+  Future<BacktestJobStatusModel> compareBacktest(
+    BacktestCompareRequestModel request,
+  ) {
+    return _apiClient.compareBacktest(request);
+  }
+
+  Future<BacktestJobStatusModel> fetchBacktestStatus(String jobId) {
+    return _apiClient.getBacktestStatus(jobId);
+  }
+
+  Future<String> exportBacktestCsv(String jobId) {
+    return _apiClient.exportBacktestCsv(jobId);
+  }
+
+  Stream<BacktestJobStatusModel> watchBacktestStatus(String jobId) async* {
+    while (true) {
+      final status = await fetchBacktestStatus(jobId);
+      yield status;
+      if (status.isTerminal) {
+        break;
+      }
+      await Future<void>.delayed(AppConstants.pollingInterval);
+    }
   }
 
   Stream<List<BatchModel>> watchBatches({int limit = 25}) async* {

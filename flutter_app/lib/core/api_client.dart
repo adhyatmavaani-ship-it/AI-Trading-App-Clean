@@ -1,12 +1,15 @@
 import 'package:dio/dio.dart';
 
 import '../models/batch.dart';
+import '../models/backtest_job.dart';
 import '../models/activity.dart';
 import '../models/meta_analytics.dart';
 import '../models/meta_decision.dart';
 import '../models/portfolio_concentration.dart';
 import '../models/public_dashboard.dart';
 import '../models/signal.dart';
+import '../models/active_trade.dart';
+import '../models/system_diagnostics.dart';
 import '../models/system_health.dart';
 import '../models/trade_timeline.dart';
 import '../models/user_pnl.dart';
@@ -135,6 +138,73 @@ class ApiClient {
         .toList();
   }
 
+  Future<Map<String, dynamic>> getRiskProfile(String userId) async {
+    final response = await _getWithRetry(
+      '/v1/risk/profile',
+      queryParameters: <String, dynamic>{'user_id': userId},
+    );
+    return response.data as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> updateRiskProfile(
+    String userId, {
+    required String level,
+  }) async {
+    final response = await _dio.post<dynamic>(
+      '/v1/risk/profile',
+      queryParameters: <String, dynamic>{
+        'user_id': userId,
+        'level': level,
+      },
+    );
+    return response.data as Map<String, dynamic>;
+  }
+
+  Future<SystemDiagnosticsModel> getExchangeDiagnostics({
+    String sampleSymbol = 'BTCUSDT',
+  }) async {
+    final response = await _getWithRetry(
+      '/v1/diag/exchange',
+      queryParameters: <String, dynamic>{'sample_symbol': sampleSymbol},
+    );
+    return SystemDiagnosticsModel.fromJson(
+      response.data as Map<String, dynamic>,
+    );
+  }
+
+  Future<List<ActiveTradeModel>> getActiveTrades(String userId) async {
+    final response = await _getWithRetry(
+      '/v1/trades/active',
+      queryParameters: <String, dynamic>{'user_id': userId},
+    );
+    final items = response.data['items'] as List<dynamic>? ?? const [];
+    return items
+        .map(
+          (item) => ActiveTradeModel.fromJson(item as Map<String, dynamic>),
+        )
+        .toList();
+  }
+
+  Future<Map<String, dynamic>> triggerMockPriceMove({
+    required String symbol,
+    required double change,
+    String? userId,
+    double volumeMultiplier = 3.0,
+    bool runMonitor = true,
+  }) async {
+    final response = await _dio.post<dynamic>(
+      '/v1/test/mock-price-move',
+      data: <String, dynamic>{
+        'symbol': symbol,
+        'change': change,
+        if (userId != null && userId.trim().isNotEmpty) 'user_id': userId,
+        'volume_multiplier': volumeMultiplier,
+        'run_monitor': runMonitor,
+      },
+    );
+    return response.data as Map<String, dynamic>;
+  }
+
   Future<List<BatchModel>> getBatches({int limit = 25}) async {
     final response = await _getWithRetry(
       '/v1/vom/batches',
@@ -144,6 +214,45 @@ class ApiClient {
     return items
         .map((item) => BatchModel.fromJson(item as Map<String, dynamic>))
         .toList();
+  }
+
+  Future<BacktestJobStatusModel> runBacktest(
+    BacktestRunRequestModel request,
+  ) async {
+    final response = await _dio.post<dynamic>(
+      '/v1/backtest/run',
+      data: request.toJson(),
+    );
+    return BacktestJobStatusModel.fromJson(
+      response.data as Map<String, dynamic>,
+    );
+  }
+
+  Future<BacktestJobStatusModel> getBacktestStatus(String jobId) async {
+    final response = await _getWithRetry('/v1/backtest/status/$jobId');
+    return BacktestJobStatusModel.fromJson(
+      response.data as Map<String, dynamic>,
+    );
+  }
+
+  Future<BacktestJobStatusModel> compareBacktest(
+    BacktestCompareRequestModel request,
+  ) async {
+    final response = await _dio.post<dynamic>(
+      '/v1/backtest/compare',
+      data: request.toJson(),
+    );
+    return BacktestJobStatusModel.fromJson(
+      response.data as Map<String, dynamic>,
+    );
+  }
+
+  Future<String> exportBacktestCsv(String jobId) async {
+    final response = await _dio.get<String>(
+      '/v1/backtest/export/$jobId',
+      options: Options(responseType: ResponseType.plain),
+    );
+    return response.data ?? '';
   }
 
   Future<UserPnLModel> getUserPnL(String userId) async {

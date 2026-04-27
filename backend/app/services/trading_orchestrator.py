@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from app.core.exceptions import StateError
+from app.core.exceptions import RiskLimitExceededError, StateError
 from app.schemas.trading import (
     AIInference,
     AlphaContext,
@@ -52,6 +52,7 @@ if TYPE_CHECKING:
     from app.services.paper_execution import PaperExecutionEngine
     from app.services.portfolio_manager import PortfolioManager
     from app.services.portfolio_ledger import PortfolioLedgerService
+    from app.services.risk_controller import RiskController
     from app.services.redis_state_manager import RedisStateManager
     from app.services.risk_engine import RiskEngine
     from app.services.shard_manager import ShardManager
@@ -108,6 +109,7 @@ class TradingOrchestrator:
     strategy_controller: StrategyController | None = None
     portfolio_manager: PortfolioManager | None = None
     user_experience_engine: UserExperienceEngine | None = None
+    risk_controller: RiskController | None = None
 
     def __post_init__(self) -> None:
         self.trade_safety_engine = LiquiditySlippageEngine(
@@ -361,7 +363,7 @@ class TradingOrchestrator:
         frames = await self.market_data.fetch_multi_timeframe_ohlcv(symbol)
         order_book = await self.market_data.fetch_order_book(symbol)
         snapshot = self.feature_pipeline.build(symbol, frames, order_book)
-        snapshot.features["regime"] = str(snapshot.regime)
+        snapshot.features["regime_state"] = self._encode_market_state(snapshot.regime)
         snapshot.features["regime_confidence"] = float(snapshot.regime_confidence)
         if self.strategy_controller is not None:
             self.strategy_controller.record_regime(str(snapshot.regime), float(snapshot.regime_confidence), "system")
@@ -558,14 +560,27 @@ class TradingOrchestrator:
         risk_budget = risk.risk_budget * rollout.capital_fraction
         if meta_decision is not None:
             risk_budget *= meta_decision.capital_multiplier
-        final_action = "HOLD" if strategy == "NO_TRADE" else self._final_signal_action(snapshot, effective_inference, strategy_decision)
+        trade_direction = self._final_signal_action(snapshot, effective_inference, strategy_decision)
         final_confidence = max(
             float(strategy_decision.metadata.get("adjusted_confidence", strategy_decision.confidence) or 0.0),
             float(effective_inference.confidence_score),
         )
+        force_override_active = self._force_execution_override_active(final_confidence)
+        if force_override_active and strategy == "NO_TRADE" and trade_direction in {"BUY", "SELL"}:
+            diagnostics["force_execution_override"] = {
+                "active": True,
+                "confidence_floor": float(self.settings.force_execution_override_confidence_floor),
+                "original_rejection_reasons": list(diagnostics["rejection_reasons"]),
+            }
+            strategy = "FORCED_PAPER_TRADE"
+            diagnostics["rejection_reasons"].append("force_execution_override")
+        final_action = "HOLD" if strategy == "NO_TRADE" else trade_direction
         accepted_trade = strategy != "NO_TRADE" and final_action in {"BUY", "SELL"}
         rejection_reason = "; ".join(dict.fromkeys(diagnostics["rejection_reasons"])) or None
-        low_confidence = strategy == "NO_TRADE" or final_confidence < max(self.settings.signal_min_publish_confidence, 0.4)
+        low_confidence = (
+            not force_override_active
+            and (strategy == "NO_TRADE" or final_confidence < max(self.settings.signal_min_publish_confidence, 0.4))
+        )
         published_strategy = strategy if strategy != "NO_TRADE" else "LOW_CONFIDENCE_WATCHLIST"
         payload = {
             "symbol": symbol,
@@ -625,6 +640,7 @@ class TradingOrchestrator:
             "ai_layer_mode": ai_layer["mode"],
             "ai_layer_disabled": ai_layer["disabled"],
             "ai_fallback_reason": ai_layer["reason"],
+            "forced_execution_override": force_override_active and accepted_trade,
             "pipeline_diagnostics": diagnostics,
         }
         if low_confidence:
@@ -783,6 +799,7 @@ class TradingOrchestrator:
         meta_decision = None
         order_submitted = False
         recovery_state_persisted = False
+        force_override_active = self._force_execution_override_active(request.confidence)
         if request.signal_id:
             signal_lock_key = f"signal:lock:{request.signal_id}"
             cached_response = await self._claim_signal(request.signal_id, request.symbol, request.side)
@@ -807,6 +824,7 @@ class TradingOrchestrator:
                 raise ValueError("quantity or requested_notional is required")
             drawdown_status = self.drawdown_protection.load(request.user_id)
             protection_controls = self.drawdown_protection.load_controls(request.user_id)
+            risk_profile = self.risk_controller.profile(request.user_id) if self.risk_controller is not None else None
             account_equity = drawdown_status.current_equity
             if drawdown_status.state in {"PAUSED", "COOLDOWN"}:
                 raise ValueError("Trading is paused by drawdown protection")
@@ -814,12 +832,20 @@ class TradingOrchestrator:
                 raise ValueError(f"Trading is paused by emergency stop: {protection_controls.emergency_stop_reason or 'manual'}")
             if self._degraded_mode():
                 raise ValueError("Trading is paused because execution latency is degraded")
-            if float(request.confidence) < float(self.settings.strict_trade_confidence_floor):
+            effective_confidence_floor = float(
+                risk_profile.confidence_floor
+                if risk_profile is not None
+                else self.settings.strict_trade_confidence_floor
+            )
+            if float(request.confidence) < effective_confidence_floor and not force_override_active:
                 raise ValueError("Trade confidence is below the strict execution floor")
-            if not request.alpha_context.security.tradable:
+            if risk_profile is not None and risk_profile.allowed_symbols:
+                if request.symbol.upper() not in set(risk_profile.allowed_symbols):
+                    raise ValueError(f"Risk profile {risk_profile.level} blocks {request.symbol.upper()}")
+            if not request.alpha_context.security.tradable and not force_override_active:
                 raise ValueError("Security scanner blocked trade")
             whale_signal = self._whale_direction(request.alpha_context)
-            if self._whale_conflict(request.side, whale_signal):
+            if self._whale_conflict(request.side, whale_signal) and not force_override_active:
                 raise ValueError("Whale tracker vetoed conflicting trade")
             rollout = self.rollout_manager.status()
             capital_multiplier = self.drawdown_protection.capital_multiplier(request.user_id) * rollout.capital_fraction
@@ -846,10 +872,23 @@ class TradingOrchestrator:
                 }
             )
             self.system_monitor.update_portfolio_concentration(portfolio_summary)
-            if int(portfolio_summary.get("active_trades", 0) or 0) >= int(self.settings.max_active_trades):
-                raise ValueError("Maximum active trades reached")
+            effective_max_active_trades = int(
+                risk_profile.max_active_trades
+                if risk_profile is not None
+                else self.settings.max_active_trades
+            )
+            if int(portfolio_summary.get("active_trades", 0) or 0) >= effective_max_active_trades:
+                raise RiskLimitExceededError(
+                    "Maximum active trades reached",
+                    error_code="MAX_ACTIVE_TRADES_REACHED",
+                    details={"max_active_trades": effective_max_active_trades},
+                )
             if float((portfolio_summary.get("symbol_exposure_pct") or {}).get(request.symbol.upper(), 0.0) or 0.0) > 0.0:
-                raise ValueError("An active trade already exists for this symbol")
+                raise RiskLimitExceededError(
+                    "An active trade already exists for this symbol",
+                    error_code="DUPLICATE_ACTIVE_SYMBOL",
+                    details={"symbol": request.symbol.upper()},
+                )
             active_trades = [
                 trade
                 for trade in self.redis_state_manager.restore_active_trades()
@@ -892,6 +931,9 @@ class TradingOrchestrator:
                     raise ValueError(portfolio_assessment["reason"] or "Portfolio intelligence blocked trade")
                 portfolio_risk_fraction = float(portfolio_assessment["risk_fraction"])
                 portfolio_risk_multiplier = portfolio_risk_fraction / max(float(self.settings.portfolio_base_risk_per_trade), 1e-8)
+            if risk_profile is not None:
+                portfolio_risk_fraction = min(float(portfolio_risk_fraction), float(risk_profile.risk_fraction))
+                portfolio_risk_multiplier = portfolio_risk_fraction / max(float(self.settings.portfolio_base_risk_per_trade), 1e-8)
             request.feature_snapshot.update(
                 {
                     "portfolio_risk_fraction": float(portfolio_risk_fraction),
@@ -907,9 +949,12 @@ class TradingOrchestrator:
                 confidence=request.confidence,
                 regime=str(request.feature_snapshot.get("regime", request.feature_snapshot.get("regime_type", "RANGING"))),
                 volatility=float(request.feature_snapshot.get("volatility", request.expected_risk or 0.0)),
+                confidence_floor_override=effective_confidence_floor,
             )
-            if not strict_gate["allow_trade"]:
+            if not strict_gate["allow_trade"] and not force_override_active:
                 raise ValueError(f"Strict trade gate rejected trade: {strict_gate['reason']}")
+            if force_override_active and not strict_gate["allow_trade"]:
+                request.feature_snapshot["forced_execution_override"] = 1.0
             if hasattr(self.model_stability, "update_concentration_state"):
                 self.model_stability.update_concentration_state(portfolio_summary)
             self._apply_portfolio_context_to_feature_snapshot(
@@ -934,7 +979,7 @@ class TradingOrchestrator:
                     regime_type=str(request.feature_snapshot.get("regime_type", request.feature_snapshot.get("regime", "RANGING"))),
                     trade_intelligence_metrics=self._trade_intelligence_metrics(request.feature_snapshot),
                 )
-                if not meta_decision.allow_trade:
+                if not meta_decision.allow_trade and not force_override_active:
                     blocked_trade_id = request.signal_id or f"blocked:{request.symbol}:{int(datetime.now(timezone.utc).timestamp())}"
                     self.meta_controller.log_blocked_trade(
                         trade_id=blocked_trade_id,
@@ -968,7 +1013,10 @@ class TradingOrchestrator:
             ) if self._is_micro_capital(account_equity) else {"allowed": True, "reasons": []}
             if not micro_validation["allowed"]:
                 raise ValueError(f"Micro mode rejected trade: {','.join(micro_validation['reasons'])}")
-            effective_capital_multiplier = capital_multiplier * (meta_decision.capital_multiplier if meta_decision is not None else 1.0)
+            meta_capital_multiplier = meta_decision.capital_multiplier if meta_decision is not None else 1.0
+            if force_override_active and meta_decision is not None and not meta_decision.allow_trade:
+                meta_capital_multiplier = 1.0
+            effective_capital_multiplier = capital_multiplier * meta_capital_multiplier
             adaptive_config = self._adaptive_strategy_config()
             effective_capital_multiplier *= float(adaptive_config.get("capital_allocation_multiplier", 1.0) or 1.0)
             effective_capital_multiplier *= self._symbol_allocation_multiplier(request.symbol)
@@ -1138,7 +1186,8 @@ class TradingOrchestrator:
             tax_estimate = self.tax_engine.estimate_trade_tax(
                 profit=(request.expected_return or 0.0) * executed_notional
             )
-            self.firestore.save_trade(
+            self._safe_firestore_call(
+                "save_trade",
                 {
                     "trade_id": response.trade_id,
                     "user_id": request.user_id,
@@ -1193,7 +1242,8 @@ class TradingOrchestrator:
                     "meta_capital_multiplier": meta_decision.capital_multiplier if meta_decision is not None else 1.0,
                     "meta_health_ok": meta_decision.health.healthy if meta_decision is not None else True,
                     **tax_estimate,
-                }
+                },
+                swallow_exceptions=False,
             )
             self.cache.publish("trades", json.dumps({"trade_id": response.trade_id, "symbol": request.symbol, "status": response.status}))
             if self.meta_controller is not None and meta_decision is not None:
@@ -1377,7 +1427,8 @@ class TradingOrchestrator:
                     "realized_pnl": pnl,
                 },
             )
-        self.firestore.save_micro_performance(
+        self._safe_firestore_call(
+            "save_micro_performance",
             {
                 "trade_id": trade_id,
                 "user_id": user_id,
@@ -1385,7 +1436,7 @@ class TradingOrchestrator:
                 "realized_pnl": pnl,
                 **micro_performance,
                 **paper_live,
-            }
+            },
         )
         if self_healing_report := (
             self.self_healing_service.handle_trade_outcome(trade_id, active_trade, pnl)
@@ -2472,6 +2523,7 @@ class TradingOrchestrator:
         confidence: float,
         regime: str,
         volatility: float,
+        confidence_floor_override: float | None = None,
     ) -> dict[str, object]:
         normalized_side = str(side or "HOLD").upper()
         if normalized_side not in {"BUY", "SELL"}:
@@ -2482,7 +2534,11 @@ class TradingOrchestrator:
                 "reason_code": "no_direction",
                 "components": {},
             }
-        confidence_ok = float(confidence) >= float(self.settings.strict_trade_confidence_floor)
+        confidence_ok = float(confidence) >= float(
+            confidence_floor_override
+            if confidence_floor_override is not None
+            else self.settings.strict_trade_confidence_floor
+        )
         if not features:
             return {
                 "score": round(float(confidence) * 100, 6),
@@ -2639,16 +2695,15 @@ class TradingOrchestrator:
                 diagnostics["stale"] = True
         return diagnostics
 
-    def _safe_firestore_call(self, method_name: str, *args) -> None:
-        firestore_client = getattr(self.firestore, "client", None)
-        if firestore_client is None:
-            return
+    def _safe_firestore_call(self, method_name: str, *args, swallow_exceptions: bool = True) -> None:
         method = getattr(self.firestore, method_name, None)
         if method is None:
             return
         try:
             method(*args)
         except Exception:
+            if not swallow_exceptions:
+                raise
             logger.warning(
                 "firestore_signal_write_failed",
                 extra={"event": "firestore_signal_write_failed", "context": {"method": method_name}},
@@ -2817,6 +2872,28 @@ class TradingOrchestrator:
         if regime.upper() == "TRENDING":
             return ["moderate", "aggressive"]
         return ["conservative", "moderate", "aggressive"]
+
+    def _force_execution_override_active(self, confidence: float) -> bool:
+        return (
+            bool(self.settings.force_execution_override_enabled)
+            and self.settings.trading_mode == "paper"
+            and float(confidence) >= float(self.settings.force_execution_override_confidence_floor)
+        )
+
+    def _encode_market_state(self, state: str | None) -> float:
+        normalized = str(state or "RANGING").upper()
+        mapping = {
+            "DUMPING": -1.0,
+            "BEARISH": -1.0,
+            "RANGING": 0.0,
+            "STAGNANT": 0.0,
+            "LOW_VOL": 0.25,
+            "TRENDING": 1.0,
+            "BULLISH": 1.0,
+            "HIGH_VOL": 2.0,
+            "VOLATILE": 2.0,
+        }
+        return float(mapping.get(normalized, 0.0))
 
     def _validate_trade_safety(
         self,

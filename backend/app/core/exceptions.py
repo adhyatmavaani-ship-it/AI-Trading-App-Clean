@@ -52,7 +52,7 @@ class InsufficientBalanceError(TradingSystemException):
     status_code = 400
 
 
-class RiskLimitExceededError(TradingSystemException):
+class RiskLimitExceededError(TradingSystemException, ValueError):
     """Raised when trade would violate risk limits."""
 
     status_code = 403

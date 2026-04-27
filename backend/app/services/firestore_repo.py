@@ -13,6 +13,9 @@ class FirestoreRepository:
     def __init__(self, project_id: str):
         self.client = firestore.Client(project=project_id) if project_id else None
 
+    def _writes_disabled(self) -> bool:
+        return self.client is None
+
     def _collection(self, name: str):
         if self.client is None:
             raise RuntimeError("Firestore project_id is not configured")
@@ -21,17 +24,23 @@ class FirestoreRepository:
     def save_signal(self, payload: dict) -> str:
         signal_id = payload.get("signal_id", str(uuid4()))
         payload["created_at"] = datetime.now(timezone.utc)
+        if self._writes_disabled():
+            return signal_id
         self._collection("signals").document(signal_id).set(payload)
         return signal_id
 
     def save_trade(self, payload: dict) -> str:
         trade_id = payload.get("trade_id", str(uuid4()))
         payload["created_at"] = datetime.now(timezone.utc)
+        if self._writes_disabled():
+            return trade_id
         self._collection("trades").document(trade_id).set(payload)
         return trade_id
 
     def update_trade(self, trade_id: str, payload: dict) -> None:
         payload["updated_at"] = datetime.now(timezone.utc)
+        if self._writes_disabled():
+            return
         self._collection("trades").document(trade_id).set(payload, merge=True)
 
     def load_trade_by_signal_id(self, signal_id: str) -> dict | None:
@@ -45,6 +54,8 @@ class FirestoreRepository:
         return None
 
     def log_event(self, level: str, message: str, context: dict | None = None) -> None:
+        if self._writes_disabled():
+            return
         self._collection("logs").document(str(uuid4())).set(
             {
                 "level": level,
@@ -56,16 +67,22 @@ class FirestoreRepository:
 
     def save_performance_snapshot(self, user_id: str, payload: dict) -> None:
         payload["updated_at"] = datetime.now(timezone.utc)
+        if self._writes_disabled():
+            return
         self._collection("performance").document(user_id).set(payload, merge=True)
 
     def save_training_sample(self, payload: dict) -> str:
         sample_id = payload.get("sample_id", payload.get("trade_id", str(uuid4())))
         payload["created_at"] = datetime.now(timezone.utc)
+        if self._writes_disabled():
+            return sample_id
         self._collection("training_samples").document(sample_id).set(payload)
         return sample_id
 
     def update_training_sample(self, sample_id: str, payload: dict) -> None:
         payload["updated_at"] = datetime.now(timezone.utc)
+        if self._writes_disabled():
+            return
         self._collection("training_samples").document(sample_id).set(payload, merge=True)
 
     def list_training_samples(self, limit: int = 5000) -> list[dict]:
@@ -83,47 +100,63 @@ class FirestoreRepository:
         report_id = payload.get("report_id", str(uuid4()))
         payload["report_type"] = report_type
         payload["created_at"] = datetime.now(timezone.utc)
+        if self._writes_disabled():
+            return report_id
         self._collection("model_reports").document(report_id).set(payload)
         return report_id
 
     def save_whale_event(self, payload: dict) -> str:
         event_id = payload.get("event_id", str(uuid4()))
         payload["created_at"] = datetime.now(timezone.utc)
+        if self._writes_disabled():
+            return event_id
         self._collection("whale_events").document(event_id).set(payload)
         return event_id
 
     def save_liquidity_snapshot(self, payload: dict) -> str:
         snapshot_id = payload.get("snapshot_id", str(uuid4()))
         payload["created_at"] = datetime.now(timezone.utc)
+        if self._writes_disabled():
+            return snapshot_id
         self._collection("liquidity").document(snapshot_id).set(payload)
         return snapshot_id
 
     def save_sentiment_snapshot(self, payload: dict) -> str:
         snapshot_id = payload.get("snapshot_id", str(uuid4()))
         payload["created_at"] = datetime.now(timezone.utc)
+        if self._writes_disabled():
+            return snapshot_id
         self._collection("sentiment").document(snapshot_id).set(payload)
         return snapshot_id
 
     def save_security_scan(self, payload: dict) -> str:
         scan_id = payload.get("scan_id", str(uuid4()))
         payload["created_at"] = datetime.now(timezone.utc)
+        if self._writes_disabled():
+            return scan_id
         self._collection("security_scans").document(scan_id).set(payload)
         return scan_id
 
     def save_tax_record(self, payload: dict) -> str:
         tax_id = payload.get("tax_id", str(uuid4()))
         payload["created_at"] = datetime.now(timezone.utc)
+        if self._writes_disabled():
+            return tax_id
         self._collection("tax_records").document(tax_id).set(payload)
         return tax_id
 
     def save_micro_performance(self, payload: dict) -> str:
         perf_id = payload.get("performance_id", str(uuid4()))
         payload["created_at"] = datetime.now(timezone.utc)
+        if self._writes_disabled():
+            return perf_id
         self._collection("micro_performance").document(perf_id).set(payload)
         return perf_id
 
     def save_meta_decision(self, trade_id: str, payload: dict) -> None:
         payload["updated_at"] = datetime.now(timezone.utc)
+        if self._writes_disabled():
+            return
         self._collection("meta_decisions").document(trade_id).set(payload, merge=True)
 
     def load_meta_decision(self, trade_id: str) -> dict | None:
@@ -134,12 +167,16 @@ class FirestoreRepository:
 
     def save_meta_analytics(self, payload: dict) -> None:
         payload["updated_at"] = datetime.now(timezone.utc)
+        if self._writes_disabled():
+            return
         self._collection("meta_analytics").document("global").set(payload, merge=True)
 
     def save_portfolio_concentration_snapshot(self, user_id: str, payload: dict) -> str:
         snapshot_id = payload.get("snapshot_id", str(uuid4()))
         payload["user_id"] = user_id
         payload["created_at"] = datetime.now(timezone.utc)
+        if self._writes_disabled():
+            return snapshot_id
         self._collection("portfolio_concentration").document(snapshot_id).set(payload)
         return snapshot_id
 
@@ -147,12 +184,16 @@ class FirestoreRepository:
         snapshot_id = payload.get("snapshot_id", str(uuid4()))
         payload["user_id"] = user_id
         payload["created_at"] = datetime.now(timezone.utc)
+        if self._writes_disabled():
+            return snapshot_id
         self._collection("factor_attribution").document(snapshot_id).set(payload)
         return snapshot_id
 
     def save_factor_sleeve_performance(self, user_id: str, payload: dict) -> None:
         payload["user_id"] = user_id
         payload["updated_at"] = datetime.now(timezone.utc)
+        if self._writes_disabled():
+            return
         self._collection("factor_sleeve_performance").document(user_id).set(payload, merge=True)
 
     def publish_trade_to_public_log(self, trade: dict) -> str:

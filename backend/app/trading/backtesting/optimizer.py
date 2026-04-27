@@ -52,6 +52,7 @@ class StrategyOptimizationEngine:
                     starting_balance=request.starting_balance,
                     start_at=request.start_at,
                     end_at=request.end_at,
+                    risk_profile="medium",
                 ),
                 timeframe=interval,
             )
@@ -127,6 +128,7 @@ class StrategyOptimizationEngine:
             start_at=request.start_at,
             end_at=request.end_at,
             strategy_params=params,
+            risk_profile="medium",
         )
         return self.backtester.run_prepared(request=backtest_request, frames=frames)
 

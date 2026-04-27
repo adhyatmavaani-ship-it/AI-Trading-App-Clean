@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 
 from app.core.exceptions import AuthenticationError
 from app.middleware.auth import get_user_id
@@ -21,6 +22,70 @@ from app.services.container import ServiceContainer, get_container
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+class MockPriceMoveRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, description="Symbol whose cached market data should be shifted.")
+    change: float = Field(..., description="Relative price change to inject. Example: -0.02 for a 2 percent drop.")
+    user_id: str | None = Field(default=None, description="Optional user whose active trades should be inspected.")
+    volume_multiplier: float = Field(default=3.0, ge=1.0, description="How aggressively the last candle volume should be amplified.")
+    run_monitor: bool = Field(default=True, description="Whether to run the active trade monitor immediately after the move.")
+
+
+def _ensure_debug_routes_enabled(container: ServiceContainer) -> None:
+    settings = getattr(container, "settings", None)
+    if settings is not None and not bool(settings.effective_debug_routes_enabled):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+@router.get(
+    "/diag/exchange",
+    tags=["Diagnostics"],
+    summary="Get exchange and market-data diagnostics",
+    description="Returns configured exchange state, retry status, current market-data mode, and a live probe showing whether exchange or simulated data is being used.",
+)
+async def get_exchange_diagnostics(
+    sample_symbol: str = Query(default="BTCUSDT", description="Symbol to probe for exchange diagnostics."),
+    request: Request = ...,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    try:
+        _ensure_debug_routes_enabled(container)
+        get_user_id(request)
+        market_data = container.market_data
+        diagnostics = market_data.diagnostics() if hasattr(market_data, "diagnostics") else {}
+        normalized_symbol = str(sample_symbol or "BTCUSDT").upper().strip()
+        probe: dict[str, object] = {"symbol": normalized_symbol}
+        try:
+            latest_price = await market_data.fetch_latest_price(normalized_symbol)
+            order_book = await market_data.fetch_order_book(normalized_symbol)
+            frames = await market_data.fetch_multi_timeframe_ohlcv(normalized_symbol, intervals=("1m", "5m", "15m"))
+            probe.update(
+                {
+                    "latest_price": float(latest_price),
+                    "best_bid": float(order_book.get("bids", [{}])[0].get("price", 0.0)) if order_book.get("bids") else 0.0,
+                    "best_ask": float(order_book.get("asks", [{}])[0].get("price", 0.0)) if order_book.get("asks") else 0.0,
+                    "ohlcv_rows": {interval: int(len(frame)) for interval, frame in frames.items()},
+                    "last_fetch_details": {
+                        key: value
+                        for key, value in diagnostics.get("last_fetch_details", {}).items()
+                        if key.startswith(f"price:{normalized_symbol}")
+                        or key.startswith(f"order_book:{normalized_symbol}")
+                        or key.startswith(f"ohlcv:{normalized_symbol}")
+                    },
+                }
+            )
+        except Exception as exc:
+            probe["error"] = str(exc)
+        return {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "market_data": diagnostics,
+            "probe": probe,
+        }
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get(
@@ -100,6 +165,66 @@ async def get_activity_readiness(
     return {"count": len(items), "items": items}
 
 
+@router.post(
+    "/test/mock-price-move",
+    tags=["Diagnostics"],
+    summary="Inject a mock market move for local trade-monitor validation",
+    description="Shifts cached stream price, order book, and OHLCV candles for a symbol, then optionally runs the active trade monitor once so early-exit logic can be validated end-to-end.",
+)
+async def post_mock_price_move(
+    payload: MockPriceMoveRequest,
+    request: Request,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    try:
+        _ensure_debug_routes_enabled(container)
+        authenticated_user_id = get_user_id(request)
+        target_user_id = str(payload.user_id or authenticated_user_id).strip()
+        _ensure_user_access(authenticated_user_id, target_user_id)
+        symbol = str(payload.symbol or "").upper().strip()
+        if not symbol:
+            raise HTTPException(status_code=400, detail="symbol is required")
+
+        analytics = getattr(container, "analytics_service", None)
+        before_active = analytics.active_trades(target_user_id) if analytics is not None else []
+        before_for_symbol = [trade for trade in before_active if str(trade.get("symbol", "") or "").upper() == symbol]
+        move_result = container.market_data.inject_test_market_move(
+            symbol,
+            change=float(payload.change),
+            volume_multiplier=float(payload.volume_multiplier),
+        )
+
+        monitor_ran = False
+        if bool(payload.run_monitor) and getattr(container, "active_trade_monitor", None) is not None:
+            await container.active_trade_monitor.run_once()
+            monitor_ran = True
+
+        after_active = analytics.active_trades(target_user_id) if analytics is not None else []
+        after_for_symbol = [trade for trade in after_active if str(trade.get("symbol", "") or "").upper() == symbol]
+        before_ids = {str(trade.get("trade_id", "") or "") for trade in before_for_symbol}
+        after_ids = {str(trade.get("trade_id", "") or "") for trade in after_for_symbol}
+        closed_ids = sorted(trade_id for trade_id in before_ids - after_ids if trade_id)
+        history = analytics.trade_history(target_user_id, limit=25) if analytics is not None else []
+        closed_records = [trade for trade in history if str(trade.get("trade_id", "") or "") in closed_ids]
+        return {
+            "symbol": symbol,
+            "user_id": target_user_id,
+            "move": move_result,
+            "monitor_ran": monitor_ran,
+            "before_active_count": len(before_for_symbol),
+            "after_active_count": len(after_for_symbol),
+            "closed_trade_ids": closed_ids,
+            "closed_trades": closed_records,
+            "remaining_active_trades": after_for_symbol,
+        }
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 async def _collect_live_signals(container: ServiceContainer, viewer_subscription: dict) -> list[LiveSignalItem]:
     signals: list[LiveSignalItem] = []
     for key in container.cache.keys("signal:latest:*"):
@@ -147,16 +272,22 @@ async def _generate_live_signals(container: ServiceContainer, limit: int = 3) ->
 
 def _live_signal_from_response(container: ServiceContainer, signal: SignalResponse) -> LiveSignalItem:
     confidence = float(signal.inference.confidence_score)
+    forced_execution_override = signal.strategy == "FORCED_PAPER_TRADE"
     low_confidence = bool(
-        signal.strategy == "LOW_CONFIDENCE_WATCHLIST"
-        or confidence < max(container.settings.signal_min_publish_confidence, 0.4)
-        or not signal.alpha_decision.allow_trade
+        not forced_execution_override
+        and (
+            signal.strategy == "LOW_CONFIDENCE_WATCHLIST"
+            or confidence < max(container.settings.signal_min_publish_confidence, 0.4)
+            or not signal.alpha_decision.allow_trade
+        )
     )
     action = signal.inference.decision
     if action == "HOLD":
         action = "BUY" if float(signal.snapshot.features.get("15m_ema_spread", 0.0)) >= 0 else "SELL"
     rejection_reason = None
-    if signal.inference.model_version == "best_effort_watchlist":
+    if forced_execution_override:
+        rejection_reason = "force_execution_override"
+    elif signal.inference.model_version == "best_effort_watchlist":
         rejection_reason = "best_effort_generation"
     elif not signal.alpha_decision.allow_trade:
         rejection_reason = "alpha_engine_rejected"
@@ -389,6 +520,75 @@ async def get_analytics_performance(
         _ensure_user_access(authenticated_user_id, user_id)
         analytics = getattr(container, "analytics_service", None)
         return analytics.performance(user_id) if analytics is not None else {}
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get(
+    "/risk/profile",
+    tags=["User Portfolio"],
+    summary="Get current risk profile",
+    description="Returns the effective low, medium, or high risk profile for the authenticated user.",
+)
+async def get_risk_profile(
+    user_id: str = Query(..., description="User identifier whose risk profile should be returned."),
+    request: Request = ...,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    try:
+        authenticated_user_id = get_user_id(request)
+        _ensure_user_access(authenticated_user_id, user_id)
+        controller = getattr(container, "risk_controller", None)
+        if controller is None:
+            return {"level": "medium"}
+        profile = controller.profile(user_id)
+        return {
+            "level": profile.level,
+            "confidence_floor": profile.confidence_floor,
+            "daily_loss_limit": profile.daily_loss_limit,
+            "risk_fraction": profile.risk_fraction,
+            "max_active_trades": profile.max_active_trades,
+            "allowed_symbols": profile.allowed_symbols,
+            "allow_counter_trend": profile.allow_counter_trend,
+            "allow_high_volatility": profile.allow_high_volatility,
+        }
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post(
+    "/risk/profile",
+    tags=["User Portfolio"],
+    summary="Update risk profile",
+    description="Sets the user's low, medium, or high risk profile and applies matching drawdown and rollout controls.",
+)
+async def update_risk_profile(
+    user_id: str = Query(..., description="User identifier whose risk profile should be updated."),
+    level: str = Query(..., pattern=r"^(low|medium|high)$", description="Risk level to apply."),
+    request: Request = ...,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    try:
+        authenticated_user_id = get_user_id(request)
+        _ensure_user_access(authenticated_user_id, user_id)
+        controller = getattr(container, "risk_controller", None)
+        if controller is None:
+            return {"level": "medium"}
+        profile = controller.set_profile(user_id, level)
+        return {
+            "level": profile.level,
+            "confidence_floor": profile.confidence_floor,
+            "daily_loss_limit": profile.daily_loss_limit,
+            "risk_fraction": profile.risk_fraction,
+            "max_active_trades": profile.max_active_trades,
+            "allowed_symbols": profile.allowed_symbols,
+            "allow_counter_trend": profile.allow_counter_trend,
+            "allow_high_volatility": profile.allow_high_volatility,
+        }
     except AuthenticationError as exc:
         raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
     except Exception as exc:  # pragma: no cover

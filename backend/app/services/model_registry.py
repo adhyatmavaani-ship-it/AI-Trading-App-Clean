@@ -140,4 +140,37 @@ class ModelRegistry:
     @staticmethod
     def vectorize_features(features: dict[str, float]) -> np.ndarray:
         keys = sorted(features.keys())
-        return np.array([features[key] for key in keys], dtype=np.float32)
+        return np.array(
+            [ModelRegistry._coerce_feature_value(features[key]) for key in keys],
+            dtype=np.float32,
+        )
+
+    @staticmethod
+    def _coerce_feature_value(value) -> float:
+        if isinstance(value, bool):
+            return 1.0 if value else 0.0
+        if isinstance(value, (int, float, np.integer, np.floating)):
+            return float(value)
+        if value is None:
+            return 0.0
+        normalized = str(value).strip().upper()
+        regime_map = {
+            "DUMPING": -1.0,
+            "BEARISH": -1.0,
+            "SELL": -1.0,
+            "RANGING": 0.0,
+            "STAGNANT": 0.0,
+            "LOW_VOL": 0.25,
+            "HOLD": 0.0,
+            "TRENDING": 1.0,
+            "BULLISH": 1.0,
+            "BUY": 1.0,
+            "HIGH_VOL": 2.0,
+            "VOLATILE": 2.0,
+        }
+        if normalized in regime_map:
+            return regime_map[normalized]
+        try:
+            return float(normalized)
+        except ValueError:
+            return 0.0

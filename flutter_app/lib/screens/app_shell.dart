@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'backtest_screen.dart';
 import 'dashboard_screen.dart';
 import 'pnl_screen.dart';
 import 'pulse_screen.dart';
@@ -20,6 +21,7 @@ class _AppShellState extends State<AppShell> {
     PulseScreen(),
     DashboardScreen(),
     PnlScreen(),
+    BacktestScreen(),
     TradeTimelineScreen(),
     SettingsScreen(),
   ];
@@ -51,6 +53,11 @@ class _AppShellState extends State<AppShell> {
             icon: Icon(Icons.show_chart_outlined),
             selectedIcon: Icon(Icons.show_chart),
             label: 'PnL',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.science_outlined),
+            selectedIcon: Icon(Icons.science),
+            label: 'Backtest',
           ),
           NavigationDestination(
             icon: Icon(Icons.timeline_outlined),

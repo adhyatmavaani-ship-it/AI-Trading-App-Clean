@@ -12,6 +12,7 @@ class BacktestRequest(BaseModel):
     start_at: datetime
     end_at: datetime
     strategy_params: dict[str, int | float] = Field(default_factory=dict)
+    risk_profile: Literal["low", "medium", "high"] = "medium"
 
 
 class BacktestMetrics(BaseModel):

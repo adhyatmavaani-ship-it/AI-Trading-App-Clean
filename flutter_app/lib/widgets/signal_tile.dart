@@ -14,7 +14,9 @@ class SignalTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final accent = signal.degradedMode
+    final accent = signal.isForcedPaperTrade
+        ? const Color(0xFFFFB14A)
+        : signal.degradedMode
         ? Colors.orangeAccent
         : signal.alphaScore >= 80
             ? const Color(0xFF4DE2B1)
@@ -22,8 +24,41 @@ class SignalTile extends StatelessWidget {
     return ListTile(
       contentPadding: EdgeInsets.zero,
       onTap: onTap,
-      title: Text('${signal.symbol} - ${signal.strategy}'),
-      subtitle: Text(signal.decisionReason),
+      title: Row(
+        children: <Widget>[
+          Expanded(child: Text('${signal.symbol} - ${signal.strategy}')),
+          if (signal.isForcedPaperTrade)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: const Color(0xFF4A2E12),
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(color: const Color(0xFFFFB14A)),
+              ),
+              child: const Text(
+                'HIGH PRIORITY',
+                style: TextStyle(
+                  color: Color(0xFFFFD28A),
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+        ],
+      ),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Text(signal.decisionReason),
+          const SizedBox(height: 4),
+          Text(
+            '${signal.action}  |  Confidence ${(signal.confidence * 100).toStringAsFixed(1)}%'
+            '${signal.rejectionReason != null ? '  |  ${signal.rejectionReason}' : ''}',
+            style: Theme.of(context).textTheme.labelSmall,
+          ),
+        ],
+      ),
       trailing: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         crossAxisAlignment: CrossAxisAlignment.end,

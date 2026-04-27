@@ -59,6 +59,11 @@ class TradingBacktestingEngine:
         equity_curve: list[EquityPoint] = []
         peak_equity = equity
         max_drawdown = 0.0
+        profile_controls = self._profile_controls(request.risk_profile)
+        confidence_floor = self._effective_confidence_floor(
+            strategy=request.strategy,
+            base_floor=float(profile_controls["confidence_floor"]),
+        )
 
         for idx in range(30, len(frame)):
             row = frame.iloc[idx]
@@ -159,6 +164,8 @@ class TradingBacktestingEngine:
                 else 0.0
             )
             if position is None and decision.signal != "HOLD":
+                if float(decision.confidence) < confidence_floor:
+                    continue
                 next_open = float(frame.iloc[idx + 1]["open"])
                 entry_price = self._execution_price(next_open, decision.signal)
                 atr = self._atr(window)
@@ -184,17 +191,28 @@ class TradingBacktestingEngine:
                     )
                 except ValueError:
                     continue
-                quantity = risk.position_notional / max(entry_price, 1e-8)
-                entry_fee = risk.position_notional * self.fee_rate
+                effective_notional = min(
+                    float(risk.position_notional),
+                    float(equity) * float(profile_controls["risk_fraction"]),
+                )
+                quantity = effective_notional / max(entry_price, 1e-8)
+                entry_fee = effective_notional * self.fee_rate
+                stop_loss = self._profile_stop_loss(
+                    side=decision.signal,
+                    entry_price=entry_price,
+                    stop_loss=float(risk.stop_loss),
+                    multiplier=float(profile_controls["stop_multiplier"]),
+                )
                 position = {
                     "side": decision.signal,
                     "entry_price": entry_price,
                     "quantity": quantity,
                     "entry_fee": entry_fee,
-                    "stop_loss": risk.stop_loss,
+                    "stop_loss": stop_loss,
                     "confidence": decision.confidence,
                     "strategy": decision.strategy,
                     "regime": self._regime(window),
+                    "risk_profile": request.risk_profile,
                 }
 
         wins = sum(1 for trade in trades if trade.profit > 0)
@@ -219,6 +237,46 @@ class TradingBacktestingEngine:
             strategy=request.strategy,
             strategy_params=request.strategy_params,
         )
+
+    def _profile_controls(self, risk_profile: str) -> dict[str, float]:
+        normalized = str(risk_profile or "medium").lower()
+        if normalized == "low":
+            return {
+                "confidence_floor": 0.85,
+                "risk_fraction": 0.005,
+                "stop_multiplier": 0.7,
+            }
+        if normalized == "high":
+            return {
+                "confidence_floor": 0.60,
+                "risk_fraction": 0.015,
+                "stop_multiplier": 1.3,
+            }
+        return {
+            "confidence_floor": 0.70,
+            "risk_fraction": 0.01,
+            "stop_multiplier": 1.0,
+        }
+
+    def _effective_confidence_floor(self, *, strategy: str, base_floor: float) -> float:
+        normalized = str(strategy or "").lower()
+        if normalized in {"ema_crossover", "rsi", "breakout"}:
+            return min(base_floor, 0.45)
+        return base_floor
+
+    def _profile_stop_loss(
+        self,
+        *,
+        side: str,
+        entry_price: float,
+        stop_loss: float,
+        multiplier: float,
+    ) -> float:
+        distance = abs(entry_price - stop_loss)
+        adjusted_distance = max(distance * multiplier, entry_price * 0.001)
+        if side == "BUY":
+            return entry_price - adjusted_distance
+        return entry_price + adjusted_distance
 
     def _prepare_frame(
         self,

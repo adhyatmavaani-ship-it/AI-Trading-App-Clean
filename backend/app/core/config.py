@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     app_version: str = Field(default_factory=_default_app_version)
     app_version_short: str = Field(default_factory=lambda: _short_app_version(_default_app_version()))
     environment: Literal["local", "dev", "staging", "prod"] = "local"
+    debug_routes_enabled: bool = False
     log_level: str = "INFO"
     trading_mode: Literal["paper", "live"] = "paper"
     json_logs: bool = True
@@ -37,6 +38,8 @@ class Settings(BaseSettings):
     binance_testnet: bool = True
     primary_exchange: str = "binance"
     backup_exchanges: list[str] = Field(default_factory=lambda: ["kraken", "coinbase"])
+    market_data_mode: Literal["auto", "exchange", "simulated"] = "auto"
+    market_data_exchange_retry_seconds: float = 30.0
     supported_quote_assets: list[str] = Field(default_factory=lambda: ["USDT", "USDC", "USD", "BTC", "ETH", "EUR", "GBP"])
     kraken_api_key: str = ""
     kraken_api_secret: str = ""
@@ -242,6 +245,8 @@ class Settings(BaseSettings):
     activity_near_miss_score_delta: float = 10.0
     strict_trade_score_threshold: float = 70.0
     strict_trade_confidence_floor: float = 0.70
+    force_execution_override_enabled: bool = False
+    force_execution_override_confidence_floor: float = 0.35
     strict_trade_volume_spike_threshold: float = 1.50
     strict_trade_structure_adx_floor: float = 22.0
     max_active_trades: int = 2
@@ -254,6 +259,22 @@ class Settings(BaseSettings):
     active_trade_monitor_break_even_rr: float = 1.2
     active_trade_monitor_break_even_lock_rr: float = 0.1
     trailing_aggressiveness: float = 1.0
+    risk_profile_low_confidence_floor: float = 0.85
+    risk_profile_medium_confidence_floor: float = 0.70
+    risk_profile_high_confidence_floor: float = 0.60
+    risk_profile_low_daily_loss_limit: float = 0.01
+    risk_profile_medium_daily_loss_limit: float = 0.03
+    risk_profile_high_daily_loss_limit: float = 0.07
+    risk_profile_low_risk_fraction: float = 0.005
+    risk_profile_medium_risk_fraction: float = 0.01
+    risk_profile_high_risk_fraction: float = 0.015
+    risk_profile_low_max_active_trades: int = 1
+    risk_profile_medium_max_active_trades: int = 2
+    risk_profile_high_max_active_trades: int = 3
+    risk_profile_low_allowed_symbols: list[str] = Field(default_factory=lambda: ["BTCUSDT", "ETHUSDT"])
+    risk_profile_medium_allowed_symbols: list[str] = Field(default_factory=list)
+    risk_profile_high_allowed_symbols: list[str] = Field(default_factory=list)
+    local_paper_active_rollout_fraction: float = 1.0
     regime_trending_ema_spread_threshold: float = 0.003
     regime_high_vol_atr_multiplier: float = 1.5
     regime_low_vol_atr_multiplier: float = 0.7
@@ -293,10 +314,30 @@ class Settings(BaseSettings):
     strategy_optimizer_interval_seconds: float = 300.0
     strategy_adaptation_cooldown_seconds: int = 3600
     analytics_history_limit: int = 500
+    backtest_data_dir: str = "backtest_data"
+    backtest_chunk_hours: int = 24
+    backtest_cache_ttl_seconds: int = 86_400
+    backtest_job_history_limit: int = 200
+    backtest_max_days: int = 30
+    backtest_min_days: int = 1
+    backtest_status_log_limit: int = 200
+    backtest_status_poll_seconds: float = 2.0
+    backtest_heartbeat_seconds: float = 5.0
+    backtest_resume_enabled: bool = True
 
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
+
+    @property
+    def is_production(self) -> bool:
+        return str(self.environment).lower() == "prod"
+
+    @property
+    def effective_debug_routes_enabled(self) -> bool:
+        if self.debug_routes_enabled:
+            return True
+        return not self.is_production
 
 
 @lru_cache

@@ -218,6 +218,33 @@ class PortfolioLedgerTest(unittest.TestCase):
         self.assertAlmostEqual(summary["theme_exposure_pct"]["STORE_OF_VALUE"], 0.2, places=6)
         self.assertAlmostEqual(summary["theme_exposure_pct"]["L1"], 0.2, places=6)
 
+    def test_snapshot_recovers_from_missing_portfolio_active_index(self):
+        cache = InMemoryCache()
+        settings = Settings(redis_url="redis://unused", default_portfolio_balance=1000.0, portfolio_snapshot_cache_ttl_seconds=2)
+        state_manager = RedisStateManager(settings, cache)
+        market_data = StubMarketData()
+        ledger = PortfolioLedgerService(settings, cache, market_data, state_manager)
+
+        state_manager.save_active_trade(
+            "t1",
+            {
+                "trade_id": "t1",
+                "user_id": "u1",
+                "symbol": "BTCUSDT",
+                "side": "BUY",
+                "entry": 100.0,
+                "executed_quantity": 1.0,
+                "notional": 100.0,
+                "fees": 0.0,
+            },
+        )
+
+        snapshot = asyncio.run(ledger.portfolio_snapshot("u1"))
+
+        self.assertEqual(snapshot["active_trades"], 1)
+        self.assertEqual(snapshot["positions"][0]["symbol"], "BTCUSDT")
+        self.assertEqual(cache.get_json("portfolio:active:u1")["trade_ids"], ["t1"])
+
     def test_portfolio_concentration_profile_builds_clusters_and_beta_buckets(self):
         cache = InMemoryCache()
         settings = Settings(

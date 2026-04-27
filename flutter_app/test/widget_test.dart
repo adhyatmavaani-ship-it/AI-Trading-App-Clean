@@ -35,7 +35,9 @@ class FakeTradingRepository extends TradingRepository {
       SignalModel(
         signalId: 'sig-1',
         symbol: 'BTCUSDT',
+        action: 'BUY',
         strategy: 'AI',
+        confidence: 0.82,
         alphaScore: 86,
         regime: 'TRENDING',
         price: 100000,
@@ -45,6 +47,8 @@ class FakeTradingRepository extends TradingRepository {
         degradedMode: false,
         requiredTier: 'pro',
         minBalance: 25,
+        rejectionReason: null,
+        lowConfidence: false,
       ),
     ];
   }

@@ -71,7 +71,7 @@ async def concentration_history(
         container.system_monitor.update_portfolio_concentration(latest_summary)
         if hasattr(container.model_stability, "update_concentration_state"):
             container.model_stability.update_concentration_state(latest_summary)
-        cutoff = _history_cutoff(window)
+        cutoff = _history_cutoff(window, reference_at=latest_summary.get("updated_at"))
         history = [
             _portfolio_concentration_snapshot(snapshot)
             for snapshot in container.portfolio_ledger.concentration_history(user_id)
@@ -106,10 +106,14 @@ async def model_stability_concentration_history(
             if hasattr(container.model_stability, "update_concentration_state"):
                 container.model_stability.update_concentration_state(latest_summary)
         latest_status = _model_stability_status(container.model_stability.load_status())
-        cutoff = _history_cutoff(window)
+        reference_at = None
+        history_source = getattr(container.model_stability, "concentration_history", lambda: [])()
+        if history_source:
+            reference_at = history_source[-1].get("updated_at")
+        cutoff = _history_cutoff(window, reference_at=reference_at)
         history = [
             _model_stability_concentration_entry(entry)
-            for entry in getattr(container.model_stability, "concentration_history", lambda: [])()
+            for entry in history_source
             if _snapshot_in_window(entry, cutoff)
         ]
         history = history[-limit:]
@@ -364,23 +368,34 @@ def _model_concentration_severity(entry: dict) -> tuple[str, str | None]:
     return "normal", None
 
 
-def _history_cutoff(window: str) -> datetime:
+def _history_cutoff(window: str, reference_at: str | datetime | None = None) -> datetime:
     mapping = {
         "1h": timedelta(hours=1),
         "24h": timedelta(hours=24),
         "7d": timedelta(days=7),
     }
-    return datetime.now(timezone.utc) - mapping.get(window, timedelta(hours=24))
+    reference = _coerce_history_datetime(reference_at) or datetime.now(timezone.utc)
+    return reference - mapping.get(window, timedelta(hours=24))
+
+
+def _coerce_history_datetime(value: str | datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _snapshot_in_window(snapshot: dict, cutoff: datetime) -> bool:
     updated_at = snapshot.get("updated_at")
-    if not updated_at:
+    parsed = _coerce_history_datetime(updated_at)
+    if parsed is None:
         return False
-    try:
-        parsed = datetime.fromisoformat(str(updated_at))
-    except ValueError:
-        return False
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed >= cutoff

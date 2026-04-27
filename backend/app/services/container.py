@@ -8,6 +8,7 @@ from app.services.alpha_engine import AlphaEngine
 from app.services.analytics_service import AnalyticsService
 from app.services.alerting import AlertingService
 from app.services.allocation_engine import AllocationEngine
+from app.services.backtest_jobs import BacktestJobService
 from app.services.backtesting import BacktestingEngine
 from app.services.drawdown_protection import DrawdownProtectionService
 from app.services.dual_track_engine import DualTrackCoordinator
@@ -26,6 +27,7 @@ from app.services.multi_agent_consensus import MultiAgentConsensusEngine
 from app.services.multi_chain_router import MultiChainRouter
 from app.services.narrative_macro_intelligence import NarrativeMacroIntelligenceEngine
 from app.services.generative_simulation_engine import GenerativeSimulationEngine
+from app.services.historical_data import HistoricalDataService
 from app.services.paper_execution import PaperExecutionEngine
 from app.services.performance_tracker import PerformanceTracker
 from app.services.portfolio_manager import PortfolioManager
@@ -34,6 +36,7 @@ from app.services.model_registry import ModelRegistry
 from app.services.regime_detector import RegimeDetector
 from app.services.redis_cache import RedisCache
 from app.services.redis_state_manager import RedisStateManager
+from app.services.risk_controller import RiskController
 from app.services.risk_engine import RiskEngine
 from app.services.rollout_manager import RolloutManager
 from app.services.shard_manager import ShardManager
@@ -131,6 +134,12 @@ class ServiceContainer:
             cache=cache,
             queue_manager=execution_queue_manager,
         )
+        risk_controller = RiskController(
+            settings=settings,
+            cache=cache,
+            drawdown_protection=drawdown_protection,
+            signal_broadcaster=signal_broadcaster,
+        )
         meta_controller = MetaController(
             settings=settings,
             cache=cache,
@@ -193,6 +202,7 @@ class ServiceContainer:
             analytics_service=analytics_service,
             strategy_controller=strategy_controller,
             user_experience_engine=user_experience_engine,
+            risk_controller=risk_controller,
         )
         active_trade_monitor = ActiveTradeMonitorWorker(
             settings=settings,
@@ -214,6 +224,12 @@ class ServiceContainer:
             ai_engine=ai_engine,
             strategy_engine=strategy_engine,
             risk_engine=risk_engine,
+        )
+        self.historical_data = HistoricalDataService(settings=settings)
+        self.backtest_job_service = BacktestJobService(
+            settings=settings,
+            backtesting_engine=self.backtesting_engine,
+            historical_data=self.historical_data,
         )
         self.drawdown_protection = drawdown_protection
         self.cache = cache
@@ -254,6 +270,7 @@ class ServiceContainer:
         self.analytics_service = analytics_service
         self.strategy_controller = strategy_controller
         self.user_experience_engine = user_experience_engine
+        self.risk_controller = risk_controller
         self.active_trade_monitor = active_trade_monitor
         self.strategy_optimizer = strategy_optimizer
         self.simulation_tester = SimulationTester(

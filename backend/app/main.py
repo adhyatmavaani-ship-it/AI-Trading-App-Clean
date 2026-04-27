@@ -1,12 +1,6 @@
-import os
-import inspect
-
-print("🔥 APP STARTED DEBUG 🔥")
-print("FILE LOADED:", __file__)
-print("REDIS_URL LOADED:", os.getenv("REDIS_URL"))
-
 import asyncio
 import logging
+import os
 import signal
 from contextlib import asynccontextmanager
 
@@ -16,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 import uvicorn
 
-from app.api.routes import backtests, frontend, health, meta, monitoring, public, realtime, simulation, trading
+from app.api.routes import backtest_jobs, backtests, frontend, health, meta, monitoring, public, realtime, simulation, trading
 from app.core.config import get_settings
 from app.core.exceptions import TradingSystemException
 from app.core.logging import configure_logging
@@ -32,7 +26,6 @@ settings = get_settings()
 configure_logging(settings.log_level, settings.json_logs)
 
 
-# Track shutdown signal
 _shutdown_event = asyncio.Event()
 
 
@@ -46,23 +39,41 @@ def _handle_shutdown_signal(signum, frame):
     _shutdown_event.set()
 
 
+def _startup_status_summary(container) -> dict[str, object]:
+    market_data = getattr(container, "market_data", None)
+    diagnostics = market_data.diagnostics() if market_data is not None and hasattr(market_data, "diagnostics") else {}
+    return {
+        "environment": settings.environment,
+        "trading_mode": settings.trading_mode,
+        "port": get_bind_port(),
+        "redis": "fallback_memory" if bool(getattr(container.cache, "_using_fallback", False)) else "connected",
+        "firestore": "configured" if getattr(getattr(container, "firestore", None), "client", None) is not None else "disabled",
+        "market_data_mode": diagnostics.get("resolved_mode", settings.market_data_mode),
+        "active_exchanges": list(diagnostics.get("active_exchanges", [])),
+        "websocket_listener": bool(settings.websocket_listener_enabled),
+        "debug_routes_enabled": bool(settings.effective_debug_routes_enabled),
+    }
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle - startup and shutdown."""
-    # Startup
     container = get_container()
     await get_signal_websocket_manager().start()
     await container.active_trade_monitor.start()
     await container.strategy_optimizer.start()
-    logger.info("Trading system startup - all services initialized")
-    logger.info(f"Server started on port {get_bind_port()}")
+    await container.backtest_job_service.start()
+    logger.info(
+        "Trading system startup complete",
+        extra={"event": "startup_complete", "context": _startup_status_summary(container)},
+    )
     yield
-    # Shutdown - graceful cleanup
     logger.info("Trading system shutdown - cleaning up resources...")
     await container.strategy_optimizer.stop()
     await container.active_trade_monitor.stop()
+    await container.backtest_job_service.stop()
     await get_signal_websocket_manager().stop()
-    await asyncio.sleep(0.1)  # Allow time for in-flight requests
+    await asyncio.sleep(0.1)
     logger.info("Shutdown complete")
 
 
@@ -97,12 +108,11 @@ except ValueError:
     logger.warning("Signal handlers unavailable in the current runtime")
 
 
-# Exception handlers
 @app.exception_handler(TradingSystemException)
 async def trading_system_exception_handler(request, exc: TradingSystemException):
     """Handle custom trading system exceptions."""
     logger.warning(
-        f"Trading system error",
+        "Trading system error",
         extra={
             "error_code": exc.error_code,
             "message": exc.message,
@@ -136,7 +146,6 @@ async def validation_exception_handler(request, exc: RequestValidationError):
     )
 
 
-# Middleware (order matters - last added is first executed)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_allowed_origins,
@@ -146,10 +155,9 @@ app.add_middleware(
 )
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(AuthMiddleware)
-app.add_middleware(RequestContextMiddleware)  # Added last so it executes first for every request
+app.add_middleware(RequestContextMiddleware)
 
 
-# Route registration
 app.include_router(health.router)
 app.include_router(health.router, prefix="/v1")
 app.include_router(frontend.router, prefix="/v1", dependencies=[Depends(get_api_key)])
@@ -157,6 +165,7 @@ app.include_router(public.router, prefix="/v1")
 app.include_router(trading.router, prefix="/v1", dependencies=[Depends(get_api_key)])
 app.include_router(meta.router, prefix="/v1", dependencies=[Depends(get_api_key)])
 app.include_router(backtests.router, prefix="/v1", dependencies=[Depends(get_api_key)])
+app.include_router(backtest_jobs.router, prefix="/v1", dependencies=[Depends(get_api_key)])
 app.include_router(monitoring.router, prefix="/v1", dependencies=[Depends(get_api_key)])
 app.include_router(simulation.router, prefix="/v1", dependencies=[Depends(get_api_key)])
 app.include_router(realtime.router)
