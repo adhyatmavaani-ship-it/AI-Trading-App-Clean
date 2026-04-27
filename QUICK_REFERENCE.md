@@ -16,6 +16,9 @@ cat > .env << EOF
 TRADING_MODE=paper
 REDIS_URL=redis://localhost:6379/0
 BINANCE_TESTNET=true
+PRIMARY_EXCHANGE=binance
+BACKUP_EXCHANGES=["kraken","coinbase"]
+AUTH_API_KEYS_JSON=[{"api_key":"local-dev-token","user_id":"alice","key_id":"local-key"}]
 ENVIRONMENT=local
 LOG_LEVEL=DEBUG
 EOF
@@ -87,6 +90,9 @@ curl -X POST http://localhost:8000/v1/trading/close \
 ```bash
 # Basic health
 curl http://localhost:8000/health
+
+# Root metadata
+curl http://localhost:8000/
 
 # Readiness check (K8s)
 curl http://localhost:8000/v1/health/ready
@@ -300,7 +306,10 @@ docker logs -f --timestamps <container-id>
 | `TRADING_MODE` | paper | Trade execution mode |
 | `LOG_LEVEL` | INFO | Logging verbosity |
 | `REDIS_URL` | redis://localhost:6379/0 | Redis connection |
+| `PRIMARY_EXCHANGE` | binance | First live exchange attempted |
+| `BACKUP_EXCHANGES` | ["kraken","coinbase"] | Fallback exchange order |
 | `BINANCE_TESTNET` | true | Use Binance testnet |
+| `AUTH_API_KEYS_JSON` | empty | Inline API key bootstrap config |
 | `DAILY_LOSS_LIMIT` | 0.05 | 5% daily max loss |
 | `BASE_RISK_PER_TRADE` | 0.02 | 2% per trade |
 | `RATE_LIMIT_PER_MINUTE` | 120 | API rate limit |

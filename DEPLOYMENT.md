@@ -24,6 +24,8 @@ Recommended beta defaults:
 
 - `TRADING_MODE=paper`
 - `ENVIRONMENT=staging` or `prod`
+- `PRIMARY_EXCHANGE=binance`
+- `BACKUP_EXCHANGES=["kraken","coinbase"]`
 - `JSON_LOGS=true`
 - real Redis
 - Firestore configured
@@ -59,9 +61,23 @@ docker run -it \
   -p 8000:8000 \
   -e ENVIRONMENT=local \
   -e TRADING_MODE=paper \
+  -e PRIMARY_EXCHANGE=binance \
+  -e BACKUP_EXCHANGES='["kraken","coinbase"]' \
   -e REDIS_URL=redis://host.docker.internal:6379/0 \
   -e AUTH_API_KEYS_JSON='[{"api_key":"docker-token","user_id":"alice","key_id":"docker-key"}]' \
   trading-backend:1.0.0
+```
+
+For live exchange routing, provide credentials only for the exchanges you want enabled:
+
+```bash
+-e BINANCE_API_KEY=... \
+-e BINANCE_API_SECRET=... \
+-e KRAKEN_API_KEY=... \
+-e KRAKEN_API_SECRET=... \
+-e COINBASE_API_KEY=... \
+-e COINBASE_API_SECRET=... \
+-e COINBASE_API_PASSPHRASE=...
 ```
 
 ## Docker Compose
@@ -196,7 +212,7 @@ gcloud run deploy trading-backend \
   --cpu=1 \
   --timeout=60 \
   --max-instances=100 \
-  --set-env-vars ENVIRONMENT=prod,TRADING_MODE=paper \
+  --set-env-vars ENVIRONMENT=prod,TRADING_MODE=paper,PRIMARY_EXCHANGE=binance,BACKUP_EXCHANGES='["kraken","coinbase"]' \
   --service-account=trading-sa@my-project.iam.gserviceaccount.com
 ```
 
@@ -205,6 +221,38 @@ After deployment, verify:
 ```bash
 curl https://YOUR_SERVICE_URL/health/live
 curl https://YOUR_SERVICE_URL/health/ready
+curl https://YOUR_SERVICE_URL/health
+curl https://YOUR_SERVICE_URL/
+```
+
+## Render
+
+The repo-level [render.yaml](./render.yaml) intentionally does not store live API keys or a fixed app version.
+
+Configure these Render environment variables in the dashboard:
+
+- `ENVIRONMENT`
+- `TRADING_MODE`
+- `REDIS_URL`
+- `FIRESTORE_PROJECT_ID`
+- `GOOGLE_APPLICATION_CREDENTIALS`
+- `AUTH_API_KEYS_JSON` or Firestore-backed auth
+- `PRIMARY_EXCHANGE`
+- `BACKUP_EXCHANGES`
+- exchange credentials for any enabled live adapter
+
+Recommended Render defaults:
+
+- `TRADING_MODE=paper`
+- `PRIMARY_EXCHANGE=binance`
+- `BACKUP_EXCHANGES=["kraken","coinbase"]`
+
+After deploy, verify runtime metadata:
+
+```bash
+curl https://YOUR_RENDER_URL/health
+curl https://YOUR_RENDER_URL/health/detailed
+curl https://YOUR_RENDER_URL/
 ```
 
 ## Recommended rollout flow

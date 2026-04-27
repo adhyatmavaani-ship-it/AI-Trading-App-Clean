@@ -49,7 +49,7 @@ PRODUCTION_CHECKLIST.md       Pre-production validation
 - **MetaController**: Governance gate - final approval/veto on trades
 
 ### Execution
-- **ExecutionEngine**: Live Binance orders with slippage checks, chunk execution, retries
+- **ExecutionEngine**: Live multi-exchange orders with primary/backup failover, slippage checks, chunk execution, retries
 - **PaperExecutionEngine**: Simulated trading for backtesting
 - **VirtualOrderManager**: Order batching and aggregation for institutional-style execution
 - **LiquiditySlippageEngine**: Orderbook impact analysis and chunk scheduling
@@ -82,7 +82,10 @@ pip install -r requirements.txt
 # 2. Configure environment
 echo "TRADING_MODE=paper
 REDIS_URL=redis://localhost:6379/0
-BINANCE_TESTNET=true" > .env
+BINANCE_TESTNET=true
+PRIMARY_EXCHANGE=binance
+BACKUP_EXCHANGES=[\"kraken\",\"coinbase\"]
+AUTH_API_KEYS_JSON=[{\"api_key\":\"local-dev-token\",\"user_id\":\"alice\",\"key_id\":\"local-key\"}]" > .env
 
 # 3. Start Redis (Docker or local)
 docker run -d -p 6379:6379 redis:7-alpine
@@ -192,11 +195,11 @@ See [Authentication Middleware](backend/app/middleware/auth.py) for implementati
 ```bash
 # Minimal check (for load balancers)
 GET /health
-→ {"status": "ok", "trading_mode": "paper"}
+→ {"status": "ok", "version": "7fa26d4", "commit": "<full_sha>"}
 
 # Kubernetes liveness probe
 GET /health/live
-→ {"status": "alive", "timestamp": "2026-04-25T..."}
+→ {"status": "alive", "timestamp": "2026-04-25T...", "version": "7fa26d4"}
 
 # Kubernetes readiness probe (checks dependencies)
 GET /health/ready
@@ -213,6 +216,8 @@ GET /health/ready
 GET /health/detailed
 → {
     "service": "ai-trading-backend",
+    "version": "7fa26d4",
+    "commit": "<full_sha>",
     "environment": "prod",
     "dependencies": { ... },
     "system": { ... },
@@ -324,6 +329,21 @@ ENVIRONMENT=prod                    # local, dev, staging, prod
 TRADING_MODE=live                   # paper, live
 REDIS_URL=redis://redis:6379/0
 FIRESTORE_PROJECT_ID=my-gcp-project
+AUTH_API_KEYS_JSON=[...]           # or Firestore-backed API keys
+```
+
+**Exchange Routing**
+```
+PRIMARY_EXCHANGE=binance            # first exchange attempted for live execution
+BACKUP_EXCHANGES=["kraken","coinbase"]
+BINANCE_TESTNET=true                # only affects the Binance adapter
+BINANCE_API_KEY=...
+BINANCE_API_SECRET=...
+KRAKEN_API_KEY=...
+KRAKEN_API_SECRET=...
+COINBASE_API_KEY=...
+COINBASE_API_SECRET=...
+COINBASE_API_PASSPHRASE=...
 ```
 
 **Risk Settings**
@@ -399,7 +419,7 @@ gcloud run deploy trading-backend \
   --source=backend \
   --region=us-central1 \
   --memory=1Gi \
-  --set-env-vars ENVIRONMENT=prod
+  --set-env-vars ENVIRONMENT=prod,TRADING_MODE=paper,PRIMARY_EXCHANGE=binance,BACKUP_EXCHANGES='["kraken","coinbase"]'
 ```
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for comprehensive deployment instructions.
@@ -448,7 +468,7 @@ curl http://localhost:8000/v1/health/detailed | jq .
 # Check specific dependency
 # - Redis: Is Redis running? Can backend connect?
 # - Firestore: Valid credentials? Network access?
-# - Market data: Binance API accessible?
+# - Market data: primary exchange API accessible?
 ```
 
 ## Development Roadmap
@@ -469,7 +489,7 @@ curl http://localhost:8000/v1/health/detailed | jq .
 ### In Progress 🟨
 - Live exchange reconciliation worker
 - Advanced chaos testing
-- Multi-exchange support (Kraken, dYdX)
+- Expanded exchange coverage and production credential rollout
 - Web dashboard (Flutter mobile complete)
 
 ### Future 🔮
