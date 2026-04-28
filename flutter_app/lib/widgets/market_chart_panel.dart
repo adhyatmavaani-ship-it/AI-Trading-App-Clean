@@ -217,6 +217,7 @@ class _ChartBody extends StatelessWidget {
                           minPrice: minPrice,
                           maxPrice: maxPrice,
                           markers: chart.markers,
+                          confidenceIntervals: chart.confidenceIntervals,
                         ),
                         child: const SizedBox.expand(),
                       ),
@@ -547,12 +548,14 @@ class _CandlestickPainter extends CustomPainter {
     required this.minPrice,
     required this.maxPrice,
     required this.markers,
+    required this.confidenceIntervals,
   });
 
   final List<MarketCandleModel> candles;
   final double minPrice;
   final double maxPrice;
   final List<TradeMarkerModel> markers;
+  final List<ConfidenceIntervalModel> confidenceIntervals;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -589,6 +592,8 @@ class _CandlestickPainter extends CustomPainter {
       final y = (size.height / 4) * i;
       canvas.drawLine(Offset(0, y), Offset(size.width, y), grid);
     }
+
+    _paintConfidenceBands(canvas, geometry, size);
 
     final candleWidth = size.width / (candles.length * 1.25);
 
@@ -634,8 +639,43 @@ class _CandlestickPainter extends CustomPainter {
   bool shouldRepaint(covariant _CandlestickPainter oldDelegate) {
     return oldDelegate.candles != candles ||
         oldDelegate.markers != markers ||
+        oldDelegate.confidenceIntervals != confidenceIntervals ||
         oldDelegate.minPrice != minPrice ||
         oldDelegate.maxPrice != maxPrice;
+  }
+
+  void _paintConfidenceBands(
+    Canvas canvas,
+    _ChartGeometry geometry,
+    Size size,
+  ) {
+    for (final interval in confidenceIntervals) {
+      final startIndex = _nearestCandleIndexForTs(interval.startTs);
+      final endIndex = _nearestCandleIndexForTs(interval.endTs);
+      if (startIndex == null || endIndex == null) {
+        continue;
+      }
+      final leftIndex = math.min(startIndex, endIndex);
+      final rightIndex = math.max(startIndex, endIndex);
+      final left = math.max(0.0, leftIndex * geometry.gap);
+      final right = math.min(size.width, (rightIndex + 1) * geometry.gap);
+      final bandRect = Rect.fromLTRB(left, 0, right, size.height);
+      final isStrong = interval.zoneType == 'STRONG_CONVICTION';
+      final topColor = isStrong
+          ? TradingPalette.neonGreen.withOpacity(0.12)
+          : TradingPalette.electricBlue.withOpacity(0.08);
+      final bottomColor = isStrong
+          ? TradingPalette.neonGreen.withOpacity(0.02)
+          : TradingPalette.electricBlue.withOpacity(0.015);
+      final bandPaint = Paint()
+        ..blendMode = BlendMode.srcOver
+        ..shader = LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: <Color>[topColor, bottomColor],
+        ).createShader(bandRect);
+      canvas.drawRect(bandRect, bandPaint);
+    }
   }
 
   void _paintTradeBridges(Canvas canvas, _ChartGeometry geometry) {
@@ -664,11 +704,25 @@ class _CandlestickPainter extends CustomPainter {
           end.dx,
           end.dy,
         );
+      final confidence = math.max(
+        startMarker.confidenceScore,
+        endMarker.confidenceScore,
+      );
       final bridgePaint = Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.4
+        ..strokeWidth = 1.0 + (confidence * 2.5)
+        ..strokeCap = StrokeCap.round
         ..color = TradingPalette.electricBlue.withOpacity(0.7);
-      _drawDashedPath(canvas, path, bridgePaint);
+      canvas.drawPath(
+        path,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = bridgePaint.strokeWidth + 2
+          ..strokeCap = StrokeCap.round
+          ..color = TradingPalette.electricBlue.withOpacity(0.12)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
+      );
+      canvas.drawPath(path, bridgePaint);
     }
   }
 
@@ -772,15 +826,20 @@ class _CandlestickPainter extends CustomPainter {
     );
   }
 
-  void _drawDashedPath(Canvas canvas, Path source, Paint paint) {
-    for (final metric in source.computeMetrics()) {
-      var distance = 0.0;
-      while (distance < metric.length) {
-        final next = math.min(distance + 6, metric.length);
-        canvas.drawPath(metric.extractPath(distance, next), paint);
-        distance += 10;
+  int? _nearestCandleIndexForTs(int timestampMs) {
+    if (timestampMs <= 0 || candles.isEmpty) {
+      return null;
+    }
+    var bestIndex = 0;
+    var bestDiff = (candles[0].timestampMs - timestampMs).abs();
+    for (var index = 1; index < candles.length; index += 1) {
+      final diff = (candles[index].timestampMs - timestampMs).abs();
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestIndex = index;
       }
     }
+    return bestIndex;
   }
 }
 

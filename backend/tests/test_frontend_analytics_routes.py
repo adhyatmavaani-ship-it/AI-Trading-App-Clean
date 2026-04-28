@@ -311,6 +311,7 @@ class FrontendAnalyticsRoutesTest(unittest.TestCase):
         self.assertEqual(payload["symbol"], "BTCUSDT")
         self.assertEqual(payload["interval"], "5m")
         self.assertEqual(len(payload["candles"]), 20)
+        self.assertGreaterEqual(len(payload["confidence_intervals"]), 1)
         marker_types = [item["marker_type"] for item in payload["markers"]]
         self.assertIn("ENTRY", marker_types)
         self.assertIn("EXIT", marker_types)
@@ -327,6 +328,10 @@ class FrontendAnalyticsRoutesTest(unittest.TestCase):
         self.assertEqual(ghost_marker["marker_style"], "ghost")
         self.assertAlmostEqual(ghost_marker["confidence_score"], 0.77, places=6)
         self.assertEqual(ghost_marker["reason"], "volume confirmation missing")
+        first_interval = payload["confidence_intervals"][0]
+        self.assertIn(first_interval["zone_type"], {"STRONG_CONVICTION", "SOFT_CONVICTION"})
+        self.assertGreaterEqual(first_interval["score"], 0.6)
+        self.assertLessEqual(first_interval["start_ts"], first_interval["end_ts"])
 
     def test_market_universe_endpoint(self):
         response = self.client.get(

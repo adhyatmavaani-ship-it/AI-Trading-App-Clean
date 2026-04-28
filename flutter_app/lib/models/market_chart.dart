@@ -99,6 +99,7 @@ class MarketChartModel {
     required this.changePct,
     required this.candles,
     required this.markers,
+    required this.confidenceIntervals,
   });
 
   final String symbol;
@@ -107,6 +108,7 @@ class MarketChartModel {
   final double changePct;
   final List<MarketCandleModel> candles;
   final List<TradeMarkerModel> markers;
+  final List<ConfidenceIntervalModel> confidenceIntervals;
 
   factory MarketChartModel.fromJson(Map<String, dynamic> json) {
     final candles = (json['candles'] as List<dynamic>? ?? const [])
@@ -115,6 +117,14 @@ class MarketChartModel {
     final markers = (json['markers'] as List<dynamic>? ?? const [])
         .map((item) => TradeMarkerModel.fromJson(item as Map<String, dynamic>))
         .toList();
+    final confidenceIntervals =
+        (json['confidence_intervals'] as List<dynamic>? ?? const [])
+            .map(
+              (item) => ConfidenceIntervalModel.fromJson(
+                item as Map<String, dynamic>,
+              ),
+            )
+            .toList();
     return MarketChartModel(
       symbol: json['symbol'] as String? ?? 'BTCUSDT',
       interval: json['interval'] as String? ?? '5m',
@@ -122,6 +132,30 @@ class MarketChartModel {
       changePct: (json['change_pct'] as num?)?.toDouble() ?? 0,
       candles: candles,
       markers: markers,
+      confidenceIntervals: confidenceIntervals,
+    );
+  }
+}
+
+class ConfidenceIntervalModel {
+  const ConfidenceIntervalModel({
+    required this.startTs,
+    required this.endTs,
+    required this.score,
+    required this.zoneType,
+  });
+
+  final int startTs;
+  final int endTs;
+  final double score;
+  final String zoneType;
+
+  factory ConfidenceIntervalModel.fromJson(Map<String, dynamic> json) {
+    return ConfidenceIntervalModel(
+      startTs: (json['start_ts'] as num?)?.toInt() ?? 0,
+      endTs: (json['end_ts'] as num?)?.toInt() ?? 0,
+      score: (json['score'] as num?)?.toDouble() ?? 0,
+      zoneType: json['zone_type'] as String? ?? 'SOFT_CONVICTION',
     );
   }
 }

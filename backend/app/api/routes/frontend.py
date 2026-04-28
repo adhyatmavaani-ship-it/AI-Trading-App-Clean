@@ -200,6 +200,7 @@ async def get_market_candles(
                 "interval": normalized_interval,
                 "candles": [],
                 "markers": [],
+                "confidence_intervals": [],
                 "latest_price": 0.0,
                 "change_pct": 0.0,
             }
@@ -227,6 +228,10 @@ async def get_market_candles(
             candles=candles,
             latest_price=latest_price,
         )
+        confidence_intervals = _build_confidence_intervals(
+            candles=candles,
+            markers=markers,
+        )
         return {
             "symbol": normalized_symbol,
             "interval": normalized_interval,
@@ -234,6 +239,7 @@ async def get_market_candles(
             "change_pct": round(change_pct, 4),
             "candles": candles,
             "markers": markers,
+            "confidence_intervals": confidence_intervals,
         }
     except AuthenticationError as exc:
         raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
@@ -1058,6 +1064,131 @@ def _build_market_markers(
         seen.add(key)
         deduped.append(marker)
     return deduped
+
+
+def _build_confidence_intervals(
+    *,
+    candles: list[dict[str, object]],
+    markers: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    if not candles:
+        return []
+    candle_scores = [0.0 for _ in candles]
+    for marker in markers:
+        confidence = _coerce_confidence_score(marker)
+        if confidence < 0.6:
+            continue
+        marker_index = _nearest_candle_index(
+            candles=candles,
+            timestamp_ms=_timestamp_to_epoch_ms(marker.get("timestamp")),
+        )
+        if marker_index is None:
+            continue
+        if str(marker.get("marker_style", "") or "") == "ghost":
+            radius = 2 if confidence >= 0.8 else 1
+            for index in range(
+                max(0, marker_index - radius),
+                min(len(candles), marker_index + radius + 1),
+            ):
+                candle_scores[index] = max(candle_scores[index], confidence)
+
+    trade_windows: dict[str, dict[str, int | float]] = {}
+    for marker in markers:
+        trade_id = str(marker.get("trade_id", "") or "").strip()
+        confidence = _coerce_confidence_score(marker)
+        if not trade_id or confidence < 0.6:
+            continue
+        marker_index = _nearest_candle_index(
+            candles=candles,
+            timestamp_ms=_timestamp_to_epoch_ms(marker.get("timestamp")),
+        )
+        if marker_index is None:
+            continue
+        window = trade_windows.setdefault(
+            trade_id,
+            {"start": marker_index, "end": marker_index, "confidence": confidence},
+        )
+        marker_type = str(marker.get("marker_type", "") or "")
+        if marker_type == "ENTRY":
+            window["start"] = marker_index
+        elif marker_type == "EXIT":
+            window["end"] = marker_index
+        else:
+            window["start"] = min(int(window["start"]), marker_index)
+            window["end"] = max(int(window["end"]), marker_index)
+        window["confidence"] = max(float(window["confidence"]), confidence)
+
+    for window in trade_windows.values():
+        start = max(0, min(int(window["start"]), int(window["end"])))
+        end = min(len(candles) - 1, max(int(window["start"]), int(window["end"])))
+        confidence = float(window["confidence"])
+        for index in range(start, end + 1):
+            candle_scores[index] = max(candle_scores[index], confidence)
+
+    intervals: list[dict[str, object]] = []
+    start_index: int | None = None
+    active_scores: list[float] = []
+    for index, score in enumerate(candle_scores):
+        if score >= 0.6:
+            if start_index is None:
+                start_index = index
+                active_scores = []
+            active_scores.append(score)
+            continue
+        if start_index is not None:
+            intervals.append(
+                _confidence_interval_payload(
+                    candles=candles,
+                    start_index=start_index,
+                    end_index=index - 1,
+                    scores=active_scores,
+                )
+            )
+            start_index = None
+            active_scores = []
+    if start_index is not None:
+        intervals.append(
+            _confidence_interval_payload(
+                candles=candles,
+                start_index=start_index,
+                end_index=len(candles) - 1,
+                scores=active_scores,
+            )
+        )
+    return intervals
+
+
+def _confidence_interval_payload(
+    *,
+    candles: list[dict[str, object]],
+    start_index: int,
+    end_index: int,
+    scores: list[float],
+) -> dict[str, object]:
+    score = max(scores) if scores else 0.0
+    return {
+        "start_ts": int(candles[start_index].get("timestamp", 0) or 0),
+        "end_ts": int(candles[end_index].get("timestamp", 0) or 0),
+        "score": round(score, 4),
+        "zone_type": "STRONG_CONVICTION" if score >= 0.8 else "SOFT_CONVICTION",
+    }
+
+
+def _nearest_candle_index(
+    *,
+    candles: list[dict[str, object]],
+    timestamp_ms: int,
+) -> int | None:
+    if not candles or timestamp_ms <= 0:
+        return None
+    best_index = None
+    best_diff = None
+    for index, candle in enumerate(candles):
+        diff = abs(int(candle.get("timestamp", 0) or 0) - timestamp_ms)
+        if best_diff is None or diff < best_diff:
+            best_index = index
+            best_diff = diff
+    return best_index
 
 
 def _coerce_confidence_score(payload: dict) -> float:
