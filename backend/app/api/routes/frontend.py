@@ -1,8 +1,6 @@
 ﻿from __future__ import annotations
 
 from datetime import datetime, timezone
-import logging
-
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
@@ -21,7 +19,6 @@ from app.schemas.trading import SignalResponse
 from app.services.container import ServiceContainer, get_container
 
 router = APIRouter()
-logger = logging.getLogger(__name__)
 
 
 class MockPriceMoveRequest(BaseModel):
@@ -110,7 +107,6 @@ async def get_live_signals(
         except AuthenticationError:
             authenticated_user_id = "anonymous"
         viewer_subscription = _load_viewer_signal_subscription(container, authenticated_user_id)
-        logger.info("Live signal generation triggered")
         signals = await _generate_live_signals(container, limit=min(limit, 3))
         if len(signals) < min(limit, 3):
             cached_signals = await _collect_live_signals(container, viewer_subscription)
