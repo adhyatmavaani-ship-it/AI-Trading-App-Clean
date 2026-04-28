@@ -28,6 +28,7 @@ class StubAnalyticsService:
                 "side": "BUY",
                 "entry": 100.25,
                 "created_at": "2026-04-27T10:00:00+00:00",
+                "confidence_score": 0.84,
             }
         ]
 
@@ -42,6 +43,7 @@ class StubAnalyticsService:
                 "profit_pct": 1.25,
                 "closed_at": "2026-04-27T11:00:00+00:00",
                 "exit_reason": "structure_break",
+                "confidence_score": 0.84,
             }
         ]
 
@@ -58,8 +60,33 @@ class StubUserExperienceEngine:
 
     def history(self, limit: int = 25):
         return [
-            {"status": "scanning", "message": "Scanning BTC..."},
-            {"status": "almost_trade", "message": "ETH almost triggered trade"},
+            {
+                "status": "scanning",
+                "message": "Scanning BTC...",
+                "symbol": "BTCUSDT",
+                "timestamp": "2026-04-27T09:55:00+00:00",
+                "confidence": 0.41,
+                "readiness": 32.0,
+                "reason": "setup forming",
+            },
+            {
+                "status": "almost_trade",
+                "message": "ETH almost triggered trade",
+                "symbol": "ETHUSDT",
+                "timestamp": "2026-04-27T10:05:00+00:00",
+                "confidence": 0.68,
+                "readiness": 68.0,
+            },
+            {
+                "status": "almost_trade",
+                "message": "BTC almost triggered trade",
+                "symbol": "BTCUSDT",
+                "timestamp": "2026-04-27T10:15:00+00:00",
+                "confidence": 0.77,
+                "readiness": 74.0,
+                "reason": "volume confirmation missing",
+                "intent": "Waiting for BTC confirmation",
+            },
         ][:limit]
 
     def readiness(self, limit: int = 8):
@@ -255,7 +282,7 @@ class FrontendAnalyticsRoutesTest(unittest.TestCase):
     def test_activity_history_endpoint(self):
         response = self.client.get("/v1/activity/history", headers={"X-API-Key": "route-token"})
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["count"], 2)
+        self.assertEqual(response.json()["count"], 3)
 
     def test_activity_readiness_endpoint(self):
         response = self.client.get("/v1/activity/readiness", headers={"X-API-Key": "route-token"})
@@ -284,8 +311,22 @@ class FrontendAnalyticsRoutesTest(unittest.TestCase):
         self.assertEqual(payload["symbol"], "BTCUSDT")
         self.assertEqual(payload["interval"], "5m")
         self.assertEqual(len(payload["candles"]), 20)
-        self.assertEqual(payload["markers"][0]["timestamp"], "2026-04-27T10:00:00+00:00")
-        self.assertEqual(payload["markers"][1]["timestamp"], "2026-04-27T11:00:00+00:00")
+        marker_types = [item["marker_type"] for item in payload["markers"]]
+        self.assertIn("ENTRY", marker_types)
+        self.assertIn("EXIT", marker_types)
+        self.assertIn("REJECTED_SETUP", marker_types)
+        entry_marker = next(item for item in payload["markers"] if item["marker_type"] == "ENTRY")
+        exit_marker = next(item for item in payload["markers"] if item["marker_type"] == "EXIT")
+        ghost_markers = [item for item in payload["markers"] if item["marker_type"] == "REJECTED_SETUP"]
+        ghost_marker = next(
+            item for item in ghost_markers if item.get("reason") == "volume confirmation missing"
+        )
+        self.assertEqual(entry_marker["timestamp"], "2026-04-27T10:00:00+00:00")
+        self.assertEqual(exit_marker["timestamp"], "2026-04-27T11:00:00+00:00")
+        self.assertAlmostEqual(entry_marker["confidence_score"], 0.84, places=6)
+        self.assertEqual(ghost_marker["marker_style"], "ghost")
+        self.assertAlmostEqual(ghost_marker["confidence_score"], 0.77, places=6)
+        self.assertEqual(ghost_marker["reason"], "volume confirmation missing")
 
     def test_market_universe_endpoint(self):
         response = self.client.get(

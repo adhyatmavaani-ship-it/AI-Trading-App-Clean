@@ -30,6 +30,13 @@ class AnalyticsService:
                     "symbol": str(trade.get("symbol", "")),
                     "side": str(trade.get("side", "")),
                     "entry": float(trade.get("entry", 0.0) or 0.0),
+                    "confidence_score": float(
+                        trade.get(
+                            "confidence_score",
+                            trade.get("confidence", trade.get("trade_success_probability", 0.0)),
+                        )
+                        or 0.0
+                    ),
                     "stop_loss": float(trade.get("stop_loss", 0.0) or 0.0),
                     "take_profit": float(trade.get("take_profit", 0.0) or 0.0),
                     "trailing_stop_pct": float(trade.get("trailing_stop_pct", 0.0) or 0.0),
@@ -94,6 +101,16 @@ class AnalyticsService:
             "side": side,
             "entry": round(entry, 8),
             "exit": round(float(exit_price), 8),
+            "confidence_score": round(
+                float(
+                    active_trade.get(
+                        "confidence_score",
+                        active_trade.get("confidence", active_trade.get("trade_success_probability", 0.0)),
+                    )
+                    or 0.0
+                ),
+                8,
+            ),
             "regime": regime,
             "profit_pct": round(profit_pct, 8),
             "realized_pnl": round(float(close_payload.get("realized_pnl", 0.0) or 0.0), 8),

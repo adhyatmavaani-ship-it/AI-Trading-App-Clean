@@ -220,40 +220,13 @@ async def get_market_candles(
             }
             for row in trimmed.to_dict(orient="records")
         ]
-        analytics = getattr(container, "analytics_service", None)
-        active_trades = analytics.active_trades(target_user_id) if analytics is not None else []
-        history_trades = analytics.trade_history(target_user_id, limit=120) if analytics is not None else []
-        markers: list[dict[str, object]] = []
-        for trade in [*active_trades, *history_trades]:
-            if str(trade.get("symbol", "")).upper() != normalized_symbol:
-                continue
-            trade_id = str(trade.get("trade_id", "") or "")
-            entry = float(trade.get("entry", 0.0) or 0.0)
-            exit_price = float(trade.get("exit", 0.0) or 0.0)
-            side = str(trade.get("side", "") or "BUY")
-            opened_at = trade.get("opened_at") or trade.get("created_at") or trade.get("submitted_at")
-            closed_at = trade.get("closed_at") or trade.get("updated_at")
-            if entry > 0 and opened_at:
-                markers.append(
-                    {
-                        "type": "entry",
-                        "trade_id": trade_id,
-                        "side": side,
-                        "price": round(entry, 8),
-                        "timestamp": _normalize_marker_timestamp(opened_at),
-                    }
-                )
-            if exit_price > 0 and closed_at:
-                markers.append(
-                    {
-                        "type": "exit",
-                        "trade_id": trade_id,
-                        "side": side,
-                        "price": round(exit_price, 8),
-                        "timestamp": _normalize_marker_timestamp(closed_at),
-                        "exit_reason": trade.get("exit_reason"),
-                    }
-                )
+        markers = _build_market_markers(
+            container=container,
+            target_user_id=target_user_id,
+            normalized_symbol=normalized_symbol,
+            candles=candles,
+            latest_price=latest_price,
+        )
         return {
             "symbol": normalized_symbol,
             "interval": normalized_interval,
@@ -984,6 +957,156 @@ def _normalize_marker_timestamp(value: object) -> str:
         return normalized.isoformat()
     except ValueError:
         return text
+
+
+def _build_market_markers(
+    *,
+    container: ServiceContainer,
+    target_user_id: str,
+    normalized_symbol: str,
+    candles: list[dict[str, object]],
+    latest_price: float,
+) -> list[dict[str, object]]:
+    analytics = getattr(container, "analytics_service", None)
+    activity_engine = getattr(container, "user_experience_engine", None)
+    active_trades = analytics.active_trades(target_user_id) if analytics is not None else []
+    history_trades = analytics.trade_history(target_user_id, limit=120) if analytics is not None else []
+    activity_items = activity_engine.history(limit=120) if activity_engine is not None else []
+    markers: list[dict[str, object]] = []
+
+    for trade in [*active_trades, *history_trades]:
+        if str(trade.get("symbol", "")).upper() != normalized_symbol:
+            continue
+        trade_id = str(trade.get("trade_id", "") or "")
+        entry = float(trade.get("entry", 0.0) or 0.0)
+        exit_price = float(trade.get("exit", 0.0) or 0.0)
+        side = str(trade.get("side", "") or "BUY")
+        confidence_score = round(_coerce_confidence_score(trade), 8)
+        opened_at = trade.get("opened_at") or trade.get("created_at") or trade.get("submitted_at")
+        closed_at = trade.get("closed_at") or trade.get("updated_at")
+        if entry > 0 and opened_at:
+            markers.append(
+                {
+                    "type": "entry",
+                    "marker_type": "ENTRY",
+                    "marker_style": "filled",
+                    "trade_id": trade_id,
+                    "side": side,
+                    "price": round(entry, 8),
+                    "timestamp": _normalize_marker_timestamp(opened_at),
+                    "confidence_score": confidence_score,
+                    "status": str(trade.get("status", "OPEN") or "OPEN"),
+                }
+            )
+        if exit_price > 0 and closed_at:
+            markers.append(
+                {
+                    "type": "exit",
+                    "marker_type": "EXIT",
+                    "marker_style": "filled",
+                    "trade_id": trade_id,
+                    "side": side,
+                    "price": round(exit_price, 8),
+                    "timestamp": _normalize_marker_timestamp(closed_at),
+                    "exit_reason": trade.get("exit_reason"),
+                    "confidence_score": confidence_score,
+                    "status": str(trade.get("status", "CLOSED") or "CLOSED"),
+                }
+            )
+
+    for activity in activity_items:
+        if str(activity.get("symbol", "")).upper() != normalized_symbol:
+            continue
+        status = str(activity.get("status", "") or "").lower().strip()
+        if status not in {"almost_trade", "scanning", "waiting"}:
+            continue
+        confidence_score = _coerce_confidence_score(activity)
+        readiness_score = float(activity.get("readiness", 0.0) or 0.0)
+        if confidence_score <= 0 and readiness_score <= 0:
+            continue
+        timestamp = activity.get("timestamp") or activity.get("updated_at")
+        if not timestamp:
+            continue
+        markers.append(
+            {
+                "type": "ghost",
+                "marker_type": "REJECTED_SETUP",
+                "marker_style": "ghost",
+                "side": str(activity.get("action", "") or "WATCH"),
+                "price": round(_resolve_marker_price(activity, candles, latest_price), 8),
+                "timestamp": _normalize_marker_timestamp(timestamp),
+                "confidence_score": round(confidence_score, 8),
+                "readiness_score": round(readiness_score, 2),
+                "status": str(activity.get("status", "") or "").upper(),
+                "reason": activity.get("reason"),
+                "message": activity.get("message"),
+                "intent": activity.get("intent"),
+            }
+        )
+
+    deduped: list[dict[str, object]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for marker in sorted(markers, key=lambda item: str(item.get("timestamp", ""))):
+        key = (
+            str(marker.get("marker_type", "") or ""),
+            str(marker.get("trade_id", "") or ""),
+            str(marker.get("timestamp", "") or ""),
+            f"{float(marker.get('price', 0.0) or 0.0):.8f}",
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(marker)
+    return deduped
+
+
+def _coerce_confidence_score(payload: dict) -> float:
+    return max(
+        0.0,
+        min(
+            float(
+                payload.get(
+                    "confidence_score",
+                    payload.get(
+                        "confidence_meter",
+                        payload.get("confidence", payload.get("trade_success_probability", 0.0)),
+                    ),
+                )
+                or 0.0
+            ),
+            1.0,
+        ),
+    )
+
+
+def _resolve_marker_price(
+    activity: dict,
+    candles: list[dict[str, object]],
+    latest_price: float,
+) -> float:
+    explicit_price = float(
+        activity.get("price", activity.get("reference_price", activity.get("trigger_price", 0.0))) or 0.0
+    )
+    if explicit_price > 0:
+        return explicit_price
+    target_ms = _timestamp_to_epoch_ms(activity.get("timestamp") or activity.get("updated_at"))
+    if target_ms > 0 and candles:
+        closest = min(
+            candles,
+            key=lambda candle: abs(int(candle.get("timestamp", 0) or 0) - target_ms),
+        )
+        return float(closest.get("close", latest_price) or latest_price)
+    return float(latest_price or 0.0)
+
+
+def _timestamp_to_epoch_ms(value: object) -> int:
+    text = _normalize_marker_timestamp(value)
+    try:
+        parsed = datetime.fromisoformat(text)
+        normalized = parsed.astimezone(timezone.utc) if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        return int(normalized.timestamp() * 1000)
+    except ValueError:
+        return 0
 
 
 def _load_viewer_signal_subscription(container: ServiceContainer, user_id: str) -> dict:

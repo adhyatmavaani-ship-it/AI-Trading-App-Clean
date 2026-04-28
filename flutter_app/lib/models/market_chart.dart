@@ -30,28 +30,50 @@ class MarketCandleModel {
 class TradeMarkerModel {
   const TradeMarkerModel({
     required this.type,
+    required this.markerType,
+    required this.markerStyle,
     required this.side,
     required this.price,
     required this.timestamp,
+    required this.confidenceScore,
     this.tradeId,
     this.exitReason,
+    this.readinessScore,
+    this.reason,
+    this.message,
+    this.intent,
   });
 
   final String type;
+  final String markerType;
+  final String markerStyle;
   final String side;
   final double price;
   final DateTime timestamp;
+  final double confidenceScore;
   final String? tradeId;
   final String? exitReason;
+  final double? readinessScore;
+  final String? reason;
+  final String? message;
+  final String? intent;
 
   factory TradeMarkerModel.fromJson(Map<String, dynamic> json) {
     return TradeMarkerModel(
       type: json['type'] as String? ?? 'entry',
+      markerType: json['marker_type'] as String? ?? 'ENTRY',
+      markerStyle: json['marker_style'] as String? ?? 'filled',
       side: json['side'] as String? ?? 'BUY',
       price: (json['price'] as num?)?.toDouble() ?? 0,
       timestamp: _parseMarkerTimestamp(json['timestamp']),
+      confidenceScore:
+          (json['confidence_score'] as num?)?.toDouble() ?? 0,
       tradeId: json['trade_id'] as String?,
       exitReason: json['exit_reason'] as String?,
+      readinessScore: (json['readiness_score'] as num?)?.toDouble(),
+      reason: json['reason'] as String?,
+      message: json['message'] as String?,
+      intent: json['intent'] as String?,
     );
   }
 }

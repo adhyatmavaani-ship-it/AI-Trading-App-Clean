@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -181,25 +183,53 @@ class _ChartBody extends StatelessWidget {
         const SizedBox(height: 16),
         SizedBox(
           height: 280,
-          child: Column(
-            children: <Widget>[
-              Expanded(
-                child: CustomPaint(
-                  painter: _CandlestickPainter(
-                    candles: candles,
-                    minPrice: minPrice,
-                    maxPrice: maxPrice,
-                    markers: chart.markers,
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final chartSize = Size(
+                constraints.maxWidth,
+                constraints.maxHeight - 24,
+              );
+              final geometry = _ChartGeometry(
+                candles: candles,
+                minPrice: minPrice,
+                maxPrice: maxPrice,
+                size: chartSize,
+              );
+              return Column(
+                children: <Widget>[
+                  Expanded(
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTapDown: (details) {
+                        final ghostMarker = _nearestGhostMarker(
+                          geometry: geometry,
+                          tap: details.localPosition,
+                          markers: chart.markers,
+                        );
+                        if (ghostMarker == null) {
+                          return;
+                        }
+                        _showGhostMarkerSheet(context, ghostMarker);
+                      },
+                      child: CustomPaint(
+                        painter: _CandlestickPainter(
+                          candles: candles,
+                          minPrice: minPrice,
+                          maxPrice: maxPrice,
+                          markers: chart.markers,
+                        ),
+                        child: const SizedBox.expand(),
+                      ),
+                    ),
                   ),
-                  child: const SizedBox.expand(),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: _buildTimeLabels(context, candles),
-              ),
-            ],
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: _buildTimeLabels(context, candles),
+                  ),
+                ],
+              );
+            },
           ),
         ),
         const SizedBox(height: 14),
@@ -243,15 +273,28 @@ class _ChartBody extends StatelessWidget {
   }
 
   Widget _markerChip(TradeMarkerModel marker) {
-    final isEntry = marker.type == 'entry';
-    final accent = isEntry ? TradingPalette.neonGreen : TradingPalette.neonRed;
-    final icon = isEntry ? Icons.login_rounded : Icons.logout_rounded;
+    final isGhost = marker.markerStyle == 'ghost';
+    final isEntry = marker.markerType == 'ENTRY';
+    final accent = isGhost
+        ? TradingPalette.textMuted
+        : isEntry
+            ? TradingPalette.neonGreen
+            : TradingPalette.neonRed;
+    final icon = isGhost
+        ? Icons.add_rounded
+        : isEntry
+            ? Icons.arrow_upward_rounded
+            : Icons.arrow_downward_rounded;
     return Chip(
       avatar: Icon(icon, size: 16, color: accent),
       label: Text(
-        '${marker.type.toUpperCase()} ${marker.side} @ ${marker.price.toStringAsFixed(marker.price >= 100 ? 2 : 4)}',
+        isGhost
+            ? 'GHOST ${marker.readinessScore?.toStringAsFixed(0) ?? '--'}% ${marker.reason ?? marker.message ?? ''}'
+            : '${marker.markerType} ${marker.side} @ ${marker.price.toStringAsFixed(marker.price >= 100 ? 2 : 4)}',
       ),
-      backgroundColor: accent.withOpacity(0.12),
+      backgroundColor: isGhost
+          ? TradingPalette.panelSoft
+          : accent.withOpacity(0.12),
       side: BorderSide(color: accent.withOpacity(0.35)),
     );
   }
@@ -280,6 +323,137 @@ class _ChartBody extends StatelessWidget {
       );
     }).toList();
   }
+}
+
+class _ChartGeometry {
+  const _ChartGeometry({
+    required this.candles,
+    required this.minPrice,
+    required this.maxPrice,
+    required this.size,
+  });
+
+  final List<MarketCandleModel> candles;
+  final double minPrice;
+  final double maxPrice;
+  final Size size;
+
+  double get usableHeight => size.height - 18;
+
+  double get gap => size.width / math.max(candles.length, 1);
+
+  Offset markerOffset(TradeMarkerModel marker) {
+    final timestamp = marker.timestamp.millisecondsSinceEpoch;
+    var markerIndex = 0;
+    var minDiff = 1 << 30;
+    for (var index = 0; index < candles.length; index += 1) {
+      final diff = (candles[index].timestampMs - timestamp).abs();
+      if (diff < minDiff) {
+        minDiff = diff;
+        markerIndex = index;
+      }
+    }
+    final x = (markerIndex * gap) + (gap / 2);
+    final y = mapY(marker.price);
+    return Offset(x, y);
+  }
+
+  double mapY(double price) {
+    final denominator = (maxPrice - minPrice).abs() < 1e-8
+        ? 1
+        : (maxPrice - minPrice);
+    final ratio = (price - minPrice) / denominator;
+    return usableHeight - (ratio * usableHeight) + 9;
+  }
+}
+
+TradeMarkerModel? _nearestGhostMarker({
+  required _ChartGeometry geometry,
+  required Offset tap,
+  required List<TradeMarkerModel> markers,
+}) {
+  TradeMarkerModel? best;
+  double bestDistance = 30;
+  for (final marker in markers) {
+    if (marker.markerStyle != 'ghost') {
+      continue;
+    }
+    final offset = geometry.markerOffset(marker);
+    final distance = (offset - tap).distance;
+    if (distance < bestDistance) {
+      best = marker;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+void _showGhostMarkerSheet(BuildContext context, TradeMarkerModel marker) {
+  showModalBottomSheet<void>(
+    context: context,
+    backgroundColor: TradingPalette.deepNavy,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+    ),
+    builder: (context) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                Container(
+                  width: 12,
+                  height: 12,
+                  decoration: BoxDecoration(
+                    color: TradingPalette.textMuted,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Text(
+                  'Ghost Setup',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        color: TradingPalette.textPrimary,
+                        fontWeight: FontWeight.w800,
+                      ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            Text(
+              marker.reason ?? marker.message ?? 'AI rejected this setup.',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: TradingPalette.textPrimary,
+                  ),
+            ),
+            const SizedBox(height: 14),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: <Widget>[
+                _GhostMetaPill(
+                  label: 'Confidence',
+                  value: '${(marker.confidenceScore * 100).toStringAsFixed(0)}%',
+                ),
+                _GhostMetaPill(
+                  label: 'Readiness',
+                  value: '${(marker.readinessScore ?? 0).toStringAsFixed(0)}%',
+                ),
+                if ((marker.intent ?? '').isNotEmpty)
+                  _GhostMetaPill(
+                    label: 'Intent',
+                    value: marker.intent!,
+                  ),
+              ],
+            ),
+          ],
+        ),
+      );
+    },
+  );
 }
 
 class _CategoryRow extends StatelessWidget {
@@ -382,6 +556,12 @@ class _CandlestickPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    final geometry = _ChartGeometry(
+      candles: candles,
+      minPrice: minPrice,
+      maxPrice: maxPrice,
+      size: size,
+    );
     final background = Paint()
       ..style = PaintingStyle.fill
       ..shader = const LinearGradient(
@@ -410,18 +590,11 @@ class _CandlestickPainter extends CustomPainter {
       canvas.drawLine(Offset(0, y), Offset(size.width, y), grid);
     }
 
-    final usableHeight = size.height - 18;
     final candleWidth = size.width / (candles.length * 1.25);
-    final gap = size.width / candles.length;
-
-    double mapY(double price) {
-      final ratio = (price - minPrice) / ((maxPrice - minPrice).abs() < 1e-8 ? 1 : (maxPrice - minPrice));
-      return usableHeight - (ratio * usableHeight) + 9;
-    }
 
     for (var index = 0; index < candles.length; index += 1) {
       final candle = candles[index];
-      final x = (index * gap) + (gap / 2);
+      final x = (index * geometry.gap) + (geometry.gap / 2);
       final wickPaint = Paint()
         ..color = candle.close >= candle.open
             ? TradingPalette.neonGreen
@@ -432,10 +605,10 @@ class _CandlestickPainter extends CustomPainter {
             ? TradingPalette.neonGreen
             : TradingPalette.neonRed
         ..style = PaintingStyle.fill;
-      final highY = mapY(candle.high);
-      final lowY = mapY(candle.low);
-      final openY = mapY(candle.open);
-      final closeY = mapY(candle.close);
+      final highY = geometry.mapY(candle.high);
+      final lowY = geometry.mapY(candle.low);
+      final openY = geometry.mapY(candle.open);
+      final closeY = geometry.mapY(candle.close);
       canvas.drawLine(Offset(x, highY), Offset(x, lowY), wickPaint);
       canvas.drawRRect(
         RRect.fromRectAndRadius(
@@ -451,23 +624,9 @@ class _CandlestickPainter extends CustomPainter {
       );
     }
 
-    final markerPaint = Paint()..style = PaintingStyle.fill;
-    for (final marker in markers.take(8)) {
-      final timestamp = marker.timestamp.millisecondsSinceEpoch;
-      var markerIndex = 0;
-      var minDiff = 1 << 30;
-      for (var index = 0; index < candles.length; index += 1) {
-        final diff = (candles[index].timestampMs - timestamp).abs();
-        if (diff < minDiff) {
-          minDiff = diff;
-          markerIndex = index;
-        }
-      }
-      final x = (markerIndex * gap) + (gap / 2);
-      final y = mapY(marker.price);
-      markerPaint.color =
-          marker.type == 'entry' ? TradingPalette.electricBlue : TradingPalette.amber;
-      canvas.drawCircle(Offset(x, y), 4.5, markerPaint);
+    _paintTradeBridges(canvas, geometry);
+    for (final marker in markers.take(18)) {
+      _paintMarker(canvas, geometry, marker);
     }
   }
 
@@ -477,6 +636,151 @@ class _CandlestickPainter extends CustomPainter {
         oldDelegate.markers != markers ||
         oldDelegate.minPrice != minPrice ||
         oldDelegate.maxPrice != maxPrice;
+  }
+
+  void _paintTradeBridges(Canvas canvas, _ChartGeometry geometry) {
+    final trades = <String, Map<String, TradeMarkerModel>>{};
+    for (final marker in markers) {
+      final tradeId = marker.tradeId;
+      if (tradeId == null || tradeId.isEmpty) {
+        continue;
+      }
+      final slot = trades.putIfAbsent(tradeId, () => <String, TradeMarkerModel>{});
+      slot[marker.markerType] = marker;
+    }
+    for (final entry in trades.values) {
+      final startMarker = entry['ENTRY'];
+      final endMarker = entry['EXIT'];
+      if (startMarker == null || endMarker == null) {
+        continue;
+      }
+      final start = geometry.markerOffset(startMarker);
+      final end = geometry.markerOffset(endMarker);
+      final path = Path()
+        ..moveTo(start.dx, start.dy)
+        ..quadraticBezierTo(
+          (start.dx + end.dx) / 2,
+          math.min(start.dy, end.dy) - 22,
+          end.dx,
+          end.dy,
+        );
+      final bridgePaint = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.4
+        ..color = TradingPalette.electricBlue.withOpacity(0.7);
+      _drawDashedPath(canvas, path, bridgePaint);
+    }
+  }
+
+  void _paintMarker(
+    Canvas canvas,
+    _ChartGeometry geometry,
+    TradeMarkerModel marker,
+  ) {
+    final offset = geometry.markerOffset(marker);
+    if (marker.confidenceScore > 0.7) {
+      final haloColor = marker.markerStyle == 'ghost'
+          ? TradingPalette.textMuted
+          : TradingPalette.neonGreen;
+      canvas.drawCircle(
+        offset,
+        24 + (marker.confidenceScore * 10),
+        Paint()
+          ..color = haloColor.withOpacity(
+            marker.markerStyle == 'ghost' ? 0.06 : 0.11,
+          )
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 14),
+      );
+    }
+    if (marker.markerStyle == 'ghost') {
+      _drawGhostPlus(canvas, offset, TradingPalette.textMuted);
+      return;
+    }
+    final isEntry = marker.markerType == 'ENTRY';
+    final accent = isEntry ? TradingPalette.neonGreen : TradingPalette.neonRed;
+    _drawArrowMarker(
+      canvas,
+      offset,
+      accent,
+      upward: isEntry,
+    );
+  }
+
+  void _drawArrowMarker(
+    Canvas canvas,
+    Offset center,
+    Color color, {
+    required bool upward,
+  }) {
+    canvas.drawCircle(
+      center,
+      9,
+      Paint()
+        ..color = color.withOpacity(0.18)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
+    );
+    final path = Path();
+    if (upward) {
+      path
+        ..moveTo(center.dx, center.dy - 9)
+        ..lineTo(center.dx - 7, center.dy + 4)
+        ..lineTo(center.dx - 2, center.dy + 4)
+        ..lineTo(center.dx - 2, center.dy + 10)
+        ..lineTo(center.dx + 2, center.dy + 10)
+        ..lineTo(center.dx + 2, center.dy + 4)
+        ..lineTo(center.dx + 7, center.dy + 4)
+        ..close();
+    } else {
+      path
+        ..moveTo(center.dx, center.dy + 9)
+        ..lineTo(center.dx - 7, center.dy - 4)
+        ..lineTo(center.dx - 2, center.dy - 4)
+        ..lineTo(center.dx - 2, center.dy - 10)
+        ..lineTo(center.dx + 2, center.dy - 10)
+        ..lineTo(center.dx + 2, center.dy - 4)
+        ..lineTo(center.dx + 7, center.dy - 4)
+        ..close();
+    }
+    canvas.drawPath(
+      path,
+      Paint()..color = color,
+    );
+  }
+
+  void _drawGhostPlus(Canvas canvas, Offset center, Color color) {
+    final paint = Paint()
+      ..color = color.withOpacity(0.75)
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round;
+    canvas.drawCircle(
+      center,
+      10,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.2
+        ..color = color.withOpacity(0.32),
+    );
+    canvas.drawLine(
+      Offset(center.dx - 5, center.dy),
+      Offset(center.dx + 5, center.dy),
+      paint,
+    );
+    canvas.drawLine(
+      Offset(center.dx, center.dy - 5),
+      Offset(center.dx, center.dy + 5),
+      paint,
+    );
+  }
+
+  void _drawDashedPath(Canvas canvas, Path source, Paint paint) {
+    for (final metric in source.computeMetrics()) {
+      var distance = 0.0;
+      while (distance < metric.length) {
+        final next = math.min(distance + 6, metric.length);
+        canvas.drawPath(metric.extractPath(distance, next), paint);
+        distance += 10;
+      }
+    }
   }
 }
 
@@ -553,6 +857,42 @@ class _StatPill extends StatelessWidget {
                 .textTheme
                 .titleMedium
                 ?.copyWith(fontWeight: FontWeight.w700),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _GhostMetaPill extends StatelessWidget {
+  const _GhostMetaPill({
+    required this.label,
+    required this.value,
+  });
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: TradingPalette.panelSoft,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: TradingPalette.panelBorder),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text(label, style: Theme.of(context).textTheme.labelSmall),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: TradingPalette.textPrimary,
+                  fontWeight: FontWeight.w700,
+                ),
           ),
         ],
       ),
