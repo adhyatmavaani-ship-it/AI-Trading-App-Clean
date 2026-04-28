@@ -32,9 +32,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
         "/redoc",
         "/openapi.json",
         "/health",
+        "/health/ping",
         "/health/live",
         "/health/ready",
         "/v1/health",
+        "/v1/health/ping",
         "/v1/health/live",
         "/v1/health/ready",
     }

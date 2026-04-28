@@ -24,6 +24,12 @@ async def healthcheck() -> dict[str, str]:
     return {"status": "ok", "version": settings.app_version_short, "commit": _render_commit()}
 
 
+@router.get("/health/ping")
+async def ping() -> dict[str, bool]:
+    """Ultra-lightweight health ping with no dependency checks."""
+    return {"ok": True}
+
+
 @router.get("/health/live")
 async def liveness_check() -> dict[str, Any]:
     """Kubernetes liveness probe - is the service running?"""

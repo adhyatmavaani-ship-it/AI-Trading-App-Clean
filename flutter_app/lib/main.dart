@@ -1,14 +1,26 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core/auth_credentials_store.dart';
 import 'core/trading_palette.dart';
+import 'providers/app_providers.dart';
 import 'screens/app_shell.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await _bootstrapLocalAuth();
-  runApp(const ProviderScope(child: TradingApp()));
+  final container = ProviderContainer();
+  unawaited(Future<void>.microtask(() {
+    container.read(apiClientProvider).warmUpServer();
+  }));
+  runApp(
+    UncontrolledProviderScope(
+      container: container,
+      child: const TradingApp(),
+    ),
+  );
 }
 
 Future<void> _bootstrapLocalAuth() async {

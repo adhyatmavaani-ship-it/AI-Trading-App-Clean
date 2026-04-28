@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../core/backend_warmup_state.dart';
+
 class LoadingState extends StatelessWidget {
   const LoadingState({super.key, this.label = 'Loading...'});
 
@@ -32,26 +34,48 @@ class ErrorState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            const Icon(Icons.error_outline, size: 40),
-            const SizedBox(height: 12),
-            Text(message, textAlign: TextAlign.center),
-            if (onRetry != null) ...<Widget>[
-              const SizedBox(height: 16),
-              FilledButton(
-                onPressed: onRetry,
-                child: const Text('Retry'),
-              ),
-            ],
-          ],
-        ),
-      ),
+    return ValueListenableBuilder<BackendWarmupState>(
+      valueListenable: backendWarmupState,
+      builder: (context, warmupState, _) {
+        final waking = warmupState == BackendWarmupState.waking &&
+            _looksLikeConnectivityMessage(message);
+        final resolvedMessage = waking
+            ? 'Waking up AI Engine... \nThe backend is resuming from cold start. Please wait a few seconds.'
+            : message;
+        return Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Icon(
+                  waking ? Icons.hourglass_top_rounded : Icons.error_outline,
+                  size: 40,
+                ),
+                const SizedBox(height: 12),
+                Text(resolvedMessage, textAlign: TextAlign.center),
+                if (onRetry != null) ...<Widget>[
+                  const SizedBox(height: 16),
+                  FilledButton(
+                    onPressed: onRetry,
+                    child: Text(waking ? 'Check Again' : 'Retry'),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        );
+      },
     );
+  }
+
+  bool _looksLikeConnectivityMessage(String value) {
+    final normalized = value.toLowerCase();
+    return normalized.contains('timed out') ||
+        normalized.contains('unable to reach') ||
+        normalized.contains('connection') ||
+        normalized.contains('cold start') ||
+        normalized.contains('waking up ai engine');
   }
 }
 

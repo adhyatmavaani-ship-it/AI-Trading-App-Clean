@@ -27,5 +27,5 @@ class AppConstants {
   static const Duration websocketReconnectBaseDelay = Duration(seconds: 2);
   static const Duration websocketMaxReconnectDelay = Duration(seconds: 30);
   static const Duration pollingInterval = Duration(seconds: 15);
-  static const Duration requestTimeout = Duration(seconds: 15);
+  static const Duration requestTimeout = Duration(seconds: 60);
 }

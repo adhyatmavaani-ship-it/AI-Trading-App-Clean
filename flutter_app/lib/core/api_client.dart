@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:dio/dio.dart';
 
@@ -17,6 +19,7 @@ import '../models/system_health.dart';
 import '../models/trade_timeline.dart';
 import '../models/user_pnl.dart';
 import 'auth_credentials_store.dart';
+import 'backend_warmup_state.dart';
 import 'constants.dart';
 
 class ApiClient {
@@ -111,6 +114,18 @@ class ApiClient {
     options.headers['X-API-Key'] = demoApiKey;
   }
 
+  void warmUpServer() {
+    unawaited(
+      _dio.get<dynamic>('/health/ping').then((_) {
+        markBackendReady();
+      }).catchError((_) {
+        if (backendWarmupState.value != BackendWarmupState.ready) {
+          markBackendWaking();
+        }
+      }),
+    );
+  }
+
   Future<List<SignalModel>> getSignals({int limit = 25}) async {
     final response = await _getWithRetry(
       '/v1/signals/live',
@@ -184,7 +199,8 @@ class ApiClient {
   }
 
   Future<MarketSummaryModel> getMarketSummary({int limit = 18}) async {
-    final response = await _dio.post<dynamic>(
+    final response = await _sendWithWakeRetry<dynamic>(
+      'POST',
       '/v1/market/summary',
       data: <String, dynamic>{'limit': limit},
     );
@@ -446,29 +462,44 @@ class ApiClient {
   Future<Response<dynamic>> _getWithRetry(
     String path, {
     Map<String, dynamic>? queryParameters,
+  }) {
+    return _sendWithWakeRetry<dynamic>(
+      'GET',
+      path,
+      queryParameters: queryParameters,
+    );
+  }
+
+  Future<Response<T>> _sendWithWakeRetry<T>(
+    String method,
+    String path, {
+    Map<String, dynamic>? queryParameters,
+    Object? data,
   }) async {
-    DioException? lastError;
-    for (var attempt = 0; attempt < 3; attempt++) {
-      try {
-        return await _dio.get<dynamic>(
-          path,
-          queryParameters: queryParameters,
-        );
-      } on DioException catch (error) {
-        lastError = error;
-        if (attempt == 2) {
-          rethrow;
-        }
-        await Future<void>.delayed(
-          Duration(milliseconds: 300 * (attempt + 1)),
-        );
+    try {
+      final response = await _dio.request<T>(
+        path,
+        data: data,
+        queryParameters: queryParameters,
+        options: Options(method: method),
+      );
+      markBackendReady();
+      return response;
+    } on DioException catch (error) {
+      if (!_isWakeRetryCandidate(error)) {
+        rethrow;
       }
+      markBackendWaking();
+      await Future<void>.delayed(const Duration(seconds: 5));
+      final retryResponse = await _dio.request<T>(
+        path,
+        data: data,
+        queryParameters: queryParameters,
+        options: Options(method: method),
+      );
+      markBackendReady();
+      return retryResponse;
     }
-    throw lastError ??
-        DioException(
-          requestOptions: RequestOptions(path: path),
-          message: 'Unknown network error',
-        );
   }
 
   String _buildReadableError(DioException error) {
@@ -484,14 +515,27 @@ class ApiClient {
       return 'Request failed ($statusCode): $detail';
     }
     if (error.type == DioExceptionType.connectionError) {
+      if (backendWarmupState.value == BackendWarmupState.waking) {
+        return 'Waking up AI Engine... The backend is resuming from cold start. Please wait a few seconds.';
+      }
       return 'Unable to reach the trading backend. Check the deployed API URL and network access.';
     }
     if (error.type == DioExceptionType.connectionTimeout ||
         error.type == DioExceptionType.receiveTimeout ||
         error.type == DioExceptionType.sendTimeout) {
-      return 'The trading backend timed out. Please try again.';
+      if (backendWarmupState.value == BackendWarmupState.waking) {
+        return 'Waking up AI Engine... The backend is resuming from cold start. Please wait a few seconds.';
+      }
+      return 'The trading backend timed out after a wake retry. Please try again.';
     }
     return error.message ?? 'Unexpected network failure';
+  }
+
+  bool _isWakeRetryCandidate(DioException error) {
+    return error.type == DioExceptionType.connectionError ||
+        error.type == DioExceptionType.connectionTimeout ||
+        error.type == DioExceptionType.receiveTimeout ||
+        error.type == DioExceptionType.sendTimeout;
   }
 
   void _attachAuthHeaders(RequestOptions options, AuthSession session) {
