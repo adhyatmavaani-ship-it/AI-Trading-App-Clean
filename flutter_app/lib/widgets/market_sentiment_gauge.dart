@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/trading_palette.dart';
+import '../features/activity/providers/activity_providers.dart';
 import '../features/market/providers/market_providers.dart';
+import '../models/activity.dart';
 import '../models/market_summary.dart';
 import 'section_card.dart';
 import 'state_widgets.dart';
@@ -16,9 +18,11 @@ class MarketSentimentGauge extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final summaryAsync = ref.watch(marketSummaryProvider);
     final selectedSymbol = ref.watch(selectedMarketSymbolProvider);
+    final readinessBoard = ref.watch(readinessBoardProvider);
     return summaryAsync.when(
       data: (summary) => _AnimatedSentimentShell(
         summary: summary,
+        readinessBoard: readinessBoard,
         selectedSymbol: selectedSymbol,
         onSelectSymbol: (symbol) =>
             ref.read(selectedMarketSymbolProvider.notifier).state = symbol,
@@ -43,11 +47,13 @@ class MarketSentimentGauge extends ConsumerWidget {
 class _AnimatedSentimentShell extends StatefulWidget {
   const _AnimatedSentimentShell({
     required this.summary,
+    required this.readinessBoard,
     required this.selectedSymbol,
     required this.onSelectSymbol,
   });
 
   final MarketSummaryModel summary;
+  final List<ReadinessCardModel> readinessBoard;
   final String selectedSymbol;
   final ValueChanged<String> onSelectSymbol;
 
@@ -119,6 +125,7 @@ class _AnimatedSentimentShellState extends State<_AnimatedSentimentShell>
             ),
             child: _GaugeBody(
               summary: widget.summary,
+              readinessBoard: widget.readinessBoard,
               selectedSymbol: widget.selectedSymbol,
               onSelectSymbol: widget.onSelectSymbol,
               effectiveScore: effectiveScore,
@@ -137,6 +144,7 @@ class _AnimatedSentimentShellState extends State<_AnimatedSentimentShell>
 class _GaugeBody extends StatelessWidget {
   const _GaugeBody({
     required this.summary,
+    required this.readinessBoard,
     required this.selectedSymbol,
     required this.onSelectSymbol,
     required this.effectiveScore,
@@ -147,6 +155,7 @@ class _GaugeBody extends StatelessWidget {
   });
 
   final MarketSummaryModel summary;
+  final List<ReadinessCardModel> readinessBoard;
   final String selectedSymbol;
   final ValueChanged<String> onSelectSymbol;
   final double effectiveScore;
@@ -263,6 +272,11 @@ class _GaugeBody extends StatelessWidget {
                       padding: const EdgeInsets.only(right: 12),
                       child: _ScannerCoinCard(
                         item: item,
+                        history: _scannerHistoryForSymbol(
+                          symbol: item.symbol,
+                          readinessBoard: readinessBoard,
+                          summaryHistory: summary.confidenceHistory,
+                        ),
                         selected: item.symbol == selectedSymbol,
                         onTap: () => onSelectSymbol(item.symbol),
                       ),
@@ -352,11 +366,13 @@ class _MiniMetric extends StatelessWidget {
 class _ScannerCoinCard extends StatelessWidget {
   const _ScannerCoinCard({
     required this.item,
+    required this.history,
     required this.selected,
     required this.onTap,
   });
 
   final ScannerCandidateModel item;
+  final List<ConfidenceHistoryPointModel> history;
   final bool selected;
   final VoidCallback onTap;
 
@@ -420,13 +436,38 @@ class _ScannerCoinCard extends StatelessWidget {
             ),
             const SizedBox(height: 6),
             Text(
-              '${item.changePct >= 0 ? '+' : ''}${item.changePct.toStringAsFixed(2)}%  •  Spike ${item.volumeSpikePct.toStringAsFixed(0)}%',
+              '${item.changePct >= 0 ? '+' : ''}${item.changePct.toStringAsFixed(2)}% | Spike ${item.volumeSpikePct.toStringAsFixed(0)}%',
               style: const TextStyle(
                 color: TradingPalette.textMuted,
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
               ),
             ),
+            if (history.length >= 2) ...<Widget>[
+              const SizedBox(height: 10),
+              Row(
+                children: <Widget>[
+                  Expanded(
+                    child: SizedBox(
+                      height: 18,
+                      child: _ScannerMicroSparkline(
+                        history: history,
+                        selected: selected,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    _microTrendLabel(history),
+                    style: TextStyle(
+                      color: _microTrendColor(history),
+                      fontSize: 10,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ],
+              ),
+            ],
             const SizedBox(height: 12),
             ClipRRect(
               borderRadius: BorderRadius.circular(999),
@@ -450,6 +491,121 @@ class _ScannerCoinCard extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+class _ScannerMicroSparkline extends StatefulWidget {
+  const _ScannerMicroSparkline({
+    required this.history,
+    required this.selected,
+  });
+
+  final List<ConfidenceHistoryPointModel> history;
+  final bool selected;
+
+  @override
+  State<_ScannerMicroSparkline> createState() => _ScannerMicroSparklineState();
+}
+
+class _ScannerMicroSparklineState extends State<_ScannerMicroSparkline>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..forward();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        return CustomPaint(
+          painter: _ScannerMicroSparklinePainter(
+            history: widget.history,
+            reveal: Curves.easeOutCubic.transform(_controller.value),
+            selected: widget.selected,
+          ),
+          child: const SizedBox.expand(),
+        );
+      },
+    );
+  }
+}
+
+class _ScannerMicroSparklinePainter extends CustomPainter {
+  const _ScannerMicroSparklinePainter({
+    required this.history,
+    required this.reveal,
+    required this.selected,
+  });
+
+  final List<ConfidenceHistoryPointModel> history;
+  final double reveal;
+  final bool selected;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (history.length < 2 || size.width <= 0 || size.height <= 0) {
+      return;
+    }
+    final points = _historyLinePoints(history, size);
+    if (points.length < 2) {
+      return;
+    }
+    final accent = _microTrendColor(history);
+    final linePath = Path()..moveTo(points.first.dx, points.first.dy);
+    for (var index = 1; index < points.length; index += 1) {
+      final previous = points[index - 1];
+      final current = points[index];
+      final controlX = (previous.dx + current.dx) / 2;
+      linePath.quadraticBezierTo(controlX, previous.dy, current.dx, current.dy);
+    }
+
+    final clipWidth = size.width * reveal;
+    canvas.save();
+    canvas.clipRect(Rect.fromLTWH(0, 0, clipWidth, size.height));
+    canvas.drawPath(
+      linePath,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = selected ? 2.3 : 1.9
+        ..strokeCap = StrokeCap.round
+        ..color = accent,
+    );
+    canvas.restore();
+
+    final lastVisibleX = math.min(points.last.dx, clipWidth);
+    if (lastVisibleX >= points.first.dx) {
+      final lastPoint = points.last;
+      if (lastPoint.dx <= clipWidth) {
+        canvas.drawCircle(
+          lastPoint,
+          selected ? 2.8 : 2.3,
+          Paint()
+            ..color = accent.withOpacity(0.9)
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+        );
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ScannerMicroSparklinePainter oldDelegate) {
+    return oldDelegate.history != history ||
+        oldDelegate.reveal != reveal ||
+        oldDelegate.selected != selected;
   }
 }
 
@@ -769,4 +925,77 @@ String _formatCountdown(int totalSeconds) {
     return '${hours.toString().padLeft(2, '0')}:${minutes.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
   }
   return '${minutes.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
+}
+
+List<ConfidenceHistoryPointModel> _scannerHistoryForSymbol({
+  required String symbol,
+  required List<ReadinessCardModel> readinessBoard,
+  required List<ConfidenceHistoryPointModel> summaryHistory,
+}) {
+  final readinessMatch = readinessBoard.cast<ReadinessCardModel?>().firstWhere(
+        (item) => item?.symbol == symbol && (item?.confidenceHistory.length ?? 0) >= 2,
+        orElse: () => null,
+      );
+  if (readinessMatch != null) {
+    return readinessMatch.confidenceHistory;
+  }
+  final normalized = symbol.toUpperCase();
+  final filtered = summaryHistory
+      .where((item) => (item.symbol ?? '').toUpperCase() == normalized)
+      .toList();
+  if (filtered.length >= 2) {
+    return filtered;
+  }
+  return const <ConfidenceHistoryPointModel>[];
+}
+
+String _microTrendLabel(List<ConfidenceHistoryPointModel> history) {
+  final delta = _historyDelta(history);
+  if (delta >= 0.015) {
+    return 'UP';
+  }
+  if (delta <= -0.015) {
+    return 'FADE';
+  }
+  return 'STDY';
+}
+
+Color _microTrendColor(List<ConfidenceHistoryPointModel> history) {
+  final delta = _historyDelta(history);
+  if (delta >= 0.015) {
+    return TradingPalette.neonGreen;
+  }
+  if (delta <= -0.015) {
+    return const Color(0xFF48C7C2);
+  }
+  return TradingPalette.amber;
+}
+
+double _historyDelta(List<ConfidenceHistoryPointModel> history) {
+  if (history.length < 2) {
+    return 0.0;
+  }
+  final sample = history.length >= 3 ? history.sublist(history.length - 3) : history;
+  return sample.last.score - sample.first.score;
+}
+
+List<Offset> _historyLinePoints(
+  List<ConfidenceHistoryPointModel> history,
+  Size size,
+) {
+  final startMs = history.first.timestamp.millisecondsSinceEpoch.toDouble();
+  final endMs = history.last.timestamp.millisecondsSinceEpoch.toDouble();
+  final minScore = history.map((item) => item.score).reduce(math.min);
+  final maxScore = history.map((item) => item.score).reduce(math.max);
+  final timeRange = (endMs - startMs).abs() < 1e-6 ? 1.0 : (endMs - startMs);
+  final scoreRange = (maxScore - minScore).abs() < 1e-6 ? 1.0 : (maxScore - minScore);
+  return history.map((item) {
+    final timeRatio =
+        (item.timestamp.millisecondsSinceEpoch.toDouble() - startMs) / timeRange;
+    final scoreRatio = (item.score - minScore) / scoreRange;
+    return Offset(
+      1 + (timeRatio * (size.width - 2)),
+      size.height - 2 - (scoreRatio * math.max(size.height - 4, 1)),
+    );
+  }).toList();
 }
