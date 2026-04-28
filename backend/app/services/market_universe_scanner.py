@@ -7,6 +7,7 @@ import pandas as pd
 
 from app.core.config import Settings
 from app.services.market_data import MarketDataService
+from app.services.scanner_service import ScannerService
 from app.services.user_experience_engine import UserExperienceEngine
 
 
@@ -15,19 +16,40 @@ class MarketUniverseScanner:
     settings: Settings
     market_data: MarketDataService
     user_experience_engine: UserExperienceEngine
+    scanner_service: ScannerService | None = None
 
     async def snapshot(self, limit: int | None = None) -> dict[str, object]:
-        symbols = list(self.settings.market_universe_symbols or self.settings.websocket_symbols)
+        scanner_snapshot = (
+            await self.scanner_service.scanner_snapshot(limit=limit)
+            if self.scanner_service is not None
+            else {}
+        )
+        symbols = list(
+            scanner_snapshot.get("active_symbols")
+            or self.settings.market_universe_symbols
+            or self.settings.websocket_symbols
+        )
         if not symbols:
             symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
         scan_limit = max(1, min(int(limit or self.settings.market_universe_scan_limit), len(symbols)))
+        candidate_map = {
+            str(item.get("symbol", "")).upper(): dict(item)
+            for item in scanner_snapshot.get("candidates", [])
+        }
         entries = await asyncio.gather(
             *(self._scan_symbol(symbol) for symbol in symbols[:scan_limit]),
             return_exceptions=True,
         )
         normalized_entries = [entry for entry in entries if isinstance(entry, dict)]
+        for item in normalized_entries:
+            candidate = candidate_map.get(str(item.get("symbol", "")).upper(), {})
+            if candidate:
+                item["potential_score"] = round(float(candidate.get("potential_score", 0.0) or 0.0), 4)
+                item["scanner_quote_volume"] = round(float(candidate.get("quote_volume", 0.0) or 0.0), 4)
+                item["volume_spike_pct"] = round(float(candidate.get("volume_spike_pct", 0.0) or 0.0), 4)
         normalized_entries.sort(
             key=lambda item: (
+                -float(item.get("potential_score", 0.0) or 0.0),
                 -float(item.get("quote_volume", 0.0) or 0.0),
                 -abs(float(item.get("change_pct", 0.0) or 0.0)),
             )
@@ -58,6 +80,15 @@ class MarketUniverseScanner:
         return {
             "count": len(normalized_entries),
             "items": normalized_entries,
+            "scanner": {
+                "active_symbols": list(scanner_snapshot.get("active_symbols", symbols[:scan_limit])),
+                "fixed_symbols": list(scanner_snapshot.get("fixed_symbols", [])),
+                "rotating_symbols": list(scanner_snapshot.get("rotating_symbols", [])),
+                "rotation_started_at": scanner_snapshot.get("rotation_started_at"),
+                "next_rotation_at": scanner_snapshot.get("next_rotation_at"),
+                "seconds_until_rotation": int(scanner_snapshot.get("seconds_until_rotation", 0) or 0),
+                "candidates": list(scanner_snapshot.get("candidates", [])),
+            },
             "categories": {
                 "top_gainers": top_gainers,
                 "high_volatility": high_volatility,
@@ -164,6 +195,7 @@ class MarketUniverseScanner:
             "ticker": ticker,
             "heatmap": heatmap,
             "top_movers": top_movers,
+            "scanner": snapshot.get("scanner", {}),
         }
 
     async def _scan_symbol(self, symbol: str) -> dict[str, object]:

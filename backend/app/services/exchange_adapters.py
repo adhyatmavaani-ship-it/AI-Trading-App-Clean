@@ -17,6 +17,9 @@ class ExchangeAdapter(Protocol):
     def fetch_ticker_price(self, symbol: str) -> float:
         ...
 
+    def fetch_tickers(self) -> list[dict[str, object]]:
+        ...
+
     def fetch_symbol_rules(self, symbol: str) -> dict[str, float]:
         ...
 
@@ -62,6 +65,43 @@ class CcxtExchangeAdapter:
         if price is None:
             raise ValueError(f"{self.exchange_id} did not return a usable ticker price for {symbol}")
         return float(price)
+
+    def fetch_tickers(self) -> list[dict[str, object]]:
+        raw_tickers = self.client.fetch_tickers()
+        if not raw_tickers:
+            return []
+        normalized: list[dict[str, object]] = []
+        for market_symbol, ticker in raw_tickers.items():
+            if not isinstance(ticker, dict):
+                continue
+            price = ticker.get("last") or ticker.get("close") or ticker.get("bid") or ticker.get("ask")
+            if price is None:
+                continue
+            market = self.client.markets.get(market_symbol, {})
+            quote_volume = ticker.get("quoteVolume")
+            base_volume = ticker.get("baseVolume")
+            if quote_volume is None and base_volume is not None:
+                quote_volume = float(base_volume) * float(price)
+            change_pct = ticker.get("percentage")
+            if change_pct is None:
+                reference = ticker.get("open") or ticker.get("previousClose")
+                if reference:
+                    change_pct = ((float(price) / max(float(reference), 1e-8)) - 1.0) * 100.0
+                else:
+                    change_pct = 0.0
+            normalized.append(
+                {
+                    "symbol": self._normalize_market_symbol(market_symbol),
+                    "base": str(market.get("base", "") or "").upper(),
+                    "quote": str(market.get("quote", "") or "").upper(),
+                    "price": float(price),
+                    "change_pct": float(change_pct or 0.0),
+                    "base_volume": float(base_volume or 0.0),
+                    "quote_volume": float(quote_volume or 0.0),
+                    "exchange": self.exchange_id,
+                }
+            )
+        return normalized
 
     def fetch_symbol_rules(self, symbol: str) -> dict[str, float]:
         market = self.client.market(self._exchange_symbol(symbol))
@@ -216,6 +256,10 @@ class CcxtExchangeAdapter:
             "feePaid": fee_paid,
         }
         return normalized
+
+    def _normalize_market_symbol(self, market_symbol: str) -> str:
+        text = str(market_symbol or "").upper().replace("/", "").replace("-", "")
+        return text.strip()
 
     def _precision_step(self, raw_precision: int | float | None) -> float:
         if raw_precision is None:

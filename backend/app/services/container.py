@@ -40,6 +40,7 @@ from app.services.redis_state_manager import RedisStateManager
 from app.services.risk_controller import RiskController
 from app.services.risk_engine import RiskEngine
 from app.services.rollout_manager import RolloutManager
+from app.services.scanner_service import ScannerService
 from app.services.shard_manager import ShardManager
 from app.services.signal_broadcaster import SignalBroadcaster
 from app.services.signal_websocket_manager import get_signal_websocket_manager
@@ -114,10 +115,16 @@ class ServiceContainer:
         )
         portfolio_manager = PortfolioManager(settings)
         user_experience_engine = UserExperienceEngine(settings=settings, cache=cache)
+        scanner_service = ScannerService(
+            settings=settings,
+            cache=cache,
+            market_data=market_data,
+        )
         market_universe_scanner = MarketUniverseScanner(
             settings=settings,
             market_data=market_data,
             user_experience_engine=user_experience_engine,
+            scanner_service=scanner_service,
         )
         analytics_service = AnalyticsService(
             settings=settings,
@@ -276,6 +283,7 @@ class ServiceContainer:
         self.analytics_service = analytics_service
         self.strategy_controller = strategy_controller
         self.user_experience_engine = user_experience_engine
+        self.scanner_service = scanner_service
         self.market_universe_scanner = market_universe_scanner
         self.risk_controller = risk_controller
         self.active_trade_monitor = active_trade_monitor

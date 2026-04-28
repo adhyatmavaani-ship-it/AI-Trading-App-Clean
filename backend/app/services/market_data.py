@@ -150,6 +150,51 @@ class MarketDataService:
         self._remember_fetch("price", symbol, "simulated")
         return self._mock_latest_price(symbol)
 
+    async def fetch_market_tickers(
+        self,
+        *,
+        quote_asset: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, object]]:
+        self._ensure_exchange_clients()
+        normalized_quote = str(quote_asset or "").upper().strip()
+        cache_key = f"market:tickers:{normalized_quote or 'ALL'}"
+        cached = self.cache.get_json(cache_key) or {}
+        cached_items = cached.get("items") or []
+        if cached_items:
+            self._remember_fetch("market_tickers", normalized_quote or "ALL", "cache")
+            items = [dict(item) for item in cached_items]
+            return items[:limit] if limit is not None else items
+        for exchange_id, client in list(self.exchange_clients.items()):
+            try:
+                rows = await asyncio.to_thread(client.fetch_tickers)
+                filtered = [
+                    row
+                    for row in rows
+                    if not normalized_quote or str(row.get("quote", "")).upper() == normalized_quote
+                ]
+                filtered.sort(
+                    key=lambda item: float(item.get("quote_volume", 0.0) or 0.0),
+                    reverse=True,
+                )
+                self.cache.set_json(
+                    cache_key,
+                    {"items": filtered},
+                    self.settings.market_data_cache_ttl,
+                )
+                self._remember_fetch("market_tickers", normalized_quote or "ALL", f"exchange:{exchange_id}")
+                return filtered[:limit] if limit is not None else filtered
+            except Exception as exc:
+                self._record_exchange_failure(exchange_id, exc)
+                logger.warning(
+                    "market_data_tickers_exchange_failed",
+                    extra={"event": "market_data_tickers_exchange_failed", "context": {"exchange": exchange_id}},
+                )
+        simulated = self._mock_market_tickers(quote_asset=normalized_quote or self.settings.default_quote_asset)
+        self.cache.set_json(cache_key, {"items": simulated}, self.settings.market_data_cache_ttl)
+        self._remember_fetch("market_tickers", normalized_quote or "ALL", "simulated")
+        return simulated[:limit] if limit is not None else simulated
+
     async def fetch_multi_timeframe_ohlcv(
         self, symbol: str, intervals: tuple[str, ...] = ("1m", "5m", "15m")
     ) -> dict[str, pd.DataFrame]:
@@ -285,6 +330,30 @@ class MarketDataService:
         if symbol_key in defaults:
             return defaults[symbol_key]
         return 100.0 + float(abs(hash(symbol_key)) % 1000)
+
+    def _mock_market_tickers(self, *, quote_asset: str) -> list[dict[str, object]]:
+        items: list[dict[str, object]] = []
+        for index, symbol in enumerate(self.settings.market_universe_symbols or self.settings.websocket_symbols):
+            normalized_symbol = str(symbol).upper().strip()
+            if not normalized_symbol.endswith(quote_asset):
+                continue
+            price = self._latest_cached_close(normalized_symbol) or self._mock_latest_price(normalized_symbol)
+            change_pct = ((index % 7) - 3) * 0.85
+            quote_volume = max(1_000_000.0, 12_000_000.0 - (index * 420_000.0))
+            items.append(
+                {
+                    "symbol": normalized_symbol,
+                    "base": normalized_symbol[: -len(quote_asset)],
+                    "quote": quote_asset,
+                    "price": round(float(price), 8),
+                    "change_pct": round(float(change_pct), 4),
+                    "base_volume": round(float(quote_volume / max(price, 1e-8)), 8),
+                    "quote_volume": round(float(quote_volume), 4),
+                    "exchange": "simulated",
+                }
+            )
+        items.sort(key=lambda item: float(item.get("quote_volume", 0.0) or 0.0), reverse=True)
+        return items
 
     def _latest_cached_close(self, symbol: str) -> float | None:
         normalized_symbol = str(symbol or "").upper().strip()

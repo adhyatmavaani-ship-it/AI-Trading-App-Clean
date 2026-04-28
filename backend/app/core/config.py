@@ -219,6 +219,12 @@ class Settings(BaseSettings):
     )
     market_universe_scan_limit: int = 18
     market_universe_refresh_seconds: float = 5.0
+    scanner_fixed_symbols: list[str] = Field(default_factory=lambda: ["BTCUSDT", "ETHUSDT"])
+    scanner_candidate_limit: int = 50
+    scanner_active_symbol_limit: int = 10
+    scanner_rotation_hours: int = 4
+    scanner_refresh_minutes: int = 15
+    scanner_min_quote_volume: float = 1_000_000.0
     dual_track_bias_ttl_seconds: int = 900
     dual_track_warmup_ttl_seconds: int = 120
     dual_track_brain_poll_seconds: int = 5
