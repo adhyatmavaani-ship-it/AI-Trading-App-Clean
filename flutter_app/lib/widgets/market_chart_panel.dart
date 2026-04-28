@@ -94,6 +94,8 @@ class MarketChartPanel extends ConsumerWidget {
               chart: chart,
               selectedSymbol: selectedSymbol,
               scannerCandidates: summary?.scanner.candidates ?? const <ScannerCandidateModel>[],
+              secondsUntilRotation: summary?.scanner.secondsUntilRotation ?? 0,
+              rotationWindowSeconds: _rotationWindowSeconds(summary),
               onSelectSymbol: (symbol) =>
                   ref.read(selectedMarketSymbolProvider.notifier).state = symbol,
             ),
@@ -109,17 +111,30 @@ class MarketChartPanel extends ConsumerWidget {
   }
 }
 
+int _rotationWindowSeconds(MarketSummaryModel? summary) {
+  final scanner = summary?.scanner;
+  if (scanner == null || scanner.rotationStartedAt == null || scanner.nextRotationAt == null) {
+    return 0;
+  }
+  final window = scanner.nextRotationAt!.difference(scanner.rotationStartedAt!).inSeconds;
+  return window > 0 ? window : 0;
+}
+
 class _ChartBody extends StatelessWidget {
   const _ChartBody({
     required this.chart,
     required this.selectedSymbol,
     required this.scannerCandidates,
+    required this.secondsUntilRotation,
+    required this.rotationWindowSeconds,
     required this.onSelectSymbol,
   });
 
   final MarketChartModel chart;
   final String selectedSymbol;
   final List<ScannerCandidateModel> scannerCandidates;
+  final int secondsUntilRotation;
+  final int rotationWindowSeconds;
   final ValueChanged<String> onSelectSymbol;
 
   @override
@@ -144,6 +159,20 @@ class _ChartBody extends StatelessWidget {
     final maxPrice = candles
         .map((item) => item.high)
         .reduce((left, right) => left > right ? left : right);
+    final scannerCandidate = scannerCandidates.cast<ScannerCandidateModel?>().firstWhere(
+          (item) => item?.symbol == chart.symbol,
+          orElse: () => scannerCandidates.isNotEmpty ? scannerCandidates.first : null,
+        );
+    final scoreAccent = _scannerAccent(scannerCandidate?.potentialScore ?? 0);
+    final countdownProgress = rotationWindowSeconds <= 0
+        ? 0.0
+        : (secondsUntilRotation / rotationWindowSeconds).clamp(0.0, 1.0);
+    final countdownColor = Color.lerp(
+          TradingPalette.neonRed,
+          TradingPalette.neonGreen,
+          countdownProgress,
+        ) ??
+        TradingPalette.electricBlue;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -151,9 +180,40 @@ class _ChartBody extends StatelessWidget {
         Row(
           children: <Widget>[
             Expanded(
-              child: Text(
-                chart.symbol,
-                style: Theme.of(context).textTheme.headlineSmall,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: <Widget>[
+                      Text(
+                        chart.symbol,
+                        style: Theme.of(context).textTheme.headlineSmall,
+                      ),
+                      if (scannerCandidate != null)
+                        _HeaderInfoChip(
+                          label: 'Score ${scannerCandidate.potentialScore.toStringAsFixed(0)}',
+                          accent: scoreAccent,
+                        ),
+                      _HeaderInfoChip(
+                        label: _formatCountdown(secondsUntilRotation),
+                        accent: countdownColor,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(999),
+                    child: LinearProgressIndicator(
+                      value: countdownProgress,
+                      minHeight: 5,
+                      backgroundColor: TradingPalette.panelBorder.withOpacity(0.85),
+                      valueColor: AlwaysStoppedAnimation<Color>(countdownColor),
+                    ),
+                  ),
+                ],
               ),
             ),
             TweenAnimationBuilder<double>(
@@ -194,7 +254,9 @@ class _ChartBody extends StatelessWidget {
         ),
         const SizedBox(height: 8),
         Text(
-          'TradingView-style market pulse with AI markers',
+          scannerCandidate == null
+              ? 'TradingView-style market pulse with AI markers'
+              : 'Scanner pulse ${scannerCandidate.volumeSpikePct.toStringAsFixed(0)}% spike  •  Vol ${scannerCandidate.volatilityPct.toStringAsFixed(1)}%',
           style: Theme.of(context).textTheme.bodyMedium,
         ),
         const SizedBox(height: 16),
@@ -500,14 +562,11 @@ class _QuickSwitchCoinButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final progress = (candidate.potentialScore / 100).clamp(0.0, 1.0);
-    final accent = candidate.potentialScore >= 70
-        ? TradingPalette.neonGreen
-        : candidate.potentialScore >= 45
-            ? TradingPalette.electricBlue
-            : TradingPalette.textMuted;
+    final accent = _scannerAccent(candidate.potentialScore);
     final shortName = _shortSymbol(candidate.symbol);
     return GestureDetector(
       onTap: onTap,
+      onLongPress: () => _showScannerTooltip(context, candidate),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 220),
         curve: Curves.easeOutCubic,
@@ -540,6 +599,7 @@ class _QuickSwitchCoinButton extends StatelessWidget {
                   _PotentialRing(
                     progress: progress,
                     accent: accent,
+                    hot: candidate.isHot,
                     child: Text(
                       shortName,
                       style: const TextStyle(
@@ -581,6 +641,7 @@ class _QuickSwitchCoinButton extends StatelessWidget {
                 child: _PotentialRing(
                   progress: progress,
                   accent: accent,
+                  hot: candidate.isHot,
                   child: Text(
                     shortName,
                     style: const TextStyle(
@@ -600,32 +661,166 @@ class _PotentialRing extends StatelessWidget {
   const _PotentialRing({
     required this.progress,
     required this.accent,
+    required this.hot,
     required this.child,
   });
 
   final double progress;
   final Color accent;
+  final bool hot;
   final Widget child;
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      width: 30,
-      height: 30,
-      child: Stack(
-        alignment: Alignment.center,
-        children: <Widget>[
-          CircularProgressIndicator(
-            value: progress,
-            strokeWidth: 3,
-            backgroundColor: TradingPalette.panelBorder,
-            valueColor: AlwaysStoppedAnimation<Color>(accent),
-          ),
-          child,
-        ],
+    return _HotPulseRing(
+      active: hot,
+      accent: accent,
+      child: SizedBox(
+        width: 30,
+        height: 30,
+        child: Stack(
+          alignment: Alignment.center,
+          children: <Widget>[
+            CircularProgressIndicator(
+              value: progress,
+              strokeWidth: 3,
+              backgroundColor: TradingPalette.panelBorder,
+              valueColor: AlwaysStoppedAnimation<Color>(accent),
+            ),
+            child,
+          ],
+        ),
       ),
     );
   }
+}
+
+class _HotPulseRing extends StatefulWidget {
+  const _HotPulseRing({
+    required this.active,
+    required this.accent,
+    required this.child,
+  });
+
+  final bool active;
+  final Color accent;
+  final Widget child;
+
+  @override
+  State<_HotPulseRing> createState() => _HotPulseRingState();
+}
+
+class _HotPulseRingState extends State<_HotPulseRing>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1400),
+    );
+    if (widget.active) {
+      _controller.repeat(reverse: true);
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _HotPulseRing oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.active && !_controller.isAnimating) {
+      _controller.repeat(reverse: true);
+    } else if (!widget.active && _controller.isAnimating) {
+      _controller.stop();
+      _controller.value = 0.0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!widget.active) {
+      return widget.child;
+    }
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        final scale = 1.0 + (_controller.value * 0.18);
+        return Transform.scale(
+          scale: scale,
+          child: Container(
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              boxShadow: <BoxShadow>[
+                BoxShadow(
+                  color: widget.accent.withOpacity(0.10 + (_controller.value * 0.16)),
+                  blurRadius: 10 + (_controller.value * 10),
+                  spreadRadius: _controller.value * 3,
+                ),
+              ],
+            ),
+            child: child,
+          ),
+        );
+      },
+      child: widget.child,
+    );
+  }
+}
+
+class _HeaderInfoChip extends StatelessWidget {
+  const _HeaderInfoChip({
+    required this.label,
+    required this.accent,
+  });
+
+  final String label;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: accent.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: accent.withOpacity(0.35)),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: accent,
+          fontSize: 12,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+}
+
+void _showScannerTooltip(BuildContext context, ScannerCandidateModel candidate) {
+  final messenger = ScaffoldMessenger.maybeOf(context);
+  messenger?.hideCurrentSnackBar();
+  messenger?.showSnackBar(
+    SnackBar(
+      behavior: SnackBarBehavior.floating,
+      backgroundColor: const Color(0xEE0F1730),
+      duration: const Duration(seconds: 2),
+      content: Text(
+        '${_shortSymbol(candidate.symbol)}  •  Volume Spike +${candidate.volumeSpikePct.toStringAsFixed(0)}%  |  Trend ${_trendLabel(candidate)}',
+        style: const TextStyle(
+          color: TradingPalette.textPrimary,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    ),
+  );
 }
 
 String _shortSymbol(String symbol) {
@@ -636,6 +831,38 @@ String _shortSymbol(String symbol) {
     }
   }
   return normalized;
+}
+
+Color _scannerAccent(double score) {
+  if (score >= 80) {
+    return TradingPalette.neonGreen;
+  }
+  if (score >= 50) {
+    return TradingPalette.electricBlue;
+  }
+  return TradingPalette.textMuted;
+}
+
+String _trendLabel(ScannerCandidateModel candidate) {
+  if (candidate.changePct >= 4 || candidate.potentialScore >= 80) {
+    return 'Strong Bullish';
+  }
+  if (candidate.changePct <= -4) {
+    return 'Strong Bearish';
+  }
+  return 'Developing';
+}
+
+String _formatCountdown(int totalSeconds) {
+  final seconds = totalSeconds < 0 ? 0 : totalSeconds;
+  final duration = Duration(seconds: seconds);
+  final hours = duration.inHours;
+  final minutes = duration.inMinutes.remainder(60);
+  final secs = duration.inSeconds.remainder(60);
+  if (hours > 0) {
+    return '${hours.toString().padLeft(2, '0')}:${minutes.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
+  }
+  return '${minutes.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
 }
 
 class _ChartGeometry {
