@@ -1,26 +1,18 @@
 # Production Ops Runbook
 
-This document is the production handoff for operating the AI trading terminal on Render-class infrastructure and similar lightweight environments.
-
-## What This Covers
-
-- required environment variables
-- startup expectations
-- smoke-check flow after deploy
-- fallback verification
-- backtest stability checks
-- troubleshooting for provider restrictions and degraded readiness
+This document is the production handoff for operating the AI trading terminal on Render-class infrastructure and similar lightweight environments. It is written as an operator-focused companion to the product-facing [README.md](README.md): what must be configured, what must be checked after deploy, and how the system is expected to behave when exchanges or infrastructure degrade.
 
 ## Deployment Intent
 
 Recommended operating stance:
 
 - `TRADING_MODE=paper` by default until live users are explicitly allowlisted
-- `MARKET_DATA_MODE=auto` so the backend can use exchange data when available and degrade gracefully when a provider is restricted
+- `MARKET_DATA_MODE=auto` so exchange data is used when available and fallback stays active when a provider is restricted
 - `JSON_LOGS=true` in hosted environments
-- `ENVIRONMENT=prod` for actual production deploys
+- `ENVIRONMENT=prod` for real production deploys
+- `FORCE_EXECUTION_OVERRIDE_ENABLED=false` unless a human operator has a tightly controlled reason to enable it
 
-## Environment Variables
+## Environment Variables Checklist
 
 ### Core Runtime
 
@@ -69,6 +61,28 @@ Recommended operating stance:
 - `BACKTEST_RESUME_ENABLED=true`
 - `BACKTEST_HEARTBEAT_SECONDS=5`
 
+### Adaptive Learning And Safety
+
+- `TRAINING_BUFFER_PATH=artifacts/training_buffer.sqlite3`
+- `RETRAIN_BATCH_SIZE=50`
+- `RETRAIN_RECENT_TRADE_WINDOW=10`
+- `RETRAIN_EMERGENCY_WIN_RATE_FLOOR=0.40`
+- `RETRAIN_RECENT_VALIDATION_TRADES=10`
+- `RETRAIN_MIN_ACCURACY_LIFT=0.05`
+- `RETRAIN_HIGH_CONFIDENCE_THRESHOLD=0.75`
+- `RETRAIN_HIGH_CONFIDENCE_LOSS_WEIGHT=2.0`
+- `RETRAIN_MANUAL_ROLLBACK_COOLDOWN_HOURS=48`
+
+## Why These Matter
+
+- `MARKET_DATA_MODE=auto` allows the platform to keep functioning when a preferred exchange is blocked or degraded
+- `BACKUP_EXCHANGES` is critical for surviving region restrictions and partial provider outages
+- `FORCE_EXECUTION_OVERRIDE_ENABLED` should remain off in normal operations because it weakens the system's default risk gate
+- `BACKTEST_CHUNK_HOURS` and `BACKTEST_JOB_HISTORY_LIMIT` are the main levers for keeping free-tier memory and disk usage stable
+- `TRAINING_BUFFER_PATH` keeps labeled retraining samples durable even when Firestore writes are unavailable
+- `RETRAIN_BATCH_SIZE` and `RETRAIN_RECENT_TRADE_WINDOW` decide whether learning is routine or emergency-driven
+- `RETRAIN_MANUAL_ROLLBACK_COOLDOWN_HOURS` protects operators from immediate re-promotion after a manual rollback
+
 ## Warm-Up Expectations
 
 On Render-style cold starts, the first few requests may include:
@@ -112,7 +126,7 @@ What to confirm:
 
 Why this matters:
 
-the market-data layer now retries per exchange, so a failed Binance attempt should not stop Kraken or Coinbase from coming online.
+The market-data layer retries per exchange, so a failed Binance attempt should not stop Kraken or Coinbase from coming online.
 
 ### 3. Summary + Candles
 
@@ -152,7 +166,40 @@ Suggested checks:
 
 Why this matters:
 
-job persistence is enabled and persisted history is pruned to a bounded limit, which is especially important on low-memory instances.
+Job persistence is enabled and persisted history is pruned to a bounded limit, which is especially important on low-memory instances.
+
+### 6. Admin Safety Controls
+
+- `GET /v1/admin/model/state`
+- `POST /v1/admin/model/rollback`
+- `POST /v1/admin/model/freeze`
+
+What to confirm:
+
+- active and fallback model versions are visible to the operator
+- rollback immediately changes the active model version in monitoring payloads
+- manual rollback starts cooldown protection for auto-retraining
+- freeze mode sets `learning_frozen` behavior without stopping sample collection
+
+Why this matters:
+
+these controls are the human-in-the-loop override layer for black-swan conditions, bad live promotions, or operator-directed pauses in adaptation.
+
+## Monitoring
+
+The most useful operator endpoints are:
+
+- `GET /health` for process liveness
+- `GET /health/ready` for service readiness
+- `GET /v1/diag/exchange` for exchange status and fallback validation
+- `GET /v1/user/pnl` for user-scoped PnL surface health
+- `GET /v1/activity/readiness` for UI-facing readiness state
+- `GET /v1/monitoring/model-stability/concentration` for AI state, fallback mode, and latest promotion details
+- `GET /v1/admin/model/state` for guarded operator review before rollback or freeze actions
+
+Suggested habit:
+
+Capture these checks after every deploy and after any exchange-related incident so you can compare warm, degraded, and recovered states.
 
 ## Flutter Production Verification
 
@@ -221,6 +268,32 @@ Expected behavior:
 
 - old persisted job files should be pruned automatically
 
+### Manual rollback was triggered
+
+What to inspect:
+
+- `GET /v1/admin/model/state`
+- `GET /v1/monitoring/model-stability/concentration`
+- latest event in `artifacts/model_registry.json`
+
+Expected behavior:
+
+- active model changes to the previous stable fallback
+- rollback cooldown remains active for the configured window, default `48` hours
+- latest AI state notice reflects manual rollback
+
+### Learning freeze is enabled
+
+Meaning:
+
+- retraining is intentionally blocked by an elevated operator
+
+What to do:
+
+1. confirm freeze status in `GET /v1/admin/model/state`
+2. verify samples are still entering the training buffer
+3. clear freeze only after the market regime is considered stable enough for learning again
+
 ## Operator Summary
 
 If you want the shortest possible deploy checklist, use this:
@@ -230,7 +303,8 @@ If you want the shortest possible deploy checklist, use this:
 3. confirm `GET /v1/diag/exchange`
 4. run one summary request and one candles request
 5. run one 7-day async backtest
-6. verify Flutter release build against production URL
+6. verify AI state and admin safety endpoints
+7. verify Flutter release build against production URL
 
 ## Related Docs
 

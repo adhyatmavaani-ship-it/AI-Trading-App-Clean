@@ -1,79 +1,99 @@
 # Autonomous AI Trading Terminal
 
-Autonomous AI trading terminal with institutional logic, real-time market hunting, and a high-signal operator workflow.
+Autonomous AI Trading Terminal with Institutional Logic and Real-time Market Hunting.
 
-This project combines a FastAPI trading backend, a Flutter mobile dashboard, async backtesting, and a dynamic market scanner into one opinionated system designed for fast market awareness, explainable AI trade logic, and resilient paper-to-live operations.
+This project is a full-stack trading system that combines a FastAPI backend, a Flutter terminal UI, async backtesting, and a rotating market scanner into one production-oriented workflow. The goal is not just signal generation, but usable operator context: why the AI likes a setup, how risk is being constrained, and where the next opportunity is emerging across the market.
 
 ## The Hook
 
-The terminal is built around three product ideas:
+This terminal is built to feel like a live trading desk rather than a code demo.
 
-- `Market Hunter`: a rotating scanner that ranks active symbols by opportunity and keeps the app focused on tradeable momentum instead of a static watchlist
-- `Institutional Logic`: confluence-based AI decisions with natural-language reasoning, logic tags, confluence bars, risk flags, and marker-level explanations
-- `Live Pulse UI`: neon sentiment gauge, confidence bands, heatmap-style conviction zones, chart overlays, scanner strip, and logic feed that make the market feel alive
+- `Autonomous Market Hunting`: the system keeps scanning and rotating through a high-opportunity coin universe instead of waiting on a static watchlist
+- `Institutional Logic`: entries are confluence-based, filtered, and explained in natural language so decisions are visible, not mysterious
+- `Operator-Grade Visuals`: neon sentiment gauge, conviction heatmaps, chart markers, and AI logic feed make market state immediately legible
 
-## Key Visuals
+### Key Visuals
 
 - Neon `Market Sentiment` gauge blended with scanner strength
 - Live scanner strip with `potential_score`, hot badges, and micro-sparklines
 - Candle charts with `ENTRY`, `EXIT`, and ghost setup markers
-- Confidence halos, full-width conviction bands, and curved trade bridges
+- Confidence halos, conviction bands, and curved trade bridges
 - AI logic feed with confluence breakdown, risk flags, reasoning tags, and conviction sparkline
-- Chart quick-switch dock with scanner awareness and header heartbeat watermark
+- Quick-switch chart dock with scanner awareness and heartbeat watermark
 
 ## Core Capabilities
 
 ### Market Hunter
 
-- Scans a broad symbol universe and promotes the strongest opportunities into an active watchlist
-- Keeps `BTCUSDT` and `ETHUSDT` fixed while rotating the remaining active slots
-- Uses `potential_score`, volatility, and volume-spike context to surface action quickly
-- Returns refresh and rotation metadata so the frontend can show urgency and countdown
+The scanner behaves like a market hunter. It sweeps a broad candidate set, keeps core majors like `BTCUSDT` and `ETHUSDT` pinned, and auto-rotates the remaining active slots across the strongest opportunities. By ranking symbols through `potential_score`, volatility context, and volume expansion, the app stays focused on what is becoming tradeable now rather than what was interesting hours ago.
+
+- Broad candidate scan with rotating active watchlist logic
+- Top-opportunity surfacing with `potential_score`
+- Fixed majors plus dynamic symbol rotation
+- Refresh and countdown metadata for frontend urgency cues
 
 ### AI Decision Engine
 
-- Scores setups with multi-indicator confluence instead of single-trigger entries
-- Explains intent in natural language through `reason`, `message`, `logic_tags`, and `confluence_breakdown`
-- Emits filled markers, rejected setups, and almost-trades so users can see what the AI liked and what it passed on
-- Tracks confidence history so conviction direction is visible, not just the current snapshot
+The decision layer uses confluence instead of one-indicator triggers. Entries are shaped by multiple technical and contextual checks, then translated into operator-readable reasoning through `reason`, `message`, `logic_tags`, and `confluence_breakdown`. The result is an explainable signal engine that shows not just fills, but also rejections and near-misses.
+
+- Multi-indicator confluence scoring
+- Natural-language reasoning and logic tags
+- Marker-level visibility into accepted and rejected setups
+- Confidence history so direction and conviction can be tracked over time
 
 ### Risk-First Design
 
-- Spread, liquidity, and volatility-aware filters before execution
-- Dynamic position sizing and confidence-aware risk controls
-- Drawdown, exposure, and concentration protections across symbols and portfolio sleeves
-- Strict trade gating plus optional `force_execution_override_enabled` for tightly controlled overrides
+The system is intentionally conservative in how it thinks about execution. Spread filters, liquidity checks, volatility gating, and dynamic position sizing are used before a trade is allowed through. Risk controls remain first-class even when confidence is high, with guarded override behavior available only through explicit configuration.
+
+- Spread, liquidity, and volatility-aware gating
+- Dynamic position sizing
+- Confidence-aware risk controls
+- Exposure, drawdown, and concentration protections
+- Optional `FORCE_EXECUTION_OVERRIDE_ENABLED` for tightly controlled interventions
 
 ### Trust Layer
 
 - Async backtesting with resumable job state
 - Strategy comparison flows with verdict banners and delta chips
 - Persistent job tracking with bounded history retention
-- Frontend explanations that connect scanner, chart, and backtest surfaces into one story
+- Frontend storytelling that connects scanner, chart, and backtest surfaces
+- Trigger-gated retraining with emergency win-rate watchdogs and batch-based sample accumulation
+- Atomic model promotion with fallback bundles, audit trail snapshots, and guarded manual rollback controls
+- Admin safety overrides including `AI Learning Freeze` and `Rollback to Stable`
 
 ## Technical Architecture
 
 ### Backend
 
-- `FastAPI` application for trading, scanner, analytics, diagnostics, and backtest APIs
-- `Redis` optional acceleration for cache/pubsub style workflows
-- `CCXT` exchange integration with multi-exchange fallback
-- Market-data service hardened for region restrictions and per-exchange retry isolation
-- Async job layer for backtests with persistence and restart recovery
+The backend is a `FastAPI` service backed by optional `Redis` acceleration and `CCXT` exchange connectivity. It exposes trading, scanner, analytics, diagnostics, and backtest APIs while also handling multi-exchange fallback. If one provider is restricted or degraded, the market-data layer is designed to isolate that failure and continue through backup exchanges.
+
+- `FastAPI` for API orchestration and async workflows
+- `Redis` for cache and pubsub-style acceleration when available
+- `CCXT` for exchange adapters and multi-exchange fallback
+- Per-exchange retry isolation for restricted or failing providers
+- Async backtest job persistence and restart recovery
 
 ### Frontend
 
-- `Flutter` app with custom painters for market charts, overlays, confidence bands, and micro-sparklines
-- Scanner-aware Pulse dashboard
-- Marker detail sheets with confluence bars, strategy tags, and risk alerts
-- Lightweight production logging with network debug interceptors enabled only in debug builds
+The frontend is a `Flutter` terminal built around custom visual primitives rather than generic charts. `CustomPainter`-driven annotations render conviction bands, trade markers, heatmap-like overlays, and micro-sparklines so the operator can read both state and reasoning at a glance.
+
+- `Flutter` dashboard for mobile-first terminal workflows
+- `CustomPainter` overlays for advanced chart annotations
+- Scanner-aware Pulse dashboard and logic feed
+- Marker detail sheets with confluence bars, tags, and risk alerts
+- Release-safe logging with debug interceptors disabled in production builds
 
 ### Resilience
 
+The system is designed to stay stable even on lightweight infrastructure like Render Free Tier. Async jobs, rolling caches, bounded history retention, and data chunking keep memory pressure predictable while preserving enough historical context for backtests and UI continuity.
+
 - Exchange fallback across `binance`, `kraken`, and `coinbase`
-- Graceful handling for provider restrictions and authorization failures
-- Rolling scanner caches and bounded historical buffers for Render-class memory budgets
-- Backtest job retention pruning so long-running free-tier instances do not grow forever
+- Graceful handling for `403` and `451` provider failures
+- Rolling scanner caches and bounded buffers for low-memory instances
+- Backtest chunking and retention pruning for long-lived stability
+- Free-tier friendly async recovery behavior
+- Local SQLite training buffer fallback when Firestore is unavailable
+- Rollback cooldowns to prevent immediate re-promotion after a manual safety intervention
 
 ## System Flow
 
@@ -136,6 +156,7 @@ flutter run
 - `GET /health`
 - `GET /health/ready`
 - `GET /v1/diag/exchange`
+- `GET /v1/monitoring/model-stability/concentration`
 - `GET /v1/activity/live`
 - `GET /v1/activity/readiness`
 - `GET /v1/market/candles`
@@ -144,8 +165,13 @@ flutter run
 - `GET /v1/user/pnl`
 - `POST /v1/backtest/run`
 - `POST /v1/backtest/compare`
+- `GET /v1/admin/model/state`
+- `POST /v1/admin/model/rollback`
+- `POST /v1/admin/model/freeze`
 
-## Real Environment Variables
+## Deployment And Ops
+
+### Environment Variables Checklist
 
 These names are backed by the current codebase and are the ones operators should care about first:
 
@@ -166,17 +192,38 @@ These names are backed by the current codebase and are the ones operators should
 - `SCANNER_REFRESH_MINUTES`
 - `SCANNER_ROTATION_HOURS`
 - `FORCE_EXECUTION_OVERRIDE_ENABLED`
+- `TRAINING_BUFFER_PATH`
+- `RETRAIN_BATCH_SIZE`
+- `RETRAIN_RECENT_TRADE_WINDOW`
+- `RETRAIN_EMERGENCY_WIN_RATE_FLOOR`
+- `RETRAIN_RECENT_VALIDATION_TRADES`
+- `RETRAIN_MIN_ACCURACY_LIFT`
+- `RETRAIN_HIGH_CONFIDENCE_THRESHOLD`
+- `RETRAIN_HIGH_CONFIDENCE_LOSS_WEIGHT`
+- `RETRAIN_MANUAL_ROLLBACK_COOLDOWN_HOURS`
 - `BACKTEST_DATA_DIR`
 - `BACKTEST_CHUNK_HOURS`
 - `BACKTEST_JOB_HISTORY_LIMIT`
 - `BACKTEST_RESUME_ENABLED`
 
-See [PRODUCTION_OPS.md](PRODUCTION_OPS.md) for recommended values and operational notes.
+See [PRODUCTION_OPS.md](PRODUCTION_OPS.md) for recommended values, deploy defaults, and smoke-check guidance.
 
-## Deployment Notes
+### Monitoring
+
+- `GET /v1/diag/exchange` verifies provider availability, fallback health, and restriction handling
+- `GET /v1/user/pnl` validates user-scoped portfolio surfaces and catches stale ownership or auth issues early
+- `GET /health` and `GET /health/ready` separate liveness from actual operator readiness
+- `GET /v1/activity/readiness` helps confirm UI-facing state is populated after deploy
+- `GET /v1/monitoring/model-stability/concentration` exposes AI state, fallback status, recent lift, and latest promotion notice
+- `GET /v1/admin/model/state` gives elevated operators the active/fallback model pair plus rollback/freeze guard state
+
+### Troubleshooting Notes
 
 - `MARKET_DATA_MODE=auto` is the intended production default
-- If Binance is blocked in a region, the backend should fall through to backup exchanges instead of stalling
+- If Binance returns `451` due to region restriction, the backend should fall through to backup exchanges instead of stalling
+- `FORCE_EXECUTION_OVERRIDE_ENABLED` should stay `false` outside tightly controlled operator scenarios
+- Manual rollback starts a retraining cooldown window so the same unstable candidate is not re-promoted immediately
+- `AI Learning Freeze` stops retraining but continues collecting fresh labeled samples for later review
 - Debug diagnostics like `/v1/diag/exchange` are available when debug routes are enabled or when not running in `prod`
 - Flutter production builds suppress verbose network logging by default
 
@@ -198,6 +245,6 @@ This repo is no longer just an API plus a chart shell. It is a full-stack tradin
 - async backtest trust tooling
 - production-aware fallback and recovery behavior
 
-If you want the shortest description for a pitch, use:
+If you want the shortest pitch line, use:
 
 `Autonomous AI Trading Terminal with Institutional Logic and Real-time Market Hunting.`

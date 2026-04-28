@@ -109,7 +109,13 @@ class TradeProbabilityEngine:
             self.firestore.save_model_report("trade_probability_analysis", report)
         return report
 
-    def train(self, samples: list[dict] | None = None) -> dict:
+    def train(
+        self,
+        samples: list[dict] | None = None,
+        *,
+        recent_validation_window: int | None = None,
+        min_recent_accuracy_lift: float = 0.0,
+    ) -> dict:
         rows = samples if samples is not None else self._load_samples()
         analysis = self.analyze_training_data(rows)
         dataset = self.build_dataset(rows)
@@ -152,6 +158,23 @@ class TradeProbabilityEngine:
                 "analysis": analysis,
             }
 
+        recent_window_gate = self._recent_window_gate(
+            candidate_model=best_model,
+            candidate_scaler=best_scaler,
+            dataset=dataset,
+            recent_validation_window=recent_validation_window,
+            min_recent_accuracy_lift=min_recent_accuracy_lift,
+        )
+        if not recent_window_gate["accepted"]:
+            return {
+                "trained": False,
+                "samples": len(dataset),
+                "reason": "candidate_failed_recent_window_gate",
+                "recent_window_gate": recent_window_gate,
+                "candidate_metrics": best_metrics,
+                "analysis": analysis,
+            }
+
         previous = self._load_metadata() or {}
         if previous and not self._outperforms(best_metrics, previous):
             return {
@@ -176,6 +199,20 @@ class TradeProbabilityEngine:
             "precision": round(best_metrics["precision"], 6),
             "calibration_error": round(best_metrics["calibration_error"], 6),
             "positive_rate": round(best_metrics["positive_rate"], 6),
+            "recent_validation_window": int(recent_window_gate.get("window", 0) or 0),
+            "recent_validation_candidate_accuracy": round(
+                float(recent_window_gate.get("candidate_accuracy", 0.0) or 0.0),
+                6,
+            ),
+            "recent_validation_incumbent_accuracy": round(
+                float(recent_window_gate.get("incumbent_accuracy", 0.0) or 0.0),
+                6,
+            ),
+            "recent_validation_accuracy_lift": round(
+                float(recent_window_gate.get("candidate_accuracy", 0.0) or 0.0)
+                - float(recent_window_gate.get("incumbent_accuracy", 0.0) or 0.0),
+                6,
+            ),
             "feature_means": self._feature_means(x),
             "regime_performance": best_metrics["regime_performance"],
             "trade_intelligence": self._trade_intelligence(dataset),
@@ -190,6 +227,7 @@ class TradeProbabilityEngine:
             "model_version": version,
             "performance": metadata,
             "previous_performance": previous or None,
+            "recent_window_gate": recent_window_gate,
             "analysis": analysis,
         }
 
@@ -518,6 +556,8 @@ class TradeProbabilityEngine:
             "label": int(float(outcome) > 0.0),
             "timestamp": timestamp,
             "regime": regime,
+            "features": features,
+            "sample_weight": self._sample_weight(sample=sample, label=int(float(outcome) > 0.0)),
             "sample": sample,
         }
 
@@ -689,6 +729,7 @@ class TradeProbabilityEngine:
     def _train_model_bundle(self, train_rows: list[dict], val_rows: list[dict]) -> tuple[dict, dict, StandardScaler]:
         x_train = np.array([row["vector"] for row in train_rows], dtype=np.float32)
         y_train = np.array([row["label"] for row in train_rows], dtype=np.int32)
+        sample_weights = np.array([float(row.get("sample_weight", 1.0) or 1.0) for row in train_rows], dtype=np.float32)
         x_val = np.array([row["vector"] for row in val_rows], dtype=np.float32)
         y_val = np.array([row["label"] for row in val_rows], dtype=np.int32)
         scaler = StandardScaler()
@@ -698,6 +739,7 @@ class TradeProbabilityEngine:
             x_train=x_train,
             x_train_scaled=x_train_scaled,
             y_train=y_train,
+            sample_weight=sample_weights,
             x_val=x_val,
             x_val_scaled=x_val_scaled,
             y_val=y_val,
@@ -721,6 +763,7 @@ class TradeProbabilityEngine:
                 x_train=rx_train,
                 x_train_scaled=rx_train_scaled,
                 y_train=ry_train,
+                sample_weight=np.array([float(row.get("sample_weight", 1.0) or 1.0) for row in regime_train], dtype=np.float32),
                 x_val=rx_val,
                 x_val_scaled=rx_val_scaled,
                 y_val=ry_val,
@@ -744,15 +787,16 @@ class TradeProbabilityEngine:
         x_train: np.ndarray,
         x_train_scaled: np.ndarray,
         y_train: np.ndarray,
+        sample_weight: np.ndarray,
         x_val: np.ndarray,
         x_val_scaled: np.ndarray,
         y_val: np.ndarray,
     ) -> tuple[dict, dict]:
         logistic = LogisticRegression(random_state=42, max_iter=1000, class_weight="balanced")
-        logistic.fit(x_train_scaled, y_train)
+        logistic.fit(x_train_scaled, y_train, sample_weight=sample_weight)
         setattr(logistic, "_probability_requires_scaler", True)
         gb = GradientBoostingClassifier(random_state=42)
-        gb.fit(x_train, y_train)
+        gb.fit(x_train, y_train, sample_weight=sample_weight)
         setattr(gb, "_probability_requires_scaler", False)
         logistic_probs = logistic.predict_proba(x_val_scaled)[:, 1]
         gb_probs = gb.predict_proba(x_val)[:, 1]
@@ -823,6 +867,75 @@ class TradeProbabilityEngine:
                 "avg_drawdown": round(float(np.mean(drawdowns)), 6),
             }
         return intelligence
+
+    def _sample_weight(self, *, sample: dict, label: int) -> float:
+        if label != 0:
+            return 1.0
+        confidence = max(
+            float(sample.get("trade_success_probability", 0.0) or 0.0),
+            float(sample.get("raw_trade_success_probability", 0.0) or 0.0),
+            float(sample.get("confidence", 0.0) or 0.0),
+        )
+        threshold = float(self.settings.retrain_high_confidence_threshold)
+        multiplier = float(self.settings.retrain_high_confidence_loss_weight)
+        if confidence < threshold or multiplier <= 1.0:
+            return 1.0
+        confidence_scale = min((confidence - threshold) / max(1.0 - threshold, 1e-6), 1.0)
+        return 1.0 + ((multiplier - 1.0) * confidence_scale)
+
+    def _recent_window_gate(
+        self,
+        *,
+        candidate_model,
+        candidate_scaler,
+        dataset: list[dict],
+        recent_validation_window: int | None,
+        min_recent_accuracy_lift: float,
+    ) -> dict:
+        window = max(int(recent_validation_window or 0), 0)
+        if window <= 0:
+            return {"accepted": True, "reason": "disabled"}
+        recent_rows = dataset[-window:]
+        if len(recent_rows) < max(2, window):
+            return {"accepted": True, "reason": "insufficient_recent_rows", "window": len(recent_rows)}
+        incumbent_model = self.registry.load_probability_model()
+        incumbent_scaler = self.registry.load_probability_scaler()
+        candidate_accuracy = self._accuracy_for_rows(candidate_model, candidate_scaler, recent_rows)
+        if incumbent_model is None or incumbent_scaler is None:
+            return {
+                "accepted": True,
+                "reason": "no_incumbent_model",
+                "candidate_accuracy": round(candidate_accuracy, 6),
+                "window": len(recent_rows),
+            }
+        incumbent_accuracy = self._accuracy_for_rows(incumbent_model, incumbent_scaler, recent_rows)
+        accepted = candidate_accuracy >= incumbent_accuracy + float(min_recent_accuracy_lift)
+        return {
+            "accepted": accepted,
+            "reason": "passed" if accepted else "insufficient_recent_accuracy_lift",
+            "candidate_accuracy": round(candidate_accuracy, 6),
+            "incumbent_accuracy": round(incumbent_accuracy, 6),
+            "required_lift": round(float(min_recent_accuracy_lift), 6),
+            "window": len(recent_rows),
+        }
+
+    def _accuracy_for_rows(self, model, scaler, rows: list[dict]) -> float:
+        probabilities = self._predict_rows(model, scaler, rows)
+        labels = np.array([row["label"] for row in rows], dtype=np.int32)
+        predictions = (probabilities >= self.settings.trade_probability_threshold).astype(np.int32)
+        return float(np.mean(predictions == labels)) if len(labels) else 0.0
+
+    def _predict_rows(self, model, scaler, rows: list[dict]) -> np.ndarray:
+        probabilities: list[float] = []
+        if isinstance(model, dict) and model.get("type") == "regime_ensemble":
+            for row in rows:
+                probabilities.append(self._predict_regime_ensemble(model, scaler, row["vector"], row["features"]))
+            return np.array(probabilities, dtype=np.float32)
+        for row in rows:
+            vector = row["vector"].reshape(1, -1)
+            transformed = scaler.transform(vector) if getattr(model, "_probability_requires_scaler", True) else vector
+            probabilities.append(float(model.predict_proba(transformed)[0][1]))
+        return np.array(probabilities, dtype=np.float32)
 
     def _sample_r_multiple(self, sample: dict) -> float:
         pnl = float(sample.get("realized_pnl", sample.get("outcome", 0.0)) or 0.0)

@@ -35,6 +35,25 @@ class ModelStabilityStatus(BaseModel):
     degraded: bool
 
 
+class ModelUpdateNotice(BaseModel):
+    message: str = ""
+    model_version: str | None = None
+    trigger_mode: str | None = None
+    updated_at: datetime | None = None
+
+
+class ModelPromotionEvent(BaseModel):
+    event: str = "promotion"
+    model_version: str = "unknown"
+    previous_model_version: str | None = None
+    promoted_at: datetime | None = None
+    summary: str = ""
+    recent_validation_accuracy_lift: float = 0.0
+    trigger_mode: str | None = None
+    training_samples: int = 0
+    validation_samples: int = 0
+
+
 class PortfolioConcentrationStatus(BaseModel):
     gross_exposure_pct: float = 0.0
     max_symbol_exposure_pct: float = 0.0
@@ -136,6 +155,8 @@ class ModelStabilityConcentrationHistoryResponse(BaseModel):
     latest_status: ModelStabilityStatus
     latest_state: ModelStabilityConcentrationHistoryEntry
     history: list[ModelStabilityConcentrationHistoryEntry] = []
+    latest_notice: ModelUpdateNotice | None = None
+    latest_promotion: ModelPromotionEvent | None = None
 
 
 class SystemHealthResponse(BaseModel):

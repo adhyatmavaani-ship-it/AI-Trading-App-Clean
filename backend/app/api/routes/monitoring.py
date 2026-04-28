@@ -7,9 +7,11 @@ from app.core.config import get_settings
 from app.core.metrics import get_metrics
 from app.middleware.auth import get_user_id
 from app.schemas.monitoring import (
+    ModelPromotionEvent,
     ModelStabilityStatus,
     ModelStabilityConcentrationHistoryEntry,
     ModelStabilityConcentrationHistoryResponse,
+    ModelUpdateNotice,
     PortfolioConcentrationHistoryResponse,
     PortfolioConcentrationSnapshot,
     PortfolioConcentrationStatus,
@@ -118,10 +120,21 @@ async def model_stability_concentration_history(
         ]
         history = history[-limit:]
         latest_state = history[-1] if history else _model_stability_concentration_entry({})
+        latest_notice = None
+        latest_notice_payload = container.cache.get_json("ml:trade_probability:last_update_notice")
+        if latest_notice_payload:
+            latest_notice = ModelUpdateNotice(**latest_notice_payload)
+        latest_promotion = None
+        if hasattr(container.trade_probability_engine.registry, "latest_probability_registry_event"):
+            latest_event = container.trade_probability_engine.registry.latest_probability_registry_event()
+            if latest_event:
+                latest_promotion = ModelPromotionEvent(**latest_event)
         return ModelStabilityConcentrationHistoryResponse(
             latest_status=latest_status,
             latest_state=latest_state,
             history=history,
+            latest_notice=latest_notice,
+            latest_promotion=latest_promotion,
         )
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=500, detail=str(exc)) from exc

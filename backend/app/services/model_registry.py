@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 import joblib
 import numpy as np
@@ -33,6 +36,9 @@ class ModelRegistry:
         self.probability_fallback_scaler_path = self.model_dir / "trade_probability_scaler_fallback.joblib"
         self.probability_metadata_path = self.model_dir / "trade_probability_metadata.json"
         self.probability_fallback_metadata_path = self.model_dir / "trade_probability_metadata_fallback.json"
+        self.probability_versions_dir = self.model_dir / "probability_versions"
+        self.probability_versions_dir.mkdir(parents=True, exist_ok=True)
+        self.probability_registry_path = self.model_dir / "model_registry.json"
         self.version_path = self.model_dir / "model_version.txt"
 
     def load_sequence_model(self, input_size: int):
@@ -104,15 +110,55 @@ class ModelRegistry:
         return json.loads(self.probability_fallback_metadata_path.read_text(encoding="utf-8"))
 
     def promote_probability_model(self, model, scaler, metadata: dict) -> None:
+        previous_metadata = self.load_probability_metadata() or {}
+        previous_version = str(previous_metadata.get("model_version", "") or "").strip() or None
+        promoted_at = datetime.now(timezone.utc).isoformat()
+        enriched_metadata = {
+            **metadata,
+            "promoted_at": promoted_at,
+            "previous_model_version": previous_version,
+        }
         if self.probability_model_path.exists():
             shutil.copy2(self.probability_model_path, self.probability_fallback_model_path)
         if self.probability_scaler_path.exists():
             shutil.copy2(self.probability_scaler_path, self.probability_fallback_scaler_path)
         if self.probability_metadata_path.exists():
             shutil.copy2(self.probability_metadata_path, self.probability_fallback_metadata_path)
-        self.save_probability_scaler(scaler)
-        self.save_probability_model(model)
-        self.save_probability_metadata(metadata)
+        if previous_version:
+            self._snapshot_probability_bundle(
+                version=previous_version,
+                model_path=self.probability_model_path,
+                scaler_path=self.probability_scaler_path,
+                metadata_path=self.probability_metadata_path,
+            )
+        self._atomic_joblib_dump(scaler, self.probability_scaler_path)
+        self._atomic_joblib_dump(model, self.probability_model_path)
+        self._atomic_text_write(
+            self.probability_metadata_path,
+            json.dumps(enriched_metadata, indent=2, sort_keys=True),
+        )
+        current_version = str(enriched_metadata.get("model_version", "unknown") or "unknown")
+        self._snapshot_probability_bundle(
+            version=current_version,
+            model_path=self.probability_model_path,
+            scaler_path=self.probability_scaler_path,
+            metadata_path=self.probability_metadata_path,
+        )
+        self._append_probability_registry_event(
+            {
+                "event": "promotion",
+                "model_version": current_version,
+                "previous_model_version": previous_version,
+                "promoted_at": promoted_at,
+                "summary": self._promotion_summary(enriched_metadata),
+                "recent_validation_accuracy_lift": float(
+                    enriched_metadata.get("recent_validation_accuracy_lift", 0.0) or 0.0
+                ),
+                "trigger_mode": str(enriched_metadata.get("trigger_mode", "") or ""),
+                "training_samples": int(enriched_metadata.get("training_samples", 0) or 0),
+                "validation_samples": int(enriched_metadata.get("validation_samples", 0) or 0),
+            }
+        )
 
     def activate_probability_fallback(self) -> dict | None:
         if not self.probability_fallback_model_path.exists() or not self.probability_fallback_scaler_path.exists():
@@ -122,7 +168,61 @@ class ModelRegistry:
         metadata = self.load_probability_fallback_metadata()
         if metadata is not None:
             self.save_probability_metadata(metadata)
+            self._append_probability_registry_event(
+                {
+                    "event": "rollback",
+                    "model_version": str(metadata.get("model_version", "unknown") or "unknown"),
+                    "previous_model_version": None,
+                    "promoted_at": datetime.now(timezone.utc).isoformat(),
+                    "summary": "Fallback model activated after live degradation.",
+                    "recent_validation_accuracy_lift": float(
+                        metadata.get("recent_validation_accuracy_lift", 0.0) or 0.0
+                    ),
+                    "trigger_mode": "rollback",
+                    "training_samples": int(metadata.get("training_samples", 0) or 0),
+                    "validation_samples": int(metadata.get("validation_samples", 0) or 0),
+                }
+            )
         return metadata
+
+    def load_probability_registry(self) -> dict:
+        if not self.probability_registry_path.exists():
+            return {"events": []}
+        return json.loads(self.probability_registry_path.read_text(encoding="utf-8"))
+
+    def latest_probability_registry_event(self) -> dict | None:
+        events = list((self.load_probability_registry() or {}).get("events", []))
+        return events[-1] if events else None
+
+    def annotate_latest_probability_event(self, **updates) -> dict | None:
+        registry = self.load_probability_registry()
+        events = list(registry.get("events", []))
+        if not events:
+            return None
+        latest = dict(events[-1])
+        latest.update(updates)
+        if any(key in updates for key in ("trigger_mode", "recent_validation_accuracy_lift", "model_version")):
+            latest["summary"] = self._promotion_summary(latest)
+        events[-1] = latest
+        self._atomic_text_write(
+            self.probability_registry_path,
+            json.dumps({"events": events[-50:]}, indent=2, sort_keys=True),
+        )
+        return latest
+
+    def annotate_latest_probability_promotion(self, *, trigger_mode: str) -> None:
+        metadata = self.load_probability_metadata() or {}
+        if metadata:
+            metadata["trigger_mode"] = trigger_mode
+            self._atomic_text_write(
+                self.probability_metadata_path,
+                json.dumps(metadata, indent=2, sort_keys=True),
+            )
+        registry = self.load_probability_registry()
+        events = list(registry.get("events", []))
+        if not events:
+            return
+        self.annotate_latest_probability_event(trigger_mode=trigger_mode)
 
     def current_version(self) -> str:
         if self.version_path.exists():
@@ -136,6 +236,51 @@ class ModelRegistry:
         next_version = f"{prefix}{number + 1}"
         self.version_path.write_text(next_version, encoding="utf-8")
         return next_version
+
+    def _snapshot_probability_bundle(
+        self,
+        *,
+        version: str,
+        model_path: Path,
+        scaler_path: Path,
+        metadata_path: Path,
+    ) -> None:
+        target_dir = self.probability_versions_dir / version
+        target_dir.mkdir(parents=True, exist_ok=True)
+        if model_path.exists():
+            shutil.copy2(model_path, target_dir / model_path.name)
+        if scaler_path.exists():
+            shutil.copy2(scaler_path, target_dir / scaler_path.name)
+        if metadata_path.exists():
+            shutil.copy2(metadata_path, target_dir / metadata_path.name)
+
+    def _append_probability_registry_event(self, event: dict) -> None:
+        registry = self.load_probability_registry()
+        events = list(registry.get("events", []))
+        events.append(event)
+        self._atomic_text_write(
+            self.probability_registry_path,
+            json.dumps({"events": events[-50:]}, indent=2, sort_keys=True),
+        )
+
+    def _atomic_joblib_dump(self, payload, destination: Path) -> None:
+        temp_path = destination.with_name(f"{destination.name}.{uuid4().hex}.tmp")
+        joblib.dump(payload, temp_path)
+        os.replace(temp_path, destination)
+
+    def _atomic_text_write(self, destination: Path, content: str) -> None:
+        temp_path = destination.with_name(f"{destination.name}.{uuid4().hex}.tmp")
+        temp_path.write_text(content, encoding="utf-8")
+        os.replace(temp_path, destination)
+
+    def _promotion_summary(self, metadata: dict) -> str:
+        model_version = str(metadata.get("model_version", "unknown") or "unknown")
+        lift = float(metadata.get("recent_validation_accuracy_lift", 0.0) or 0.0)
+        trigger_mode = str(metadata.get("trigger_mode", "scheduled") or "scheduled")
+        return (
+            f"Model {model_version} promoted via {trigger_mode} retrain "
+            f"with {lift * 100:.1f}% recent-window accuracy lift."
+        )
 
     @staticmethod
     def vectorize_features(features: dict[str, float]) -> np.ndarray:

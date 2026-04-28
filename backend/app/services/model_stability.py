@@ -147,6 +147,32 @@ class ModelStabilityService:
     def retraining_requested(self) -> bool:
         return bool(int(self.cache.get("model:retraining_requested") or 0))
 
+    def override_active_model(
+        self,
+        *,
+        active_model_version: str,
+        fallback_model_version: str | None = None,
+        degraded: bool = False,
+        retraining_triggered: bool = False,
+    ) -> ModelStabilityStatus:
+        current = self.load_status()
+        updated = current.model_copy(
+            update={
+                "active_model_version": active_model_version,
+                "fallback_model_version": fallback_model_version or current.fallback_model_version,
+                "degraded": degraded,
+                "retraining_triggered": retraining_triggered,
+            }
+        )
+        self.cache.set_json("model:stability", updated.model_dump(), ttl=self.settings.monitor_state_ttl_seconds)
+        self.cache.set(
+            "model:retraining_requested",
+            "1" if retraining_triggered else "0",
+            ttl=self.settings.monitor_state_ttl_seconds,
+        )
+        self._update_metrics(updated)
+        return updated
+
     def concentration_history(self) -> list[dict]:
         bucket = self.cache.get_json("model:concentration_history") or {}
         return list(bucket.get("entries", []))

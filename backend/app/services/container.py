@@ -37,6 +37,7 @@ from app.services.model_registry import ModelRegistry
 from app.services.regime_detector import RegimeDetector
 from app.services.redis_cache import RedisCache
 from app.services.redis_state_manager import RedisStateManager
+from app.services.retrain_trigger_service import RetrainTriggerService
 from app.services.risk_controller import RiskController
 from app.services.risk_engine import RiskEngine
 from app.services.rollout_manager import RolloutManager
@@ -66,7 +67,10 @@ class ServiceContainer:
     def __init__(self):
         settings = get_settings()
         cache = RedisCache(settings.redis_url)
-        firestore = FirestoreRepository(settings.firestore_project_id)
+        firestore = FirestoreRepository(
+            settings.firestore_project_id,
+            local_training_buffer_path=settings.training_buffer_path,
+        )
         registry = ModelRegistry(settings)
         market_data = MarketDataService(settings, cache)
         feature_pipeline = FeaturePipeline(RegimeDetector(settings))
@@ -136,6 +140,11 @@ class ServiceContainer:
             settings=settings,
             analytics=analytics_service,
             cache=cache,
+        )
+        retrain_trigger_service = RetrainTriggerService(
+            settings=settings,
+            cache=cache,
+            trade_probability_engine=trade_probability_engine,
         )
         allocation_engine = AllocationEngine(precision=settings.virtual_order_precision)
         virtual_order_manager = VirtualOrderManager(settings, cache, allocation_engine)
@@ -281,6 +290,7 @@ class ServiceContainer:
         self.meta_controller = meta_controller
         self.trade_probability_engine = trade_probability_engine
         self.analytics_service = analytics_service
+        self.retrain_trigger_service = retrain_trigger_service
         self.strategy_controller = strategy_controller
         self.user_experience_engine = user_experience_engine
         self.scanner_service = scanner_service

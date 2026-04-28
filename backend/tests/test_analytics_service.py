@@ -180,6 +180,9 @@ class AnalyticsServiceTest(unittest.TestCase):
         self.assertEqual(record["profit_pct"], 1.25)
         self.assertEqual(record["regime"], "TRENDING")
         self.assertAlmostEqual(record["max_profit"], 2.8, places=6)
+        self.assertEqual(record["training_label"], 1)
+        self.assertTrue(record["is_profit"])
+        self.assertEqual(record["feature_snapshot"]["strict_trade_allowed"], 1.0)
         self.assertTrue(self.firestore.snapshots)
 
 

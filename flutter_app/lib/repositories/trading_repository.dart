@@ -93,6 +93,18 @@ class TradingRepository {
     return _apiClient.updateEngineState(userId, enabled: enabled);
   }
 
+  Future<Map<String, dynamic>> fetchAdminModelState() {
+    return _apiClient.getAdminModelState();
+  }
+
+  Future<Map<String, dynamic>> rollbackAdminModel() {
+    return _apiClient.rollbackAdminModel();
+  }
+
+  Future<Map<String, dynamic>> setAdminModelFreeze({required bool enabled}) {
+    return _apiClient.setAdminModelFreeze(enabled: enabled);
+  }
+
   Future<SystemDiagnosticsModel> fetchExchangeDiagnostics({
     String sampleSymbol = 'BTCUSDT',
   }) {

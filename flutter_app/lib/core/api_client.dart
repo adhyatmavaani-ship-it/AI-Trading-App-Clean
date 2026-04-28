@@ -221,6 +221,24 @@ class ApiClient {
     return response.data as Map<String, dynamic>;
   }
 
+  Future<Map<String, dynamic>> getAdminModelState() async {
+    final response = await _getWithRetry('/v1/admin/model/state');
+    return response.data as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> rollbackAdminModel() async {
+    final response = await _dio.post<dynamic>('/v1/admin/model/rollback');
+    return response.data as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> setAdminModelFreeze({required bool enabled}) async {
+    final response = await _dio.post<dynamic>(
+      '/v1/admin/model/freeze',
+      queryParameters: <String, dynamic>{'enabled': enabled},
+    );
+    return response.data as Map<String, dynamic>;
+  }
+
   Future<SystemDiagnosticsModel> getExchangeDiagnostics({
     String sampleSymbol = 'BTCUSDT',
   }) async {

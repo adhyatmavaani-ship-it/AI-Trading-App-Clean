@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from collections import defaultdict
 from datetime import datetime, timezone
+from contextlib import closing
 import hashlib
+import json
+from pathlib import Path
+import sqlite3
 from uuid import uuid4
 
 from google.api_core.exceptions import AlreadyExists
@@ -10,8 +13,10 @@ from google.cloud import firestore
 
 
 class FirestoreRepository:
-    def __init__(self, project_id: str):
+    def __init__(self, project_id: str, local_training_buffer_path: str | None = None):
         self.client = firestore.Client(project=project_id) if project_id else None
+        self.local_training_buffer_path = Path(local_training_buffer_path or "artifacts/training_buffer.sqlite3")
+        self._ensure_local_training_buffer()
 
     def _writes_disabled(self) -> bool:
         return self.client is None
@@ -75,6 +80,7 @@ class FirestoreRepository:
         sample_id = payload.get("sample_id", payload.get("trade_id", str(uuid4())))
         payload["created_at"] = datetime.now(timezone.utc)
         if self._writes_disabled():
+            self._upsert_local_training_sample(sample_id, payload)
             return sample_id
         self._collection("training_samples").document(sample_id).set(payload)
         return sample_id
@@ -82,12 +88,13 @@ class FirestoreRepository:
     def update_training_sample(self, sample_id: str, payload: dict) -> None:
         payload["updated_at"] = datetime.now(timezone.utc)
         if self._writes_disabled():
+            self._upsert_local_training_sample(sample_id, payload, merge=True)
             return
         self._collection("training_samples").document(sample_id).set(payload, merge=True)
 
     def list_training_samples(self, limit: int = 5000) -> list[dict]:
         if self.client is None:
-            return []
+            return self._list_local_training_samples(limit=limit)
         query = self._collection("training_samples").limit(limit).stream()
         rows: list[dict] = []
         for document in query:
@@ -307,6 +314,84 @@ class FirestoreRepository:
             buckets[trade_date] += self._trade_pnl_pct(trade)
         ordered = sorted(buckets.items())[-limit:]
         return [{"date": date, "pnl_pct": round(value, 4)} for date, value in ordered]
+
+    def _ensure_local_training_buffer(self) -> None:
+        self.local_training_buffer_path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(self.local_training_buffer_path)) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS training_samples (
+                    sample_id TEXT PRIMARY KEY,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT,
+                    updated_at TEXT
+                )
+                """
+            )
+            conn.commit()
+
+    def _upsert_local_training_sample(self, sample_id: str, payload: dict, *, merge: bool = False) -> None:
+        normalized_payload = self._normalize_payload(payload)
+        with closing(sqlite3.connect(self.local_training_buffer_path)) as conn:
+            existing_payload: dict = {}
+            if merge:
+                row = conn.execute(
+                    "SELECT payload_json FROM training_samples WHERE sample_id = ?",
+                    (sample_id,),
+                ).fetchone()
+                if row and row[0]:
+                    existing_payload = json.loads(row[0])
+            merged_payload = {**existing_payload, **normalized_payload}
+            created_at = (
+                str(merged_payload.get("created_at") or existing_payload.get("created_at") or datetime.now(timezone.utc).isoformat())
+            )
+            updated_at = str(merged_payload.get("updated_at") or datetime.now(timezone.utc).isoformat())
+            merged_payload["created_at"] = created_at
+            merged_payload["updated_at"] = updated_at
+            conn.execute(
+                """
+                INSERT INTO training_samples (sample_id, payload_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(sample_id) DO UPDATE SET
+                    payload_json = excluded.payload_json,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    sample_id,
+                    json.dumps(merged_payload, sort_keys=True),
+                    created_at,
+                    updated_at,
+                ),
+            )
+            conn.commit()
+
+    def _list_local_training_samples(self, *, limit: int) -> list[dict]:
+        with closing(sqlite3.connect(self.local_training_buffer_path)) as conn:
+            rows = conn.execute(
+                """
+                SELECT sample_id, payload_json
+                FROM training_samples
+                ORDER BY COALESCE(updated_at, created_at) DESC
+                LIMIT ?
+                """,
+                (max(int(limit), 1),),
+            ).fetchall()
+        payloads: list[dict] = []
+        for sample_id, payload_json in rows:
+            payload = json.loads(payload_json)
+            payload.setdefault("sample_id", sample_id)
+            payloads.append(payload)
+        return payloads
+
+    def _normalize_payload(self, payload):
+        if isinstance(payload, datetime):
+            return payload.astimezone(timezone.utc).isoformat()
+        if isinstance(payload, dict):
+            return {str(key): self._normalize_payload(value) for key, value in payload.items()}
+        if isinstance(payload, list):
+            return [self._normalize_payload(item) for item in payload]
+        return payload
 
     @staticmethod
     def _coerce_datetime(value) -> datetime:

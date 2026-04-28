@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     redis_url: str = ""
     market_data_cache_ttl: int = 15
     model_dir: str = "artifacts"
+    training_buffer_path: str = "artifacts/training_buffer.sqlite3"
 
     default_quote_asset: str = "USDT"
     base_risk_per_trade: float = 0.01
@@ -116,6 +117,14 @@ class Settings(BaseSettings):
     probability_min_precision: float = 0.50
     probability_max_calibration_error: float = 0.18
     probability_training_frequency_hours: int = 24
+    retrain_batch_size: int = 50
+    retrain_recent_trade_window: int = 10
+    retrain_emergency_win_rate_floor: float = 0.40
+    retrain_recent_validation_trades: int = 10
+    retrain_min_accuracy_lift: float = 0.05
+    retrain_high_confidence_threshold: float = 0.75
+    retrain_high_confidence_loss_weight: float = 2.0
+    retrain_manual_rollback_cooldown_hours: int = 48
     probability_live_window_size: int = 200
     probability_feature_drift_threshold: float = 0.20
     probability_concept_drift_threshold: float = 0.18

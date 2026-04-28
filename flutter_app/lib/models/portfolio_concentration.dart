@@ -251,11 +251,15 @@ class ModelStabilityConcentrationHistoryModel {
     required this.latestStatus,
     required this.latestState,
     required this.history,
+    required this.latestNotice,
+    required this.latestPromotion,
   });
 
   final ModelStabilityConcentrationStatusModel latestStatus;
   final ModelStabilityConcentrationHistoryEntryModel latestState;
   final List<ModelStabilityConcentrationHistoryEntryModel> history;
+  final ModelUpdateNoticeModel? latestNotice;
+  final ModelPromotionEventModel? latestPromotion;
 
   factory ModelStabilityConcentrationHistoryModel.fromJson(
     Map<String, dynamic> json,
@@ -270,6 +274,16 @@ class ModelStabilityConcentrationHistoryModel {
         json['latest_state'] as Map<String, dynamic>? ??
             const <String, dynamic>{},
       ),
+      latestNotice: json['latest_notice'] == null
+          ? null
+          : ModelUpdateNoticeModel.fromJson(
+              json['latest_notice'] as Map<String, dynamic>,
+            ),
+      latestPromotion: json['latest_promotion'] == null
+          ? null
+          : ModelPromotionEventModel.fromJson(
+              json['latest_promotion'] as Map<String, dynamic>,
+            ),
       history: history
           .map(
             (item) => ModelStabilityConcentrationHistoryEntryModel.fromJson(
@@ -277,6 +291,72 @@ class ModelStabilityConcentrationHistoryModel {
             ),
           )
           .toList(),
+    );
+  }
+}
+
+class ModelUpdateNoticeModel {
+  const ModelUpdateNoticeModel({
+    required this.message,
+    required this.modelVersion,
+    required this.triggerMode,
+    required this.updatedAt,
+  });
+
+  final String message;
+  final String? modelVersion;
+  final String? triggerMode;
+  final DateTime? updatedAt;
+
+  factory ModelUpdateNoticeModel.fromJson(Map<String, dynamic> json) {
+    return ModelUpdateNoticeModel(
+      message: json['message'] as String? ?? '',
+      modelVersion: json['model_version'] as String?,
+      triggerMode: json['trigger_mode'] as String?,
+      updatedAt: json['updated_at'] == null
+          ? null
+          : DateTime.tryParse(json['updated_at'] as String),
+    );
+  }
+}
+
+class ModelPromotionEventModel {
+  const ModelPromotionEventModel({
+    required this.event,
+    required this.modelVersion,
+    required this.previousModelVersion,
+    required this.promotedAt,
+    required this.summary,
+    required this.recentValidationAccuracyLift,
+    required this.triggerMode,
+    required this.trainingSamples,
+    required this.validationSamples,
+  });
+
+  final String event;
+  final String modelVersion;
+  final String? previousModelVersion;
+  final DateTime? promotedAt;
+  final String summary;
+  final double recentValidationAccuracyLift;
+  final String? triggerMode;
+  final int trainingSamples;
+  final int validationSamples;
+
+  factory ModelPromotionEventModel.fromJson(Map<String, dynamic> json) {
+    return ModelPromotionEventModel(
+      event: json['event'] as String? ?? 'promotion',
+      modelVersion: json['model_version'] as String? ?? 'unknown',
+      previousModelVersion: json['previous_model_version'] as String?,
+      promotedAt: json['promoted_at'] == null
+          ? null
+          : DateTime.tryParse(json['promoted_at'] as String),
+      summary: json['summary'] as String? ?? '',
+      recentValidationAccuracyLift:
+          (json['recent_validation_accuracy_lift'] ?? 0).toDouble(),
+      triggerMode: json['trigger_mode'] as String?,
+      trainingSamples: json['training_samples'] as int? ?? 0,
+      validationSamples: json['validation_samples'] as int? ?? 0,
     );
   }
 }

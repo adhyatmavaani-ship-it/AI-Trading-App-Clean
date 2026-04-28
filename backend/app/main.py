@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 import uvicorn
 
-from app.api.routes import backtest_jobs, backtests, frontend, health, meta, monitoring, public, realtime, simulation, trading
+from app.api.routes import admin, backtest_jobs, backtests, frontend, health, meta, monitoring, public, realtime, simulation, trading
 from app.core.config import get_settings
 from app.core.exceptions import TradingSystemException
 from app.core.logging import configure_logging
@@ -91,6 +91,7 @@ app = FastAPI(
         {"name": "Monitoring", "description": "System health, latency, drawdown, and platform readiness telemetry."},
         {"name": "Trading", "description": "Core trading evaluation and execution endpoints."},
         {"name": "Meta", "description": "Meta Controller audit trails and governance analytics for execution transparency."},
+        {"name": "Admin", "description": "Guarded rollback, freeze, and safety-override controls for elevated operators."},
     ],
     contact={
         "name": "Trading Platform API",
@@ -167,6 +168,7 @@ app.include_router(meta.router, prefix="/v1", dependencies=[Depends(get_api_key)
 app.include_router(backtests.router, prefix="/v1", dependencies=[Depends(get_api_key)])
 app.include_router(backtest_jobs.router, prefix="/v1", dependencies=[Depends(get_api_key)])
 app.include_router(monitoring.router, prefix="/v1", dependencies=[Depends(get_api_key)])
+app.include_router(admin.router, prefix="/v1", dependencies=[Depends(get_api_key)])
 app.include_router(simulation.router, prefix="/v1", dependencies=[Depends(get_api_key)])
 app.include_router(realtime.router)
 app.include_router(realtime.router, prefix="/v1")

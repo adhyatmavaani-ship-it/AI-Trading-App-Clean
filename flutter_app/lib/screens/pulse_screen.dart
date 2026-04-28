@@ -630,6 +630,8 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
               data: (stability) {
                 final latestStatus = stability.latestStatus;
                 final latestState = stability.latestState;
+                final latestNotice = stability.latestNotice;
+                final latestPromotion = stability.latestPromotion;
                 final throttlingBadges =
                     _modelStabilityBadges(context, latestState);
                 return Column(
@@ -669,9 +671,62 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
                           value: latestStatus.degraded ? 'Active' : 'Standby',
                           icon: Icons.shield_outlined,
                         ),
+                        MetricCard(
+                          label: 'Last Update',
+                          value: _relativeTimeLabel(
+                            latestPromotion?.promotedAt ??
+                                latestNotice?.updatedAt,
+                          ),
+                          icon: Icons.update_rounded,
+                        ),
+                        MetricCard(
+                          label: 'Accuracy Lift',
+                          value:
+                              '${((latestPromotion?.recentValidationAccuracyLift ?? 0) * 100).toStringAsFixed(1)}%',
+                          icon: Icons.trending_up_rounded,
+                        ),
                       ],
                     ),
                     const SizedBox(height: 16),
+                    if (latestNotice != null && latestNotice.message.isNotEmpty)
+                      Container(
+                        width: double.infinity,
+                        margin: const EdgeInsets.only(bottom: 16),
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF112631),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: const Color(0xFF214453)),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: <Widget>[
+                            Text(
+                              'AI State: ${_aiStateLabel(latestStatus, latestNotice, latestPromotion)}',
+                              style: Theme.of(context).textTheme.titleSmall,
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              latestNotice.message,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodyMedium
+                                  ?.copyWith(color: const Color(0xFF9CB3C8)),
+                            ),
+                            if (latestPromotion != null &&
+                                latestPromotion.summary.isNotEmpty) ...<Widget>[
+                              const SizedBox(height: 6),
+                              Text(
+                                latestPromotion.summary,
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodySmall
+                                    ?.copyWith(color: const Color(0xFF7EE2FF)),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
                     if (latestState.severityReason != null) ...<Widget>[
                       Text(
                         latestState.severityReason!,
@@ -720,6 +775,17 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
                       const SizedBox(height: 8),
                       Text(
                         'Latest model response at ${latestState.updatedAt!.toLocal()}',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: const Color(0xFF9CB3C8),
+                            ),
+                      ),
+                    ],
+                    if (latestPromotion != null) ...<Widget>[
+                      const SizedBox(height: 8),
+                      Text(
+                        'Previous: ${latestPromotion.previousModelVersion ?? '-'}  |  '
+                        'Training ${latestPromotion.trainingSamples}  |  '
+                        'Validation ${latestPromotion.validationSamples}',
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
                               color: const Color(0xFF9CB3C8),
                             ),
@@ -798,6 +864,40 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
       ),
     );
   }
+}
+
+String _relativeTimeLabel(DateTime? value) {
+  if (value == null) {
+    return 'Waiting';
+  }
+  final diff = DateTime.now().difference(value.toLocal());
+  if (diff.inMinutes < 1) {
+    return 'Just now';
+  }
+  if (diff.inHours < 1) {
+    return '${diff.inMinutes}m ago';
+  }
+  if (diff.inDays < 1) {
+    return '${diff.inHours}h ago';
+  }
+  return '${diff.inDays}d ago';
+}
+
+String _aiStateLabel(
+  ModelStabilityConcentrationStatusModel status,
+  ModelUpdateNoticeModel? notice,
+  ModelPromotionEventModel? promotion,
+) {
+  if (status.degraded) {
+    return 'Fallback Active';
+  }
+  if (status.retrainingTriggered) {
+    return 'Optimizing';
+  }
+  if (promotion != null || notice != null) {
+    return 'Adapted';
+  }
+  return 'Stable';
 }
 
 class _AmbientMoodShell extends StatelessWidget {

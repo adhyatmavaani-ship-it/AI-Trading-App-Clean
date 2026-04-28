@@ -174,6 +174,23 @@ class ModelStabilityServiceTest(unittest.TestCase):
         self.assertAlmostEqual(history[0]["factor_sleeve_budget_turnover"], 0.18, places=6)
         self.assertAlmostEqual(history[0]["max_factor_sleeve_budget_gap_pct"], 0.09, places=6)
 
+    def test_override_active_model_updates_cached_status_immediately(self):
+        settings = Settings()
+        cache = InMemoryCache()
+        registry = StubRegistry()
+        service = ModelStabilityService(settings=settings, registry=registry, cache=cache)
+
+        status = service.override_active_model(
+            active_model_version="prob-v3",
+            fallback_model_version="prob-v2",
+            degraded=False,
+            retraining_triggered=False,
+        )
+
+        self.assertEqual(status.active_model_version, "prob-v3")
+        self.assertEqual(status.fallback_model_version, "prob-v2")
+        self.assertFalse(status.retraining_triggered)
+
 
 if __name__ == "__main__":
     unittest.main()

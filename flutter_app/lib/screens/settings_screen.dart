@@ -20,7 +20,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   AuthScheme _authScheme = AuthScheme.apiKey;
   String _debugSymbol = 'BTCUSDT';
   bool _debugBusy = false;
+  bool _adminSafetyBusy = false;
   Map<String, dynamic>? _lastDebugResult;
+  Map<String, dynamic>? _adminModelState;
 
   @override
   void initState() {
@@ -29,6 +31,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     Future<void>.microtask(() {
       final userId = ref.read(activeUserIdProvider);
       ref.read(appSettingsProvider.notifier).loadTradingControls(userId);
+      _loadAdminModelState();
     });
   }
 
@@ -301,6 +304,74 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   },
                 ),
               ],
+              const SizedBox(height: 20),
+              const Divider(),
+              const SizedBox(height: 12),
+              Text(
+                'AI Safety Override',
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                settings.learningFrozen
+                    ? 'Learning freeze is active. New samples still collect, but retraining is blocked.'
+                    : 'Learning is live. Emergency rollback and freeze controls are available for elevated operators.',
+              ),
+              const SizedBox(height: 12),
+              if (_adminModelState != null)
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF10242C),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: const Color(0xFF1B3741)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(
+                        'Active ${( (_adminModelState!['active_model'] as Map<String, dynamic>? ?? const {})['model_version'] ?? 'unknown')}  |  '
+                        'Fallback ${( (_adminModelState!['fallback_model'] as Map<String, dynamic>? ?? const {})['model_version'] ?? 'none')}',
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Lift ${((((_adminModelState!['latest_event'] as Map<String, dynamic>? ?? const {})['recent_validation_accuracy_lift'] ?? 0) as num).toDouble() * 100).toStringAsFixed(1)}%  |  '
+                        'Mode ${((_adminModelState!['latest_event'] as Map<String, dynamic>? ?? const {})['trigger_mode'] ?? '-').toString()}',
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        (((_adminModelState!['latest_event'] as Map<String, dynamic>? ?? const {})['summary'] ?? 'No promotion audit yet')).toString(),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Rollback cooldown until: ${((_adminModelState!['guard_state'] as Map<String, dynamic>? ?? const {})['rollback_cooldown_until'] ?? 'none').toString()}',
+                      ),
+                    ],
+                  ),
+                ),
+              const SizedBox(height: 12),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('AI Learning Freeze'),
+                subtitle: const Text(
+                  'Blocks retraining while still allowing the system to keep collecting fresh samples.',
+                ),
+                value: settings.learningFrozen,
+                onChanged: _adminSafetyBusy
+                    ? null
+                    : (value) => _toggleLearningFreeze(context, controller, value),
+              ),
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: _adminSafetyBusy ? null : () => _confirmRollback(context, controller),
+                icon: const Icon(Icons.restore_rounded),
+                label: const Text('Rollback to Stable'),
+              ),
+              if (_adminSafetyBusy) ...<Widget>[
+                const SizedBox(height: 12),
+                const LinearProgressIndicator(),
+              ],
             ],
           ),
         ),
@@ -464,6 +535,124 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       if (mounted) {
         setState(() {
           _debugBusy = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _loadAdminModelState() async {
+    final controller = ref.read(appSettingsProvider.notifier);
+    try {
+      final payload = await controller.fetchAdminModelState();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _adminModelState = payload;
+      });
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _adminModelState = null;
+      });
+    }
+  }
+
+  Future<void> _toggleLearningFreeze(
+    BuildContext context,
+    AppSettingsNotifier controller,
+    bool enabled,
+  ) async {
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() {
+      _adminSafetyBusy = true;
+    });
+    try {
+      final payload = await controller.setLearningFreeze(enabled: enabled);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _adminModelState = {
+          ...?_adminModelState,
+          'guard_state': payload['guard_state'],
+        };
+      });
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(enabled ? 'AI learning frozen' : 'AI learning resumed'),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      messenger.showSnackBar(
+        SnackBar(content: Text('Freeze update failed: $error')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _adminSafetyBusy = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _confirmRollback(
+    BuildContext context,
+    AppSettingsNotifier controller,
+  ) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final fallbackModel = ((_adminModelState?['fallback_model'] as Map<String, dynamic>?) ?? const {})['model_version']?.toString() ?? 'unknown';
+    final summary = ((_adminModelState?['latest_event'] as Map<String, dynamic>?) ?? const {})['summary']?.toString() ?? 'No fallback audit summary available.';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Rollback to Stable Model'),
+        content: Text(
+          'Fallback target: $fallbackModel\n\n$summary\n\nThis will immediately swap the live probability model and start rollback cooldown.',
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Rollback'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) {
+      return;
+    }
+    setState(() {
+      _adminSafetyBusy = true;
+    });
+    try {
+      await controller.rollbackAdminModel();
+      await _loadAdminModelState();
+      if (!mounted) {
+        return;
+      }
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Rolled back to previous stable model')),
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      messenger.showSnackBar(
+        SnackBar(content: Text('Rollback failed: $error')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _adminSafetyBusy = false;
         });
       }
     }

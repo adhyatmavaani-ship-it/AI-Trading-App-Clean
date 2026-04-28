@@ -50,15 +50,19 @@ class AppSettingsNotifier extends StateNotifier<AppSettings> {
   }
 
   Future<void> loadTradingControls(String userId) async {
-    final results = await Future.wait<Map<String, dynamic>>(<Future<Map<String, dynamic>>>[
-      _repository.fetchRiskProfile(userId),
-      _repository.fetchEngineState(userId),
-    ]);
-    final risk = results[0];
-    final engine = results[1];
+    final risk = await _repository.fetchRiskProfile(userId);
+    final engine = await _repository.fetchEngineState(userId);
+    Map<String, dynamic> admin = const <String, dynamic>{};
+    try {
+      admin = await _repository.fetchAdminModelState();
+    } catch (_) {
+      admin = const <String, dynamic>{};
+    }
+    final guardState = (admin['guard_state'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
     state = state.copyWith(
       riskLevel: (risk['level'] as String?) ?? state.riskLevel,
       engineEnabled: (engine['enabled'] as bool?) ?? state.engineEnabled,
+      learningFrozen: (guardState['freeze_enabled'] as bool?) ?? state.learningFrozen,
     );
   }
 
@@ -86,6 +90,33 @@ class AppSettingsNotifier extends StateNotifier<AppSettings> {
       volumeMultiplier: volumeMultiplier,
       runMonitor: runMonitor,
     );
+  }
+
+  Future<Map<String, dynamic>> fetchAdminModelState() async {
+    final payload = await _repository.fetchAdminModelState();
+    final guardState = (payload['guard_state'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+    state = state.copyWith(
+      learningFrozen: (guardState['freeze_enabled'] as bool?) ?? state.learningFrozen,
+    );
+    return payload;
+  }
+
+  Future<Map<String, dynamic>> rollbackAdminModel() async {
+    final payload = await _repository.rollbackAdminModel();
+    final guardState = (payload['guard_state'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+    state = state.copyWith(
+      learningFrozen: (guardState['freeze_enabled'] as bool?) ?? state.learningFrozen,
+    );
+    return payload;
+  }
+
+  Future<Map<String, dynamic>> setLearningFreeze({required bool enabled}) async {
+    final payload = await _repository.setAdminModelFreeze(enabled: enabled);
+    final guardState = (payload['guard_state'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+    state = state.copyWith(
+      learningFrozen: (guardState['freeze_enabled'] as bool?) ?? enabled,
+    );
+    return payload;
   }
 
   Future<void> _loadStoredAuthState() async {
