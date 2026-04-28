@@ -15,6 +15,7 @@ class MarketSentimentGauge extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final summaryAsync = ref.watch(marketSummaryProvider);
+    final selectedSymbol = ref.watch(selectedMarketSymbolProvider);
     return SectionCard(
       title: 'Market Sentiment',
       trailing: Container(
@@ -34,7 +35,12 @@ class MarketSentimentGauge extends ConsumerWidget {
         ),
       ),
       child: summaryAsync.when(
-        data: (summary) => _GaugeBody(summary: summary),
+        data: (summary) => _GaugeBody(
+          summary: summary,
+          selectedSymbol: selectedSymbol,
+          onSelectSymbol: (symbol) =>
+              ref.read(selectedMarketSymbolProvider.notifier).state = symbol,
+        ),
         loading: () => const SizedBox(
           height: 260,
           child: LoadingState(label: 'Scanning market sentiment'),
@@ -46,13 +52,20 @@ class MarketSentimentGauge extends ConsumerWidget {
 }
 
 class _GaugeBody extends StatelessWidget {
-  const _GaugeBody({required this.summary});
+  const _GaugeBody({
+    required this.summary,
+    required this.selectedSymbol,
+    required this.onSelectSymbol,
+  });
 
   final MarketSummaryModel summary;
+  final String selectedSymbol;
+  final ValueChanged<String> onSelectSymbol;
 
   @override
   Widget build(BuildContext context) {
     final sentimentColor = _sentimentColor(summary.sentimentScore);
+    final scannerAccent = _scannerAverageColor(summary.scanner.averagePotentialScore);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
@@ -102,6 +115,12 @@ class _GaugeBody extends StatelessWidget {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: <Widget>[
                     _MiniMetric(
+                      label: 'Refresh',
+                      value: _formatCountdown(summary.scanner.secondsUntilRotation),
+                      accent: scannerAccent,
+                    ),
+                    const SizedBox(height: 12),
+                    _MiniMetric(
                       label: 'Breadth',
                       value:
                           '${(summary.marketBreadth * 100).toStringAsFixed(0)}%',
@@ -124,6 +143,39 @@ class _GaugeBody extends StatelessWidget {
             ],
           ),
         ),
+        if (summary.scanner.hasScannerData) ...<Widget>[
+          Text(
+            'Live scanner',
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Scanner refreshing in ${_formatCountdown(summary.scanner.secondsUntilRotation)}',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: TradingPalette.textMuted,
+                ),
+          ),
+          const SizedBox(height: 10),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: summary.scanner.candidates
+                  .take(10)
+                  .map(
+                    (item) => Padding(
+                      padding: const EdgeInsets.only(right: 12),
+                      child: _ScannerCoinCard(
+                        item: item,
+                        selected: item.symbol == selectedSymbol,
+                        onTap: () => onSelectSymbol(item.symbol),
+                      ),
+                    ),
+                  )
+                  .toList(),
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
         Text(
           'Live ticker',
           style: Theme.of(context).textTheme.titleMedium,
@@ -162,10 +214,12 @@ class _MiniMetric extends StatelessWidget {
   const _MiniMetric({
     required this.label,
     required this.value,
+    this.accent,
   });
 
   final String label;
   final String value;
+  final Color? accent;
 
   @override
   Widget build(BuildContext context) {
@@ -175,7 +229,7 @@ class _MiniMetric extends StatelessWidget {
       decoration: BoxDecoration(
         color: TradingPalette.panelSoft,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: TradingPalette.panelBorder),
+        border: Border.all(color: (accent ?? TradingPalette.panelBorder).withOpacity(accent == null ? 1 : 0.35)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -186,9 +240,142 @@ class _MiniMetric extends StatelessWidget {
             value,
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
                   fontWeight: FontWeight.w800,
+                  color: accent ?? TradingPalette.textPrimary,
                 ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _ScannerCoinCard extends StatelessWidget {
+  const _ScannerCoinCard({
+    required this.item,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final ScannerCandidateModel item;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = _scannerAverageColor(item.potentialScore);
+    final progress = (item.potentialScore / 100).clamp(0.0, 1.0);
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 220),
+        width: 164,
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: selected ? accent : TradingPalette.panelBorder,
+          ),
+          gradient: LinearGradient(
+            colors: <Color>[
+              selected
+                  ? accent.withOpacity(0.18)
+                  : TradingPalette.panelSoft,
+              const Color(0xCC0E1630),
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          boxShadow: <BoxShadow>[
+            BoxShadow(
+              color: accent.withOpacity(selected ? 0.18 : 0.08),
+              blurRadius: selected ? 18 : 10,
+              offset: const Offset(0, 8),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: Text(
+                    item.symbol,
+                    style: const TextStyle(
+                      color: TradingPalette.textPrimary,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+                if (item.isHot)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: TradingPalette.neonRed.withOpacity(0.14),
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(color: TradingPalette.neonRed.withOpacity(0.35)),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: <Widget>[
+                        Icon(
+                          Icons.local_fire_department_rounded,
+                          size: 12,
+                          color: TradingPalette.neonRed,
+                        ),
+                        SizedBox(width: 4),
+                        Text(
+                          'Hot',
+                          style: TextStyle(
+                            color: TradingPalette.neonRed,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(
+              '${item.potentialScore.toStringAsFixed(0)} score',
+              style: TextStyle(
+                color: accent,
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              '${item.changePct >= 0 ? '+' : ''}${item.changePct.toStringAsFixed(2)}%  •  Spike ${item.volumeSpikePct.toStringAsFixed(0)}%',
+              style: const TextStyle(
+                color: TradingPalette.textMuted,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 12),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(999),
+              child: LinearProgressIndicator(
+                value: progress,
+                minHeight: 8,
+                backgroundColor: TradingPalette.panelBorder,
+                valueColor: AlwaysStoppedAnimation<Color>(accent),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              selected ? 'Tap active on chart' : 'Tap to load chart',
+              style: TextStyle(
+                color: selected ? accent : TradingPalette.textMuted,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -363,4 +550,26 @@ Color _sentimentColor(double score) {
     return TradingPalette.neonRed;
   }
   return TradingPalette.amber;
+}
+
+Color _scannerAverageColor(double score) {
+  if (score >= 70) {
+    return TradingPalette.neonGreen;
+  }
+  if (score >= 45) {
+    return TradingPalette.electricBlue;
+  }
+  return TradingPalette.textMuted;
+}
+
+String _formatCountdown(int totalSeconds) {
+  final seconds = totalSeconds < 0 ? 0 : totalSeconds;
+  final duration = Duration(seconds: seconds);
+  final hours = duration.inHours;
+  final minutes = duration.inMinutes.remainder(60);
+  final secs = duration.inSeconds.remainder(60);
+  if (hours > 0) {
+    return '${hours.toString().padLeft(2, '0')}:${minutes.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
+  }
+  return '${minutes.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
 }
