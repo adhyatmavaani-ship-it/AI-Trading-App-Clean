@@ -61,6 +61,7 @@ class RiskEngine:
         max_capital_allocation_pct: float | None = None,
         daily_loss_limit_override: float | None = None,
         emergency_stop_active: bool = False,
+        stop_loss_multiplier: float = 1.0,
     ) -> RiskDecision:
         decision: TradingRiskDecision = self.manager.evaluate(
             balance=balance,
@@ -82,6 +83,7 @@ class RiskEngine:
             max_capital_allocation_pct=max_capital_allocation_pct,
             daily_loss_limit_override=daily_loss_limit_override,
             emergency_stop_active=emergency_stop_active,
+            stop_loss_multiplier=stop_loss_multiplier,
         )
         return RiskDecision(**decision.__dict__)
 

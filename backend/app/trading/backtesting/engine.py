@@ -12,6 +12,7 @@ from app.schemas.backtest import (
     BacktestTrade,
     EquityPoint,
 )
+from app.trading.exits import compute_trailing_multiplier, evaluate_exit
 from app.trading.risk.manager import TradingRiskManager
 from app.trading.strategies.engine import TradingStrategyEngine
 
@@ -96,6 +97,7 @@ class TradingBacktestingEngine:
             if idx == len(frame) - 1:
                 if position is not None:
                     pnl = self._close_position(position, float(row["close"]))
+                    total_trade_pnl = float(position.get("booked_pnl", 0.0) or 0.0) + pnl
                     realized_pnl += pnl
                     equity += pnl
                     trades.append(
@@ -103,32 +105,13 @@ class TradingBacktestingEngine:
                             side=position["side"],
                             entry=position["entry_price"],
                             exit=float(row["close"]),
-                            profit=round(pnl, 8),
+                            profit=round(total_trade_pnl, 8),
                             confidence=position["confidence"],
                             regime=position["regime"],
                             reason=position["strategy"],
                         )
                     )
                 break
-
-            if position is not None and self._stop_hit(position, row):
-                exit_price = float(position["stop_loss"])
-                pnl = self._close_position(position, exit_price)
-                realized_pnl += pnl
-                equity += pnl
-                trades.append(
-                    BacktestTrade(
-                        side=position["side"],
-                        entry=position["entry_price"],
-                        exit=exit_price,
-                        profit=round(pnl, 8),
-                        confidence=position["confidence"],
-                        regime=position["regime"],
-                        reason=f"{position['strategy']}:stop",
-                    )
-                )
-                position = None
-                continue
 
             window = self._window_for_index(frames, idx, request.timeframe)
             decision = self.strategy_engine.evaluate(
@@ -137,26 +120,76 @@ class TradingBacktestingEngine:
                 strategy_params=request.strategy_params,
             )
 
-            if position is not None and decision.signal != "HOLD" and decision.signal != position["side"]:
-                exit_price = self._execution_price(
-                    raw_price=float(frame.iloc[idx + 1]["open"]),
-                    side="SELL" if position["side"] == "BUY" else "BUY",
+            if position is not None:
+                had_partial_take_profit = bool(position.get("partial_take_profit_taken", False))
+                atr = self._atr(window)
+                volatility = self._volatility(window)
+                regime = self._regime(window)
+                trailing_multiplier = compute_trailing_multiplier(
+                    settings=self.risk_manager.settings,
+                    volatility=volatility,
+                    regime=regime,
+                    adx=float(decision.metadata.get("adx", 0.0) or 0.0),
+                    adaptive_value=1.0,
                 )
-                pnl = self._close_position(position, exit_price)
-                realized_pnl += pnl
-                equity += pnl
-                trades.append(
-                    BacktestTrade(
-                        side=position["side"],
-                        entry=position["entry_price"],
-                        exit=exit_price,
-                        profit=round(pnl, 8),
-                        confidence=position["confidence"],
-                        regime=position["regime"],
-                        reason=f"{position['strategy']}:flip",
+                evaluation = evaluate_exit(
+                    settings=self.risk_manager.settings,
+                    trade=position,
+                    latest_price=float(row["close"]),
+                    atr=atr,
+                    regime=regime,
+                    volatility=volatility,
+                    frame=window[request.timeframe],
+                    trailing_multiplier=trailing_multiplier,
+                    structure_break=decision.signal != "HOLD" and decision.signal != position["side"],
+                    stop_hit=self._stop_hit(position, row),
+                )
+                position["stop_loss"] = float(evaluation.stop_loss)
+                position["trailing_stop_pct"] = float(evaluation.trailing_stop_pct)
+                position["take_profit"] = float(evaluation.take_profit)
+                position["partial_take_profit_taken"] = bool(
+                    had_partial_take_profit or evaluation.partial_take_profit_taken
+                )
+                if (
+                    evaluation.action == "partial_close"
+                    and not had_partial_take_profit
+                ):
+                    partial_fraction = float(profile_controls["partial_fraction"])
+                    pnl = self._close_position_quantity(
+                        position,
+                        exit_price=float(row["close"]),
+                        close_fraction=partial_fraction,
                     )
-                )
-                position = None
+                    realized_pnl += pnl
+                    equity += pnl
+                    position["booked_pnl"] = round(float(position.get("booked_pnl", 0.0) or 0.0) + pnl, 8)
+                elif evaluation.action == "full_close":
+                    exit_price = (
+                        float(position["stop_loss"])
+                        if evaluation.exit_type == "stop_loss"
+                        else float(row["close"])
+                    )
+                    remaining_pnl = self._close_position_quantity(
+                        position,
+                        exit_price=exit_price,
+                        close_fraction=1.0,
+                    )
+                    total_trade_pnl = float(position.get("booked_pnl", 0.0) or 0.0) + remaining_pnl
+                    realized_pnl += remaining_pnl
+                    equity += remaining_pnl
+                    trades.append(
+                        BacktestTrade(
+                            side=position["side"],
+                            entry=position["entry_price"],
+                            exit=exit_price,
+                            profit=round(total_trade_pnl, 8),
+                            confidence=position["confidence"],
+                            regime=position["regime"],
+                            reason=f"{position['strategy']}:{evaluation.exit_reason}",
+                        )
+                    )
+                    position = None
+                    continue
 
             daily_pnl_pct = (
                 (equity - daily_start_equity) / max(daily_start_equity, 1e-8)
@@ -183,6 +216,7 @@ class TradingBacktestingEngine:
                         trade_success_probability=float(
                             decision.metadata.get("trade_success_probability", decision.confidence)
                         ),
+                        stop_loss_multiplier=float(profile_controls["stop_multiplier"]),
                         trade_intelligence_metrics={
                             "win_rate": float(decision.metadata.get("meta_model_regime_win_rate", 0.5)),
                             "avg_r_multiple": float(decision.metadata.get("meta_model_avg_r_multiple", 0.0)),
@@ -197,22 +231,23 @@ class TradingBacktestingEngine:
                 )
                 quantity = effective_notional / max(entry_price, 1e-8)
                 entry_fee = effective_notional * self.fee_rate
-                stop_loss = self._profile_stop_loss(
-                    side=decision.signal,
-                    entry_price=entry_price,
-                    stop_loss=float(risk.stop_loss),
-                    multiplier=float(profile_controls["stop_multiplier"]),
-                )
                 position = {
                     "side": decision.signal,
                     "entry_price": entry_price,
                     "quantity": quantity,
-                    "entry_fee": entry_fee,
-                    "stop_loss": stop_loss,
+                    "entry_fee_remaining": entry_fee,
+                    "stop_loss": float(risk.stop_loss),
+                    "initial_stop_loss": float(risk.stop_loss),
+                    "trailing_stop_pct": float(risk.trailing_stop_pct),
+                    "take_profit": entry_price + (abs(entry_price - float(risk.stop_loss)) * float(self.risk_manager.settings.strict_trade_min_take_profit_rr))
+                    if decision.signal == "BUY"
+                    else entry_price - (abs(entry_price - float(risk.stop_loss)) * float(self.risk_manager.settings.strict_trade_min_take_profit_rr)),
                     "confidence": decision.confidence,
                     "strategy": decision.strategy,
                     "regime": self._regime(window),
                     "risk_profile": request.risk_profile,
+                    "booked_pnl": 0.0,
+                    "partial_take_profit_taken": False,
                 }
 
         wins = sum(1 for trade in trades if trade.profit > 0)
@@ -245,17 +280,20 @@ class TradingBacktestingEngine:
                 "confidence_floor": 0.85,
                 "risk_fraction": 0.005,
                 "stop_multiplier": 0.7,
+                "partial_fraction": float(self.risk_manager.settings.strict_trade_partial_take_profit_fraction),
             }
         if normalized == "high":
             return {
                 "confidence_floor": 0.60,
                 "risk_fraction": 0.015,
                 "stop_multiplier": 1.3,
+                "partial_fraction": float(self.risk_manager.settings.strict_trade_partial_take_profit_fraction),
             }
         return {
             "confidence_floor": 0.70,
             "risk_fraction": 0.01,
             "stop_multiplier": 1.0,
+            "partial_fraction": float(self.risk_manager.settings.strict_trade_partial_take_profit_fraction),
         }
 
     def _effective_confidence_floor(self, *, strategy: str, base_floor: float) -> float:
@@ -263,20 +301,6 @@ class TradingBacktestingEngine:
         if normalized in {"ema_crossover", "rsi", "breakout"}:
             return min(base_floor, 0.45)
         return base_floor
-
-    def _profile_stop_loss(
-        self,
-        *,
-        side: str,
-        entry_price: float,
-        stop_loss: float,
-        multiplier: float,
-    ) -> float:
-        distance = abs(entry_price - stop_loss)
-        adjusted_distance = max(distance * multiplier, entry_price * 0.001)
-        if side == "BUY":
-            return entry_price - adjusted_distance
-        return entry_price + adjusted_distance
 
     def _prepare_frame(
         self,
@@ -340,16 +364,27 @@ class TradingBacktestingEngine:
         return raw_price * (1 - self.slippage_rate)
 
     def _close_position(self, position: dict, exit_price: float) -> float:
+        return self._close_position_quantity(position, exit_price=exit_price, close_fraction=1.0)
+
+    def _close_position_quantity(self, position: dict, *, exit_price: float, close_fraction: float) -> float:
+        current_quantity = float(position["quantity"])
+        quantity_to_close = min(current_quantity, current_quantity * float(close_fraction))
+        if quantity_to_close <= 0:
+            return 0.0
         direction = 1.0 if position["side"] == "BUY" else -1.0
-        gross = (exit_price - position["entry_price"]) * position["quantity"] * direction
-        exit_notional = abs(exit_price * position["quantity"])
+        gross = (exit_price - position["entry_price"]) * quantity_to_close * direction
+        exit_notional = abs(exit_price * quantity_to_close)
         exit_fee = exit_notional * self.fee_rate
-        return gross - position["entry_fee"] - exit_fee
+        entry_fee_remaining = float(position.get("entry_fee_remaining", 0.0) or 0.0)
+        entry_fee_allocated = entry_fee_remaining * (quantity_to_close / max(current_quantity, 1e-8))
+        position["quantity"] = round(max(0.0, current_quantity - quantity_to_close), 8)
+        position["entry_fee_remaining"] = round(max(0.0, entry_fee_remaining - entry_fee_allocated), 8)
+        return gross - entry_fee_allocated - exit_fee
 
     def _unrealized_pnl(self, *, position: dict, close_price: float) -> float:
         direction = 1.0 if position["side"] == "BUY" else -1.0
         gross = (close_price - position["entry_price"]) * position["quantity"] * direction
-        return gross - position["entry_fee"]
+        return gross - float(position.get("entry_fee_remaining", 0.0) or 0.0)
 
     def _stop_hit(self, position: dict, row: pd.Series) -> bool:
         if position["side"] == "BUY":

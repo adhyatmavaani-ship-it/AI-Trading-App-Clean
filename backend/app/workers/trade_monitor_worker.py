@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from app.core.config import Settings
+from app.trading.exits import compute_trailing_multiplier, evaluate_exit
 
 if TYPE_CHECKING:
     from app.services.feature_pipeline import FeaturePipeline
@@ -94,66 +95,58 @@ class ActiveTradeMonitorWorker:
         primary_frame = frames.get("5m")
         if primary_frame is None:
             primary_frame = frames.get("15m")
-
-        await self._update_trailing_stop(trade=trade, snapshot=snapshot, latest_price=latest_price, frame=primary_frame)
-
-        if self._structure_break_against_trade(trade=trade, snapshot=snapshot):
-            self._close_trade(trade=trade, exit_price=latest_price, reason="structure_break", exit_type="early_exit")
-            return
-        if self._strong_opposite_candle(trade=trade, frame=primary_frame, snapshot=snapshot):
-            self._close_trade(trade=trade, exit_price=latest_price, reason="momentum_reversal", exit_type="early_exit")
-            return
-        if self._volume_spike_against_trade(trade=trade, frame=primary_frame):
-            self._close_trade(trade=trade, exit_price=latest_price, reason="volume_reversal", exit_type="early_exit")
-            return
-
-        stop_loss = float(trade.get("stop_loss", 0.0) or 0.0)
-        if stop_loss > 0:
-            if side == "BUY" and latest_price <= stop_loss:
-                self._close_trade(trade=trade, exit_price=latest_price, reason="stop_loss_hit", exit_type="stop_loss")
-            elif side == "SELL" and latest_price >= stop_loss:
-                self._close_trade(trade=trade, exit_price=latest_price, reason="stop_loss_hit", exit_type="stop_loss")
-
-    async def _update_trailing_stop(self, *, trade: dict, snapshot, latest_price: float, frame) -> None:
-        trade_id = str(trade.get("trade_id", "") or "")
-        side = str(trade.get("side", "") or "").upper()
-        old_stop = float(trade.get("stop_loss", 0.0) or 0.0)
         atr = float(snapshot.atr or snapshot.features.get("15m_atr", snapshot.features.get("5m_atr", 0.0)) or 0.0)
-        if atr <= 0:
-            return
-
-        entry = float(trade.get("entry", 0.0) or 0.0)
-        initial_stop = float(trade.get("initial_stop_loss", old_stop) or old_stop)
-        initial_risk = abs(entry - initial_stop)
         trailing_multiplier = self._trailing_multiplier(snapshot)
-        if entry > 0 and initial_risk > 0:
-            profit_distance = (latest_price - entry) if side == "BUY" else (entry - latest_price)
-            if profit_distance > (float(self.settings.active_trade_monitor_break_even_rr) * initial_risk):
-                locked_profit = float(self.settings.active_trade_monitor_break_even_lock_rr) * initial_risk
-                breakeven_stop = entry + locked_profit if side == "BUY" else entry - locked_profit
-                if side == "BUY":
-                    old_stop = max(old_stop, breakeven_stop)
-                else:
-                    old_stop = min(old_stop, breakeven_stop) if old_stop > 0 else breakeven_stop
-
-        if side == "BUY":
-            highest_high = float(frame["high"].astype(float).tail(10).max()) if frame is not None else latest_price
-            baseline = highest_high - (2.5 * atr * trailing_multiplier)
-            new_stop = max(old_stop, baseline)
-        else:
-            lowest_low = float(frame["low"].astype(float).tail(10).min()) if frame is not None else latest_price
-            baseline = lowest_low + (2.5 * atr * trailing_multiplier)
-            new_stop = min(old_stop, baseline) if old_stop > 0 else baseline
-
-        if old_stop > 0 and abs(new_stop - old_stop) < 1e-8:
-            self._update_trade_metrics(trade=trade, latest_price=latest_price)
-            return
+        evaluation = evaluate_exit(
+            settings=self.settings,
+            trade=trade,
+            latest_price=latest_price,
+            atr=atr,
+            regime=str(getattr(snapshot, "regime", "") or ""),
+            volatility=float(getattr(snapshot, "volatility", 0.0) or 0.0),
+            frame=primary_frame,
+            trailing_multiplier=trailing_multiplier,
+            structure_break=self._structure_break_against_trade(trade=trade, snapshot=snapshot),
+        )
         updated = dict(trade)
-        updated["stop_loss"] = round(float(new_stop), 8)
-        updated["trailing_stop_pct"] = round((2.5 * atr * trailing_multiplier) / max(latest_price, 1e-8), 6)
-        updated["exit_type"] = "trailing"
+        updated["stop_loss"] = float(evaluation.stop_loss)
+        updated["trailing_stop_pct"] = float(evaluation.trailing_stop_pct)
+        updated["take_profit"] = float(evaluation.take_profit)
+        updated["partial_take_profit_taken"] = bool(
+            trade.get("partial_take_profit_taken", False) or evaluation.partial_take_profit_taken
+        )
+        updated["exit_type"] = str(evaluation.exit_type or updated.get("exit_type", ""))
         self._update_trade_metrics(trade=updated, latest_price=latest_price)
         self.trading_orchestrator.update_active_trade_state(trade_id, updated)
+
+        if (
+            evaluation.action == "partial_close"
+            and not bool(trade.get("partial_take_profit_taken", False))
+        ):
+            self.trading_orchestrator.close_trade_position(
+                user_id=user_id,
+                trade_id=trade_id,
+                exit_price=latest_price,
+                closed_quantity=float(trade.get("executed_quantity", 0.0) or 0.0)
+                * float(self.settings.strict_trade_partial_take_profit_fraction),
+                reason=evaluation.exit_reason,
+            )
+            return
+
+        if (
+            evaluation.action == "full_close"
+            and bool(updated.get("partial_take_profit_taken", False))
+            and evaluation.exit_type != "stop_loss"
+        ):
+            return
+
+        if evaluation.action == "full_close":
+            self._close_trade(
+                trade=updated,
+                exit_price=latest_price,
+                reason=evaluation.exit_reason,
+                exit_type=evaluation.exit_type,
+            )
 
     def _update_trade_metrics(self, *, trade: dict, latest_price: float) -> None:
         entry = float(trade.get("entry", 0.0) or 0.0)
@@ -168,34 +161,6 @@ class ActiveTradeMonitorWorker:
         bearish = bool(float(snapshot.features.get("15m_structure_bearish", snapshot.features.get("5m_structure_bearish", 0.0)) or 0.0) >= 1.0)
         bullish = bool(float(snapshot.features.get("15m_structure_bullish", snapshot.features.get("5m_structure_bullish", 0.0)) or 0.0) >= 1.0)
         return (side == "BUY" and bearish) or (side == "SELL" and bullish)
-
-    def _strong_opposite_candle(self, *, trade: dict, frame, snapshot) -> bool:
-        if frame is None or len(frame) < 1:
-            return False
-        candle = frame.iloc[-1]
-        open_price = float(candle["open"])
-        close_price = float(candle["close"])
-        body = abs(close_price - open_price)
-        atr = float(snapshot.atr or snapshot.features.get("5m_atr", 0.0) or 0.0)
-        if atr <= 0:
-            return False
-        side = str(trade.get("side", "") or "").upper()
-        opposite_direction = (side == "BUY" and close_price < open_price) or (side == "SELL" and close_price > open_price)
-        return opposite_direction and body >= (atr * float(self.settings.active_trade_monitor_opposite_candle_atr_threshold))
-
-    def _volume_spike_against_trade(self, *, trade: dict, frame) -> bool:
-        if frame is None or len(frame) < 3:
-            return False
-        volume = frame["volume"].astype(float)
-        baseline = float(volume.tail(20).mean() or 0.0)
-        current_volume = float(volume.iloc[-1])
-        if current_volume < baseline * float(self.settings.active_trade_monitor_volume_spike_threshold):
-            return False
-        candle = frame.iloc[-1]
-        open_price = float(candle["open"])
-        close_price = float(candle["close"])
-        side = str(trade.get("side", "") or "").upper()
-        return (side == "BUY" and close_price < open_price) or (side == "SELL" and close_price > open_price)
 
     def _close_trade(self, *, trade: dict, exit_price: float, reason: str, exit_type: str) -> None:
         updated_trade = dict(trade)
@@ -217,11 +182,16 @@ class ActiveTradeMonitorWorker:
         if cache is not None:
             adaptive = cache.get_json("strategy:adaptive_config:system") or {}
             base = float(adaptive.get("trailing_aggressiveness", base) or base)
-        volatility = float(getattr(snapshot, "volatility", 0.0) or 0.0)
-        regime = str(getattr(snapshot, "regime", "") or "").upper()
-        adx = float(getattr(snapshot, "features", {}).get("15m_adx", getattr(snapshot, "features", {}).get("5m_adx", 0.0)) or 0.0)
-        if volatility >= 0.03:
-            base *= 1.1
-        if regime != "TRENDING" or adx < float(self.settings.strict_trade_structure_adx_floor):
-            base *= 0.9
-        return max(0.5, min(base, 1.5))
+        return compute_trailing_multiplier(
+            settings=self.settings,
+            volatility=float(getattr(snapshot, "volatility", 0.0) or 0.0),
+            regime=str(getattr(snapshot, "regime", "") or "").upper(),
+            adx=float(
+                getattr(snapshot, "features", {}).get(
+                    "15m_adx",
+                    getattr(snapshot, "features", {}).get("5m_adx", 0.0),
+                )
+                or 0.0
+            ),
+            adaptive_value=base,
+        )

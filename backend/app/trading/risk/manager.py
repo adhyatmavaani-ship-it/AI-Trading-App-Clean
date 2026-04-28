@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import math
 
 from app.core.config import Settings
+from app.trading.exits import initial_exit_plan
 
 
 @dataclass
@@ -47,6 +48,7 @@ class TradingRiskManager:
         max_capital_allocation_pct: float | None = None,
         daily_loss_limit_override: float | None = None,
         emergency_stop_active: bool = False,
+        stop_loss_multiplier: float = 1.0,
     ) -> TradingRiskDecision:
         if emergency_stop_active:
             raise ValueError("Emergency stop is active for this user")
@@ -100,9 +102,16 @@ class TradingRiskManager:
             * regime_multiplier
         )
 
-        atr_stop_distance = max(atr * 1.8, price * 0.004)
-        volatility_stop_distance = max(price * 0.006, price * volatility)
-        stop_distance = max(atr_stop_distance, volatility_stop_distance)
+        exit_plan = initial_exit_plan(
+            side=decision,
+            entry_price=price,
+            atr=atr,
+            volatility=volatility,
+            stop_loss_multiplier=stop_loss_multiplier,
+            take_profit_rr=float(self.settings.strict_trade_min_take_profit_rr),
+        )
+        atr_stop_distance = max(atr * 1.8 * stop_loss_multiplier, price * 0.004)
+        stop_distance = float(exit_plan.stop_distance)
         raw_position_notional = risk_budget / max(stop_distance / max(price, 1e-8), 1e-6)
         volatility_adjustment = max(0.35, 1 - min(volatility, 0.5))
         position_notional = min(
@@ -118,8 +127,8 @@ class TradingRiskManager:
             1.0,
             (current_exposure_notional + position_notional) / max(balance, 1e-8),
         )
-        trailing_stop_pct = 0.004 if regime == "TRENDING" else 0.0035
-        stop_loss = price - stop_distance if decision == "BUY" else price + stop_distance
+        trailing_stop_pct = float(exit_plan.trailing_stop_pct)
+        stop_loss = float(exit_plan.stop_loss)
         risk_level = (
             "HIGH" if volatility > 0.03 else "MEDIUM" if volatility > 0.015 else "LOW"
         )

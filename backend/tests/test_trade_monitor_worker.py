@@ -61,7 +61,16 @@ class StubOrchestrator:
     def update_active_trade_state(self, trade_id: str, payload: dict) -> None:
         self.updated.append((trade_id, payload))
 
-    def close_trade_position(self, *, user_id: str, trade_id: str, exit_price: float, reason: str, exit_fee: float = 0.0):
+    def close_trade_position(
+        self,
+        *,
+        user_id: str,
+        trade_id: str,
+        exit_price: float,
+        reason: str,
+        exit_fee: float = 0.0,
+        closed_quantity: float | None = None,
+    ):
         self.closed.append(
             {
                 "user_id": user_id,
@@ -69,6 +78,7 @@ class StubOrchestrator:
                 "exit_price": exit_price,
                 "reason": reason,
                 "exit_fee": exit_fee,
+                "closed_quantity": closed_quantity,
             }
         )
 
@@ -127,7 +137,7 @@ class ActiveTradeMonitorWorkerTest(unittest.TestCase):
         self.assertTrue(orchestrator.updated)
         self.assertEqual(orchestrator.updated[-1][1]["exit_type"], "early_exit")
 
-    def test_trailing_stop_updates_and_tracks_max_profit(self):
+    def test_partial_take_profit_locks_trade_state(self):
         settings = Settings(redis_url="redis://unused")
         cache = InMemoryCache()
         redis_state_manager = RedisStateManager(settings, cache)
@@ -165,12 +175,14 @@ class ActiveTradeMonitorWorkerTest(unittest.TestCase):
 
         asyncio.run(worker.run_once())
 
-        self.assertFalse(orchestrator.closed)
+        self.assertEqual(len(orchestrator.closed), 1)
+        self.assertEqual(orchestrator.closed[0]["reason"], "partial_take_profit")
         self.assertTrue(orchestrator.updated)
         updated_trade = orchestrator.updated[-1][1]
         self.assertGreaterEqual(updated_trade["stop_loss"], 100.5)
         self.assertGreater(updated_trade["max_profit"], 0.01)
-        self.assertEqual(updated_trade["exit_type"], "trailing")
+        self.assertTrue(updated_trade["partial_take_profit_taken"])
+        self.assertEqual(updated_trade["exit_type"], "partial_take_profit")
 
 
 if __name__ == "__main__":

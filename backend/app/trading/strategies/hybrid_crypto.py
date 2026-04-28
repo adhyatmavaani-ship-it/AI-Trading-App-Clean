@@ -5,6 +5,7 @@ import math
 import pandas as pd
 import ta
 
+from app.trading.exits import initial_exit_plan
 from app.trading.strategies.base import BaseStrategy, StrategyDecision
 
 
@@ -73,18 +74,26 @@ class HybridCryptoStrategy(BaseStrategy):
         if atr <= 0:
             return self._hold("atr_unavailable")
 
-        stop_loss = self._hybrid_stop_loss(current_price, atr, structure_signal)
+        stop_loss_multiplier = float(parameters.get("stop_loss_multiplier", 1.0))
+        volatility = self._volatility(lower_frame)
+        exit_plan = initial_exit_plan(
+            side=structure_signal,
+            entry_price=current_price,
+            atr=atr,
+            volatility=volatility,
+            stop_loss_multiplier=stop_loss_multiplier,
+        )
+        stop_loss = float(exit_plan.stop_loss)
         if not math.isfinite(stop_loss):
             return self._hold("invalid_stop_loss")
         risk_distance = abs(current_price - stop_loss)
         if risk_distance <= 0:
             return self._hold("invalid_stop_loss")
 
-        trailing_sl = self._chandelier_stop(
-            frame=lower_frame,
-            signal=structure_signal,
-            atr=atr,
-            multiplier=chandelier_multiplier,
+        trailing_sl = (
+            current_price * (1.0 - float(exit_plan.trailing_stop_pct))
+            if structure_signal == "BUY"
+            else current_price * (1.0 + float(exit_plan.trailing_stop_pct))
         )
         if not math.isfinite(trailing_sl):
             return self._hold("invalid_trailing_stop")
@@ -123,7 +132,7 @@ class HybridCryptoStrategy(BaseStrategy):
             liquidity_sweep="true" if liquidity_sweep else "false",
             stop_loss=round(stop_loss, 8),
             trailing_sl=round(trailing_sl, 8),
-            take_profit=0.0,
+            take_profit=round(float(exit_plan.take_profit), 8),
             risk_reward_ratio="dynamic",
             structure_lookback=structure_lookback,
             atr=round(atr, 8),
@@ -249,29 +258,11 @@ class HybridCryptoStrategy(BaseStrategy):
         atr_value = float(atr_series.iloc[-1]) if not atr_series.empty else 0.0
         return max(0.0, atr_value)
 
-    def _hybrid_stop_loss(self, entry_price: float, atr: float, signal: str) -> float:
-        if signal == "BUY":
-            initial_sl = entry_price - (2.0 * atr)
-            max_sl_cap = entry_price * 0.99
-            return min(initial_sl, max_sl_cap)
-        initial_sl = entry_price + (2.0 * atr)
-        min_sl_cap = entry_price * 1.01
-        return max(initial_sl, min_sl_cap)
-
-    def _chandelier_stop(
-        self,
-        *,
-        frame: pd.DataFrame,
-        signal: str,
-        atr: float,
-        multiplier: float,
-        window: int = 22,
-    ) -> float:
-        if signal == "BUY":
-            highest_high = float(frame["high"].astype(float).tail(window).max())
-            return highest_high - (multiplier * atr)
-        lowest_low = float(frame["low"].astype(float).tail(window).min())
-        return lowest_low + (multiplier * atr)
+    def _volatility(self, frame: pd.DataFrame, window: int = 20) -> float:
+        returns = frame["close"].astype(float).pct_change().dropna()
+        if returns.empty:
+            return 0.0
+        return float(returns.tail(window).std() or 0.0)
 
     def _liquidity_sweep_signal(
         self,

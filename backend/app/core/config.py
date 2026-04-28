@@ -291,6 +291,7 @@ class Settings(BaseSettings):
     max_active_trades: int = 2
     strict_trade_partial_take_profit_rr: float = 1.0
     strict_trade_min_take_profit_rr: float = 1.5
+    strict_trade_partial_take_profit_fraction: float = 0.4
     active_trade_monitor_enabled: bool = True
     active_trade_monitor_interval_seconds: float = 5.0
     active_trade_monitor_opposite_candle_atr_threshold: float = 1.0

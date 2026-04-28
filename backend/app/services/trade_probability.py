@@ -333,7 +333,7 @@ class TradeProbabilityEngine:
                 metadata=metadata,
             )
 
-        adjusted_confidence = max(0.0, min(1.0, final_score))
+        adjusted_confidence = max(0.0, min(1.0, adjusted_probability))
         metadata["adjusted_confidence"] = round(adjusted_confidence, 6)
         return StrategyDecision(
             strategy=decision.strategy,

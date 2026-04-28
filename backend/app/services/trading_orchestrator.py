@@ -33,6 +33,7 @@ from app.services.model_stability import ModelStabilityService
 from app.services.redis_cache import RedisCache
 from app.services.rollout_manager import RolloutManager
 from app.services.system_monitor import SystemMonitorService
+from app.trading.exits import initial_exit_plan
 
 if TYPE_CHECKING:
     from app.services.ai_engine import AIEngine
@@ -580,9 +581,8 @@ class TradingOrchestrator:
         if meta_decision is not None:
             risk_budget *= meta_decision.capital_multiplier
         trade_direction = self._final_signal_action(snapshot, effective_inference, strategy_decision)
-        final_confidence = max(
-            float(strategy_decision.metadata.get("adjusted_confidence", strategy_decision.confidence) or 0.0),
-            float(effective_inference.confidence_score),
+        final_confidence = float(
+            strategy_decision.metadata.get("adjusted_confidence", effective_inference.confidence_score) or 0.0
         )
         force_override_active = self._force_execution_override_active(final_confidence)
         if force_override_active and strategy == "NO_TRADE" and trade_direction in {"BUY", "SELL"}:
@@ -779,16 +779,17 @@ class TradingOrchestrator:
             strategy_decision.signal != "HOLD"
             and (
                 inference.decision == "HOLD"
-                or adjusted_confidence >= max(inference.confidence_score, 0.55)
             )
+            and success_probability >= float(self.settings.trade_probability_threshold)
+            and adjusted_confidence >= max(inference.confidence_score, 0.55)
         )
         if not should_override:
             return inference
-        combined_confidence = max(inference.confidence_score, adjusted_confidence)
+        combined_confidence = adjusted_confidence
         return inference.model_copy(
             update={
                 "decision": strategy_decision.signal,
-                "trade_probability": max(combined_confidence, success_probability),
+                "trade_probability": success_probability,
                 "confidence_score": combined_confidence,
                 "reason": f"{inference.reason} | strategy:{strategy_decision.strategy}",
             }
@@ -962,6 +963,17 @@ class TradingOrchestrator:
                     "portfolio_drawdown": float(drawdown_status.rolling_drawdown),
                 }
             )
+            trade_probability = float(
+                request.feature_snapshot.get(
+                    "trade_success_probability",
+                    request.feature_snapshot.get("raw_trade_success_probability", request.confidence),
+                )
+                or 0.0
+            )
+            if trade_probability < float(self.settings.trade_probability_threshold):
+                raise ValueError(
+                    f"Trade probability {trade_probability:.3f} below threshold {self.settings.trade_probability_threshold:.3f}"
+                )
             strict_gate = self._strict_trade_gate(
                 features=request.feature_snapshot,
                 side=request.side,
@@ -2041,8 +2053,10 @@ class TradingOrchestrator:
             "executed_quantity": response.executed_quantity,
             "stop_loss": response.stop_loss,
             "initial_stop_loss": float(existing.get("initial_stop_loss", response.stop_loss) or response.stop_loss),
+            "planned_stop_distance": round(abs(float(response.executed_price) - float(response.stop_loss)), 8),
             "trailing_stop_pct": response.trailing_stop_pct,
             "take_profit": response.take_profit,
+            "partial_take_profit_taken": bool(existing.get("partial_take_profit_taken", False)),
             "status": "OPENING",
             "order_id": response.trade_id,
             "submitted_state": "OPENING",
@@ -2499,23 +2513,41 @@ class TradingOrchestrator:
         atr = float(feature_snapshot.get("atr", feature_snapshot.get("15m_atr", feature_snapshot.get("5m_atr", 0.0))) or 0.0)
         adaptive = self._adaptive_strategy_config()
         stop_loss_multiplier = float(adaptive.get("stop_loss_multiplier", 1.0) or 1.0)
-        if atr > 0:
-            if side == "BUY":
-                stop_loss = min(executed_price - (2.0 * atr * stop_loss_multiplier), executed_price * 0.99)
-            else:
-                stop_loss = max(executed_price + (2.0 * atr * stop_loss_multiplier), executed_price * 1.01)
-            trailing_stop_pct = max(0.0025, min(0.05, (2.5 * atr * stop_loss_multiplier) / max(executed_price, 1e-8)))
-        else:
-            trailing_stop_pct = 0.004
-            stop_loss = executed_price * (0.994 if side == "BUY" else 1.006)
-        take_profit = 0.0
-        if macro_bias["regime"] == "BEARISH":
-            if side == "BUY":
-                trailing_stop_pct = 0.0025
-                stop_loss = max(stop_loss, executed_price * (1 - trailing_stop_pct))
-            else:
-                trailing_stop_pct = max(0.0025, trailing_stop_pct * 0.85)
-        return round(stop_loss, 8), round(trailing_stop_pct, 6), round(take_profit, 8)
+        volatility = float(
+            feature_snapshot.get("volatility", feature_snapshot.get("expected_risk", abs(expected_return))) or 0.0
+        )
+        exit_plan = initial_exit_plan(
+            side=side,
+            entry_price=executed_price,
+            atr=atr,
+            volatility=volatility,
+            stop_loss_multiplier=stop_loss_multiplier,
+            take_profit_rr=float(self.settings.strict_trade_min_take_profit_rr),
+        )
+        self._assert_risk_consistency(
+            executed_price=executed_price,
+            planned_stop_distance=float(exit_plan.stop_distance),
+            actual_stop_loss=float(exit_plan.stop_loss),
+        )
+        return (
+            round(float(exit_plan.stop_loss), 8),
+            round(float(exit_plan.trailing_stop_pct), 6),
+            round(float(exit_plan.take_profit), 8),
+        )
+
+    def _assert_risk_consistency(
+        self,
+        *,
+        executed_price: float,
+        planned_stop_distance: float,
+        actual_stop_loss: float,
+    ) -> None:
+        actual_stop_distance = abs(float(executed_price) - float(actual_stop_loss))
+        if planned_stop_distance <= 0:
+            raise ValueError("Planned stop distance must be positive")
+        drift = abs(actual_stop_distance - planned_stop_distance) / max(planned_stop_distance, 1e-8)
+        if drift > 0.05:
+            raise ValueError("Risk consistency check failed: installed stop drifted from planned stop distance")
 
     def _whale_direction(self, alpha: AlphaContext) -> str:
         if alpha.whale.accumulation_score >= 0.65 and alpha.whale.unusual_activity_score < 0.80:
