@@ -1,6 +1,8 @@
 import asyncio
+from datetime import datetime, timezone
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -79,6 +81,39 @@ class MarketDataServiceTest(unittest.TestCase):
         price = asyncio.run(service.fetch_latest_price("BTCUSDT"))
 
         self.assertEqual(price, 101.25)
+
+    def test_failed_exchange_retry_is_tracked_per_exchange(self):
+        cache = InMemoryCache()
+        settings = Settings(
+            redis_url="redis://unused",
+            primary_exchange="binance",
+            backup_exchanges=["kraken"],
+        )
+        service = MarketDataService(settings, cache)
+        service.exchange_clients = {}
+        service.exchange_status = {
+            "binance": {
+                "status": "failed",
+                "last_error": "restricted",
+                "last_attempt_at": datetime.now(timezone.utc).isoformat(),
+                "last_success_at": None,
+            },
+            "kraken": {
+                "status": "pending",
+                "last_error": None,
+                "last_attempt_at": None,
+                "last_success_at": None,
+            },
+        }
+
+        with unittest.mock.patch(
+            "app.services.market_data.CcxtExchangeAdapter",
+            side_effect=lambda settings, exchange_id, public_only=True: StubExchangeClient(exchange_id),
+        ):
+            service._ensure_exchange_clients()
+
+        self.assertNotIn("binance", service.exchange_clients)
+        self.assertIn("kraken", service.exchange_clients)
 
 
 if __name__ == "__main__":

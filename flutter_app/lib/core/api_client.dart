@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:dio/dio.dart';
 
 import '../models/batch.dart';
@@ -80,13 +81,15 @@ class ApiClient {
         },
       ),
     );
-    _dio.interceptors.add(
-      LogInterceptor(
-        requestBody: false,
-        responseBody: false,
-        requestHeader: false,
-      ),
-    );
+    if (kDebugMode) {
+      _dio.interceptors.add(
+        LogInterceptor(
+          requestBody: false,
+          responseBody: false,
+          requestHeader: false,
+        ),
+      );
+    }
   }
 
   final Dio _dio;
@@ -440,6 +443,12 @@ class ApiClient {
     final statusCode = error.response?.statusCode;
     final detail = error.response?.data;
     if (statusCode != null) {
+      if (statusCode == 403) {
+        return 'Access denied by the trading backend. Check API credentials or account permissions.';
+      }
+      if (statusCode == 451) {
+        return 'The requested market data is unavailable in this region or from this provider right now.';
+      }
       return 'Request failed ($statusCode): $detail';
     }
     if (error.type == DioExceptionType.connectionError) {

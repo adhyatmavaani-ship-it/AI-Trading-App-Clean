@@ -456,12 +456,6 @@ class MarketDataService:
             return
 
         now = datetime.now(timezone.utc)
-        if (
-            not force
-            and self._last_init_attempt_at is not None
-            and (now - self._last_init_attempt_at).total_seconds() < float(self.settings.market_data_exchange_retry_seconds)
-        ):
-            return
         self._last_init_attempt_at = now
 
         for exchange_id in self._configured_exchanges():
@@ -469,6 +463,12 @@ class MarketDataService:
                 exchange_id,
                 {"status": "pending", "last_error": None, "last_attempt_at": None, "last_success_at": None},
             )
+            if (
+                not force
+                and exchange_id not in self.exchange_clients
+                and not self._exchange_retry_due(status=status, now=now)
+            ):
+                continue
             status["last_attempt_at"] = self._isoformat(now)
             if exchange_id in self.exchange_clients:
                 status["status"] = "active"
@@ -488,6 +488,18 @@ class MarketDataService:
                     "market_data_exchange_init_failed",
                     extra={"event": "market_data_exchange_init_failed", "context": {"exchange": exchange_id, "error": str(exc)[:200]}},
                 )
+
+    def _exchange_retry_due(self, *, status: dict[str, object], now: datetime) -> bool:
+        retry_seconds = float(self.settings.market_data_exchange_retry_seconds)
+        last_attempt_raw = status.get("last_attempt_at")
+        if not last_attempt_raw:
+            return True
+        try:
+            last_attempt = datetime.fromisoformat(str(last_attempt_raw))
+        except ValueError:
+            return True
+        normalized = last_attempt.astimezone(timezone.utc) if last_attempt.tzinfo else last_attempt.replace(tzinfo=timezone.utc)
+        return (now - normalized).total_seconds() >= retry_seconds
 
     def _record_exchange_failure(self, exchange_id: str, exc: Exception) -> None:
         now = datetime.now(timezone.utc)

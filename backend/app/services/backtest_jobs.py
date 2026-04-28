@@ -39,6 +39,7 @@ class BacktestJobService:
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
 
     async def start(self) -> None:
+        self._prune_job_files()
         if not self.settings.backtest_resume_enabled:
             return
         for path in self.jobs_dir.glob("*.json"):
@@ -54,6 +55,7 @@ class BacktestJobService:
             self._tasks[job_id] = asyncio.create_task(self._run_job(job_id), name=f"backtest-job-{job_id}")
 
     async def stop(self) -> None:
+        self._prune_job_files()
         return None
 
     def enqueue(self, *, request: AsyncBacktestRunRequest, user_id: str) -> BacktestJobStatusResponse:
@@ -276,6 +278,7 @@ class BacktestJobService:
         payload["logs"] = list(payload.get("logs", []))[-keep_logs:]
         path = self.jobs_dir / f"{payload['job_id']}.json"
         path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+        self._prune_job_files()
 
     def _append_log(self, payload: dict, message: str) -> None:
         logs = list(payload.get("logs", []))
@@ -286,6 +289,19 @@ class BacktestJobService:
             ).model_dump(mode="json")
         )
         payload["logs"] = logs
+
+    def _prune_job_files(self) -> None:
+        limit = max(int(self.settings.backtest_job_history_limit), 1)
+        job_files = sorted(
+            self.jobs_dir.glob("*.json"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        for path in job_files[limit:]:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                continue
 
     async def _run_compare_profiles(
         self,
