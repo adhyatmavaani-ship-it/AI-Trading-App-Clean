@@ -172,6 +172,9 @@ class _ChartBody extends StatelessWidget {
           (item) => item?.symbol == chart.symbol,
           orElse: () => null,
         );
+    final headerHistory = chart.confidenceHistory.length >= 2
+        ? chart.confidenceHistory
+        : (readinessCard?.confidenceHistory ?? const <ConfidenceHistoryPointModel>[]);
     final scoreAccent = _scannerAccent(scannerCandidate?.potentialScore ?? 0);
     final countdownProgress = rotationWindowSeconds <= 0
         ? 0.0
@@ -189,41 +192,45 @@ class _ChartBody extends StatelessWidget {
         Row(
           children: <Widget>[
             Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: <Widget>[
-                      Text(
-                        chart.symbol,
-                        style: Theme.of(context).textTheme.headlineSmall,
-                      ),
-                      if (scannerCandidate != null)
-                        _HeaderInfoChip(
-                          label: 'Score ${scannerCandidate.potentialScore.toStringAsFixed(0)}',
-                          accent: scoreAccent,
+              child: _HeaderHeartbeatCard(
+                history: headerHistory,
+                trendAccent: _headerHistoryAccent(headerHistory),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: <Widget>[
+                        Text(
+                          chart.symbol,
+                          style: Theme.of(context).textTheme.headlineSmall,
                         ),
-                      ..._headerRiskBadges(readinessCard?.riskFlags ?? const <String, dynamic>{}),
-                      _HeaderInfoChip(
-                        label: _formatCountdown(secondsUntilRotation),
-                        accent: countdownColor,
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(999),
-                    child: LinearProgressIndicator(
-                      value: countdownProgress,
-                      minHeight: 5,
-                      backgroundColor: TradingPalette.panelBorder.withOpacity(0.85),
-                      valueColor: AlwaysStoppedAnimation<Color>(countdownColor),
+                        if (scannerCandidate != null)
+                          _HeaderInfoChip(
+                            label: 'Score ${scannerCandidate.potentialScore.toStringAsFixed(0)}',
+                            accent: scoreAccent,
+                          ),
+                        ..._headerRiskBadges(readinessCard?.riskFlags ?? const <String, dynamic>{}),
+                        _HeaderInfoChip(
+                          label: _formatCountdown(secondsUntilRotation),
+                          accent: countdownColor,
+                        ),
+                      ],
                     ),
-                  ),
-                ],
+                    const SizedBox(height: 8),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(999),
+                      child: LinearProgressIndicator(
+                        value: countdownProgress,
+                        minHeight: 5,
+                        backgroundColor: TradingPalette.panelBorder.withOpacity(0.85),
+                        valueColor: AlwaysStoppedAnimation<Color>(countdownColor),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
             TweenAnimationBuilder<double>(
@@ -830,6 +837,134 @@ class _HeaderInfoChip extends StatelessWidget {
   }
 }
 
+class _HeaderHeartbeatCard extends StatefulWidget {
+  const _HeaderHeartbeatCard({
+    required this.history,
+    required this.trendAccent,
+    required this.child,
+  });
+
+  final List<ConfidenceHistoryPointModel> history;
+  final Color trendAccent;
+  final Widget child;
+
+  @override
+  State<_HeaderHeartbeatCard> createState() => _HeaderHeartbeatCardState();
+}
+
+class _HeaderHeartbeatCardState extends State<_HeaderHeartbeatCard>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1800),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final hasWatermark = widget.history.length >= 2;
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        final pulse = hasWatermark ? _controller.value : 0.0;
+        return Container(
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+          decoration: BoxDecoration(
+            color: TradingPalette.panelSoft.withOpacity(0.76),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(
+              color: hasWatermark
+                  ? widget.trendAccent.withOpacity(0.14 + (pulse * 0.08))
+                  : TradingPalette.panelBorder.withOpacity(0.85),
+            ),
+            boxShadow: hasWatermark
+                ? <BoxShadow>[
+                    BoxShadow(
+                      color: widget.trendAccent.withOpacity(0.04 + (pulse * 0.05)),
+                      blurRadius: 18 + (pulse * 8),
+                      spreadRadius: pulse * 1.2,
+                    ),
+                  ]
+                : const <BoxShadow>[],
+          ),
+          child: Stack(
+            children: <Widget>[
+              if (hasWatermark)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: Opacity(
+                      opacity: 0.09,
+                      child: CustomPaint(
+                        painter: _HeaderHeartbeatPainter(
+                          history: widget.history,
+                          accent: widget.trendAccent,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              child!,
+            ],
+          ),
+        );
+      },
+      child: widget.child,
+    );
+  }
+}
+
+class _HeaderHeartbeatPainter extends CustomPainter {
+  const _HeaderHeartbeatPainter({
+    required this.history,
+    required this.accent,
+  });
+
+  final List<ConfidenceHistoryPointModel> history;
+  final Color accent;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (history.length < 2 || size.width <= 0 || size.height <= 0) {
+      return;
+    }
+    final points = _headerHistoryOffsets(history, size);
+    if (points.length < 2) {
+      return;
+    }
+    final path = Path()..moveTo(points.first.dx, points.first.dy);
+    for (var index = 1; index < points.length; index += 1) {
+      final previous = points[index - 1];
+      final current = points[index];
+      final controlX = (previous.dx + current.dx) / 2;
+      path.quadraticBezierTo(controlX, previous.dy, current.dx, current.dy);
+    }
+    canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6
+        ..strokeCap = StrokeCap.round
+        ..color = accent,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _HeaderHeartbeatPainter oldDelegate) {
+    return oldDelegate.history != history || oldDelegate.accent != accent;
+  }
+}
+
 void _showScannerTooltip(
   BuildContext context,
   ScannerCandidateModel candidate, {
@@ -1129,6 +1264,46 @@ List<Widget> _headerRiskBadges(Map<String, dynamic> riskFlags) {
 Color _confluenceChipAccent(String value) => _confluenceAccent(value);
 
 Color _riskBadgeAccent(dynamic value) => _riskAccent(value);
+
+Color _headerHistoryAccent(List<ConfidenceHistoryPointModel> history) {
+  final delta = _headerHistoryDelta(history);
+  if (delta >= 0.015) {
+    return TradingPalette.neonGreen;
+  }
+  if (delta <= -0.015) {
+    return TradingPalette.electricBlue;
+  }
+  return TradingPalette.amber;
+}
+
+double _headerHistoryDelta(List<ConfidenceHistoryPointModel> history) {
+  if (history.length < 2) {
+    return 0.0;
+  }
+  final sample = history.length >= 3 ? history.sublist(history.length - 3) : history;
+  return sample.last.score - sample.first.score;
+}
+
+List<Offset> _headerHistoryOffsets(
+  List<ConfidenceHistoryPointModel> history,
+  Size size,
+) {
+  final startMs = history.first.timestamp.millisecondsSinceEpoch.toDouble();
+  final endMs = history.last.timestamp.millisecondsSinceEpoch.toDouble();
+  final minScore = history.map((item) => item.score).reduce(math.min);
+  final maxScore = history.map((item) => item.score).reduce(math.max);
+  final timeRange = (endMs - startMs).abs() < 1e-6 ? 1.0 : (endMs - startMs);
+  final scoreRange = (maxScore - minScore).abs() < 1e-6 ? 1.0 : (maxScore - minScore);
+  return history.map((item) {
+    final timeRatio =
+        (item.timestamp.millisecondsSinceEpoch.toDouble() - startMs) / timeRange;
+    final scoreRatio = (item.score - minScore) / scoreRange;
+    return Offset(
+      4 + (timeRatio * math.max(size.width - 8, 1)),
+      size.height - 6 - (scoreRatio * math.max(size.height - 12, 1)),
+    );
+  }).toList();
+}
 
 class _CategoryRow extends StatelessWidget {
   const _CategoryRow({
