@@ -32,6 +32,10 @@ class MockPriceMoveRequest(BaseModel):
     run_monitor: bool = Field(default=True, description="Whether to run the active trade monitor immediately after the move.")
 
 
+class MarketSummaryRequest(BaseModel):
+    limit: int = Field(default=18, ge=6, le=50, description="How many symbols should be included in the market sentiment scan.")
+
+
 def _ensure_debug_routes_enabled(container: ServiceContainer) -> None:
     settings = getattr(container, "settings", None)
     if settings is not None and not bool(settings.effective_debug_routes_enabled):
@@ -281,6 +285,76 @@ async def get_market_universe(
         if scanner is None:
             return {"count": 0, "items": [], "categories": {}}
         return await scanner.snapshot(limit=limit)
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+async def _market_summary_response(
+    *,
+    request: Request,
+    container: ServiceContainer,
+    limit: int,
+) -> dict:
+    get_user_id(request)
+    scanner = getattr(container, "market_universe_scanner", None)
+    if scanner is None:
+        return {
+            "sentiment_score": 0.0,
+            "sentiment_label": "NEUTRAL",
+            "market_breadth": 0.0,
+            "avg_change_pct": 0.0,
+            "avg_volatility_pct": 0.0,
+            "participation_score": 0.0,
+            "confidence_score": 0.0,
+            "ticker": [],
+            "heatmap": [],
+            "top_movers": [],
+        }
+    return await scanner.summary(limit=limit)
+
+
+@router.get(
+    "/market/summary",
+    tags=["Market"],
+    summary="Get market sentiment summary",
+    description="Returns a frontend-ready market sentiment score, ticker tape entries, and heatmap payload for the live market dashboard.",
+)
+async def get_market_summary(
+    limit: int = Query(default=18, ge=6, le=50, description="Maximum number of symbols to scan."),
+    request: Request = ...,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    try:
+        return await _market_summary_response(
+            request=request,
+            container=container,
+            limit=limit,
+        )
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post(
+    "/market/summary",
+    tags=["Market"],
+    summary="Refresh market sentiment summary",
+    description="POST variant of the market summary endpoint so the client can request a fresh sentiment snapshot for gauges and dashboard overlays.",
+)
+async def post_market_summary(
+    payload: MarketSummaryRequest,
+    request: Request,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    try:
+        return await _market_summary_response(
+            request=request,
+            container=container,
+            limit=int(payload.limit),
+        )
     except AuthenticationError as exc:
         raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
     except Exception as exc:  # pragma: no cover

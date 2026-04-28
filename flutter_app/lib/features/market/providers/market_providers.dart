@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../models/market_chart.dart';
+import '../../../models/market_summary.dart';
 import '../../../providers/app_providers.dart';
 import '../../pnl/providers/pnl_providers.dart';
 
@@ -35,5 +36,14 @@ final marketUniverseProvider = StreamProvider<MarketUniverseModel>((ref) async* 
   while (true) {
     await Future<void>.delayed(const Duration(seconds: 10));
     yield await repository.fetchMarketUniverse();
+  }
+});
+
+final marketSummaryProvider = StreamProvider<MarketSummaryModel>((ref) async* {
+  final repository = ref.watch(tradingRepositoryProvider);
+  yield await repository.fetchMarketSummary();
+  while (true) {
+    await Future<void>.delayed(const Duration(seconds: 12));
+    yield await repository.fetchMarketSummary();
   }
 });

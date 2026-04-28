@@ -15,6 +15,7 @@ import '../widgets/batch_tile.dart';
 import '../widgets/bot_state_banner.dart';
 import '../widgets/metric_card.dart';
 import '../widgets/market_chart_panel.dart';
+import '../widgets/market_sentiment_gauge.dart';
 import '../widgets/meta_widgets.dart';
 import '../widgets/readiness_tile.dart';
 import '../widgets/section_card.dart';
@@ -269,6 +270,8 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
                     'The perception engine will publish scanning intent here once the backend starts evaluating symbols.',
               ),
             ),
+          const SizedBox(height: 20),
+          const MarketSentimentGauge(),
           const SizedBox(height: 20),
           MarketChartPanel(latestActivity: activityFeed.latest),
           const SizedBox(height: 20),

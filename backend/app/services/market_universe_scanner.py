@@ -65,6 +65,107 @@ class MarketUniverseScanner:
             },
         }
 
+    async def summary(self, limit: int | None = None) -> dict[str, object]:
+        snapshot = await self.snapshot(limit=limit)
+        items = list(snapshot.get("items", []))
+        if not items:
+            return {
+                "sentiment_score": 0.0,
+                "sentiment_label": "NEUTRAL",
+                "market_breadth": 0.0,
+                "avg_change_pct": 0.0,
+                "avg_volatility_pct": 0.0,
+                "participation_score": 0.0,
+                "confidence_score": 0.0,
+                "ticker": [],
+                "heatmap": [],
+                "top_movers": [],
+            }
+
+        gainers = [item for item in items if float(item.get("change_pct", 0.0) or 0.0) > 0]
+        decliners = [item for item in items if float(item.get("change_pct", 0.0) or 0.0) < 0]
+        avg_change_pct = sum(float(item.get("change_pct", 0.0) or 0.0) for item in items) / max(len(items), 1)
+        avg_volatility_pct = sum(float(item.get("volatility_pct", 0.0) or 0.0) for item in items) / max(len(items), 1)
+        avg_volume_ratio = sum(float(item.get("volume_ratio", 0.0) or 0.0) for item in items) / max(len(items), 1)
+        avg_trend_pct = sum(float(item.get("trend_pct", 0.0) or 0.0) for item in items) / max(len(items), 1)
+        breadth = (len(gainers) - len(decliners)) / max(len(items), 1)
+        participation_score = max(0.0, min(avg_volume_ratio / 2.5, 1.0))
+        confidence_score = max(
+            0.0,
+            min(
+                (
+                    abs(breadth) * 0.35
+                    + min(abs(avg_change_pct) / 3.0, 1.0) * 0.25
+                    + participation_score * 0.25
+                    + min(avg_volatility_pct / 4.0, 1.0) * 0.15
+                ),
+                1.0,
+            ),
+        )
+        sentiment_score = max(
+            -100.0,
+            min(
+                (
+                    breadth * 42.0
+                    + avg_change_pct * 12.0
+                    + avg_trend_pct * 4.0
+                    + (participation_score - 0.5) * 20.0
+                ),
+                100.0,
+            ),
+        )
+        if sentiment_score >= 25:
+            sentiment_label = "BULLISH"
+        elif sentiment_score <= -25:
+            sentiment_label = "BEARISH"
+        else:
+            sentiment_label = "NEUTRAL"
+
+        ticker = [
+            {
+                "symbol": str(item.get("symbol", "")).upper(),
+                "price": round(float(item.get("price", 0.0) or 0.0), 8),
+                "change_pct": round(float(item.get("change_pct", 0.0) or 0.0), 4),
+            }
+            for item in sorted(
+                items,
+                key=lambda entry: float(entry.get("quote_volume", 0.0) or 0.0),
+                reverse=True,
+            )[:10]
+        ]
+        heatmap = [
+            {
+                "symbol": str(item.get("symbol", "")).upper(),
+                "change_pct": round(float(item.get("change_pct", 0.0) or 0.0), 4),
+                "intensity": round(
+                    min(abs(float(item.get("change_pct", 0.0) or 0.0)) / 4.0, 1.0),
+                    4,
+                ),
+            }
+            for item in sorted(
+                items,
+                key=lambda entry: abs(float(entry.get("change_pct", 0.0) or 0.0)),
+                reverse=True,
+            )[:12]
+        ]
+        top_movers = sorted(
+            items,
+            key=lambda item: abs(float(item.get("change_pct", 0.0) or 0.0)),
+            reverse=True,
+        )[:5]
+        return {
+            "sentiment_score": round(sentiment_score, 4),
+            "sentiment_label": sentiment_label,
+            "market_breadth": round(breadth, 4),
+            "avg_change_pct": round(avg_change_pct, 4),
+            "avg_volatility_pct": round(avg_volatility_pct, 4),
+            "participation_score": round(participation_score, 4),
+            "confidence_score": round(confidence_score, 4),
+            "ticker": ticker,
+            "heatmap": heatmap,
+            "top_movers": top_movers,
+        }
+
     async def _scan_symbol(self, symbol: str) -> dict[str, object]:
         frames = await self.market_data.fetch_multi_timeframe_ohlcv(symbol, intervals=("5m", "15m"))
         latest_price = await self.market_data.fetch_latest_price(symbol)

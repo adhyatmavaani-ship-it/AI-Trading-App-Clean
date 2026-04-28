@@ -10,6 +10,7 @@ import '../models/backtest_job.dart';
 import '../models/meta_analytics.dart';
 import '../models/meta_decision.dart';
 import '../models/market_chart.dart';
+import '../models/market_summary.dart';
 import '../models/portfolio_concentration.dart';
 import '../models/public_dashboard.dart';
 import '../models/signal.dart';
@@ -64,6 +65,10 @@ class TradingRepository {
 
   Future<MarketUniverseModel> fetchMarketUniverse({int limit = 18}) {
     return _apiClient.getMarketUniverse(limit: limit);
+  }
+
+  Future<MarketSummaryModel> fetchMarketSummary({int limit = 18}) {
+    return _apiClient.getMarketSummary(limit: limit);
   }
 
   Future<Map<String, dynamic>> fetchRiskProfile(String userId) {

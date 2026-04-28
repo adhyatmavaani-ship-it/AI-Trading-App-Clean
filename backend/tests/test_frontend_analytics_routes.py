@@ -161,6 +161,37 @@ class StubMarketUniverseScanner:
             },
         }
 
+    async def summary(self, limit: int | None = None):
+        return {
+            "sentiment_score": 37.5,
+            "sentiment_label": "BULLISH",
+            "market_breadth": 0.5,
+            "avg_change_pct": 1.45,
+            "avg_volatility_pct": 1.9,
+            "participation_score": 0.72,
+            "confidence_score": 0.68,
+            "ticker": [
+                {"symbol": "BTCUSDT", "price": 65000.0, "change_pct": 1.1},
+                {"symbol": "ETHUSDT", "price": 2500.0, "change_pct": 1.8},
+            ][: max(1, min(limit or 2, 2))],
+            "heatmap": [
+                {"symbol": "BTCUSDT", "change_pct": 1.1, "intensity": 0.3},
+                {"symbol": "ETHUSDT", "change_pct": 1.8, "intensity": 0.45},
+            ],
+            "top_movers": [
+                {
+                    "symbol": "ETHUSDT",
+                    "price": 2500.0,
+                    "change_pct": 1.8,
+                    "volume_ratio": 1.4,
+                    "volatility_pct": 2.2,
+                    "trend_pct": 3.4,
+                    "quote_volume": 2500000.0,
+                    "category": "high_volatility",
+                }
+            ],
+        }
+
 
 class StubContainer:
     def __init__(self):
@@ -267,6 +298,28 @@ class FrontendAnalyticsRoutesTest(unittest.TestCase):
         self.assertIn("categories", payload)
         self.assertIn("ai_picks", payload["categories"])
         self.assertEqual(payload["categories"]["ai_picks"][0]["symbol"], "ETHUSDT")
+
+    def test_market_summary_get_endpoint(self):
+        response = self.client.get(
+            "/v1/market/summary?limit=8",
+            headers={"X-API-Key": "route-token"},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["sentiment_label"], "BULLISH")
+        self.assertAlmostEqual(payload["sentiment_score"], 37.5, places=6)
+        self.assertEqual(payload["ticker"][0]["symbol"], "BTCUSDT")
+
+    def test_market_summary_post_endpoint(self):
+        response = self.client.post(
+            "/v1/market/summary",
+            headers={"X-API-Key": "route-token"},
+            json={"limit": 8},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("heatmap", payload)
+        self.assertIn("top_movers", payload)
 
 
 if __name__ == "__main__":

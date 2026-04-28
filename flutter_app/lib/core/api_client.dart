@@ -4,6 +4,7 @@ import '../models/batch.dart';
 import '../models/backtest_job.dart';
 import '../models/activity.dart';
 import '../models/market_chart.dart';
+import '../models/market_summary.dart';
 import '../models/meta_analytics.dart';
 import '../models/meta_decision.dart';
 import '../models/portfolio_concentration.dart';
@@ -163,6 +164,14 @@ class ApiClient {
       queryParameters: <String, dynamic>{'limit': limit},
     );
     return MarketUniverseModel.fromJson(response.data as Map<String, dynamic>);
+  }
+
+  Future<MarketSummaryModel> getMarketSummary({int limit = 18}) async {
+    final response = await _dio.post<dynamic>(
+      '/v1/market/summary',
+      data: <String, dynamic>{'limit': limit},
+    );
+    return MarketSummaryModel.fromJson(response.data as Map<String, dynamic>);
   }
 
   Future<Map<String, dynamic>> getRiskProfile(String userId) async {
