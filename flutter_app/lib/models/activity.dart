@@ -17,6 +17,11 @@ class ActivityItemModel {
     this.confidenceMeter,
     this.strictTradeScore,
     this.regime,
+    this.confluenceBreakdown = const <String, String>{},
+    this.confluenceAligned,
+    this.confluenceTotal,
+    this.riskFlags = const <String, dynamic>{},
+    this.logicTags = const <String>[],
   });
 
   final String type;
@@ -36,6 +41,11 @@ class ActivityItemModel {
   final double? confidenceMeter;
   final double? strictTradeScore;
   final String? regime;
+  final Map<String, String> confluenceBreakdown;
+  final int? confluenceAligned;
+  final int? confluenceTotal;
+  final Map<String, dynamic> riskFlags;
+  final List<String> logicTags;
 
   factory ActivityItemModel.fromJson(Map<String, dynamic> json) {
     return ActivityItemModel(
@@ -57,6 +67,11 @@ class ActivityItemModel {
       confidenceMeter: (json['confidence_meter'] as num?)?.toDouble(),
       strictTradeScore: (json['strict_trade_score'] as num?)?.toDouble(),
       regime: json['regime'] as String?,
+      confluenceBreakdown: _stringMap(json['confluence_breakdown']),
+      confluenceAligned: (json['confluence_aligned'] as num?)?.toInt(),
+      confluenceTotal: (json['confluence_total'] as num?)?.toInt(),
+      riskFlags: _dynamicMap(json['risk_flags']),
+      logicTags: _stringList(json['logic_tags']),
     );
   }
 
@@ -85,6 +100,11 @@ class ReadinessCardModel {
     this.botState,
     this.confidenceMeter,
     this.strictTradeScore,
+    this.confluenceBreakdown = const <String, String>{},
+    this.confluenceAligned,
+    this.confluenceTotal,
+    this.riskFlags = const <String, dynamic>{},
+    this.logicTags = const <String>[],
   });
 
   final String symbol;
@@ -100,6 +120,11 @@ class ReadinessCardModel {
   final String? botState;
   final double? confidenceMeter;
   final double? strictTradeScore;
+  final Map<String, String> confluenceBreakdown;
+  final int? confluenceAligned;
+  final int? confluenceTotal;
+  final Map<String, dynamic> riskFlags;
+  final List<String> logicTags;
 
   factory ReadinessCardModel.fromJson(Map<String, dynamic> json) {
     return ReadinessCardModel(
@@ -117,6 +142,11 @@ class ReadinessCardModel {
       botState: json['bot_state'] as String?,
       confidenceMeter: (json['confidence_meter'] as num?)?.toDouble(),
       strictTradeScore: (json['strict_trade_score'] as num?)?.toDouble(),
+      confluenceBreakdown: _stringMap(json['confluence_breakdown']),
+      confluenceAligned: (json['confluence_aligned'] as num?)?.toInt(),
+      confluenceTotal: (json['confluence_total'] as num?)?.toInt(),
+      riskFlags: _dynamicMap(json['risk_flags']),
+      logicTags: _stringList(json['logic_tags']),
     );
   }
 
@@ -135,6 +165,28 @@ class ReadinessCardModel {
       botState: item.botState,
       confidenceMeter: item.confidenceMeter,
       strictTradeScore: item.strictTradeScore,
+      confluenceBreakdown: item.confluenceBreakdown,
+      confluenceAligned: item.confluenceAligned,
+      confluenceTotal: item.confluenceTotal,
+      riskFlags: item.riskFlags,
+      logicTags: item.logicTags,
     );
   }
+}
+
+Map<String, String> _stringMap(dynamic raw) {
+  final source = raw as Map<dynamic, dynamic>? ?? const <dynamic, dynamic>{};
+  return source.map((key, value) => MapEntry(key.toString(), value.toString()));
+}
+
+Map<String, dynamic> _dynamicMap(dynamic raw) {
+  final source = raw as Map<dynamic, dynamic>? ?? const <dynamic, dynamic>{};
+  return source.map((key, value) => MapEntry(key.toString(), value));
+}
+
+List<String> _stringList(dynamic raw) {
+  return (raw as List<dynamic>? ?? const <dynamic>[])
+      .map((item) => item.toString())
+      .where((item) => item.trim().isNotEmpty)
+      .toList();
 }

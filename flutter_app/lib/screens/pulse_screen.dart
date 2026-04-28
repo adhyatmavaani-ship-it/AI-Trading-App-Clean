@@ -971,12 +971,38 @@ class _LogicHeadline extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Text(
-            'Confidence ${(confidence * 100).toStringAsFixed(0)}%  •  Readiness ${(activity.readiness ?? 0).toStringAsFixed(0)}%',
+            'Confidence ${(confidence * 100).toStringAsFixed(0)}%  |  Readiness ${(activity.readiness ?? 0).toStringAsFixed(0)}%',
             style: Theme.of(context).textTheme.labelMedium?.copyWith(
                   color: accent,
                   fontWeight: FontWeight.w700,
                 ),
           ),
+          if (activity.confluenceBreakdown.isNotEmpty) ...<Widget>[
+            const SizedBox(height: 12),
+            _ConfluencePanel(
+              breakdown: activity.confluenceBreakdown,
+              aligned: activity.confluenceAligned,
+              total: activity.confluenceTotal,
+            ),
+          ],
+          if (activity.logicTags.isNotEmpty) ...<Widget>[
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: activity.logicTags
+                  .map((tag) => _LogicChip(label: tag, accent: TradingPalette.violet))
+                  .toList(),
+            ),
+          ],
+          if (activity.riskFlags.isNotEmpty) ...<Widget>[
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: _riskFlagChips(activity.riskFlags),
+            ),
+          ],
         ],
       ),
     );
@@ -1046,8 +1072,40 @@ class _LogicFeedItem extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: TradingPalette.textMuted,
-                      ),
+                  ),
                 ),
+                if (card.confluenceBreakdown.isNotEmpty) ...<Widget>[
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: card.confluenceBreakdown.entries
+                        .take(3)
+                        .map(
+                          (entry) => _MiniTagChip(
+                            label: '${_titleCase(entry.key)}: ${entry.value}',
+                            accent: accent,
+                          ),
+                        )
+                        .toList(),
+                  ),
+                ],
+                if (card.logicTags.isNotEmpty) ...<Widget>[
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: card.logicTags
+                        .take(2)
+                        .map(
+                          (tag) => _MiniTagChip(
+                            label: tag,
+                            accent: TradingPalette.violet,
+                          ),
+                        )
+                        .toList(),
+                  ),
+                ],
               ],
             ),
           ),
@@ -1113,6 +1171,110 @@ class _LogicChip extends StatelessWidget {
   }
 }
 
+class _MiniTagChip extends StatelessWidget {
+  const _MiniTagChip({
+    required this.label,
+    required this.accent,
+  });
+
+  final String label;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(
+        color: accent.withOpacity(0.10),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: accent.withOpacity(0.25)),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: accent,
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+}
+
+class _ConfluencePanel extends StatelessWidget {
+  const _ConfluencePanel({
+    required this.breakdown,
+    required this.aligned,
+    required this.total,
+  });
+
+  final Map<String, String> breakdown;
+  final int? aligned;
+  final int? total;
+
+  @override
+  Widget build(BuildContext context) {
+    final normalizedTotal = total ?? breakdown.length;
+    final normalizedAligned = aligned ?? breakdown.length;
+    final progress = normalizedTotal <= 0
+        ? 0.0
+        : (normalizedAligned / normalizedTotal).clamp(0.0, 1.0);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: TradingPalette.panelSoft.withOpacity(0.82),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: TradingPalette.panelBorder),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text(
+            'Confluence $normalizedAligned/$normalizedTotal aligned',
+            style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                  color: TradingPalette.neonGreen,
+                  fontWeight: FontWeight.w800,
+                ),
+          ),
+          const SizedBox(height: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(999),
+            child: LinearProgressIndicator(
+              value: progress,
+              minHeight: 6,
+              backgroundColor: TradingPalette.panelBorder,
+              valueColor:
+                  const AlwaysStoppedAnimation<Color>(TradingPalette.neonGreen),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: breakdown.entries
+                .map(
+                  (entry) => _MiniTagChip(
+                    label: '${_titleCase(entry.key)}: ${entry.value}',
+                    accent: _confluenceAccent(entry.value),
+                  ),
+                )
+                .toList(),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+List<Widget> _riskFlagChips(Map<String, dynamic> riskFlags) {
+  return riskFlags.entries.map((entry) {
+    final label = '${_titleCase(entry.key.replaceAll('_', ' '))}: ${entry.value}';
+    final accent = _riskAccent(entry.value);
+    return _LogicChip(label: label, accent: accent);
+  }).toList();
+}
+
 Color _activityMood(ActivityItemModel? activity) {
   final status = (activity?.status ?? '').toLowerCase();
   final confidence =
@@ -1137,4 +1299,38 @@ Color _readinessAccent(ReadinessCardModel card) {
     return TradingPalette.amber;
   }
   return TradingPalette.electricBlue;
+}
+
+Color _confluenceAccent(String value) {
+  final text = value.toLowerCase();
+  if (text.contains('aligned') ||
+      text.contains('spiking') ||
+      text.contains('supportive') ||
+      text.contains('bullish') ||
+      text.contains('oversold')) {
+    return TradingPalette.neonGreen;
+  }
+  if (text.contains('forming') || text.contains('balanced') || text.contains('mixed')) {
+    return TradingPalette.amber;
+  }
+  return TradingPalette.electricBlue;
+}
+
+Color _riskAccent(dynamic value) {
+  final text = value.toString().toLowerCase();
+  if (text == 'true' || text.contains('high') || text.contains('wide')) {
+    return TradingPalette.neonRed;
+  }
+  if (text.contains('contained') || text.contains('tight') || text == 'false') {
+    return TradingPalette.neonGreen;
+  }
+  return TradingPalette.amber;
+}
+
+String _titleCase(String raw) {
+  return raw
+      .split(' ')
+      .where((part) => part.trim().isNotEmpty)
+      .map((part) => '${part[0].toUpperCase()}${part.substring(1)}')
+      .join(' ');
 }

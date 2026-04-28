@@ -217,6 +217,7 @@ class TradingOrchestrator:
                     else f"Monitoring {symbol} while confluence builds"
                 )
                 if signal.strategy == "LOW_CONFIDENCE_WATCHLIST":
+                    logic_extra = self._activity_logic_payload(signal)
                     if confidence_building:
                         self._publish_activity(
                             status="almost_trade",
@@ -229,7 +230,12 @@ class TradingOrchestrator:
                             confidence_building=True,
                             readiness=readiness,
                             reason=reason,
-                            extra={"confidence_meter": round(float(signal.inference.confidence_score), 8), "strict_trade_score": round(score, 6), "regime": signal.snapshot.regime},
+                            extra={
+                                "confidence_meter": round(float(signal.inference.confidence_score), 8),
+                                "strict_trade_score": round(score, 6),
+                                "regime": signal.snapshot.regime,
+                                **logic_extra,
+                            },
                         )
                     else:
                         self._publish_activity(
@@ -243,9 +249,15 @@ class TradingOrchestrator:
                             confidence_building=False,
                             readiness=readiness,
                             reason=reason,
-                            extra={"confidence_meter": round(float(signal.inference.confidence_score), 8), "strict_trade_score": round(score, 6), "regime": signal.snapshot.regime},
+                            extra={
+                                "confidence_meter": round(float(signal.inference.confidence_score), 8),
+                                "strict_trade_score": round(score, 6),
+                                "regime": signal.snapshot.regime,
+                                **logic_extra,
+                            },
                         )
                     continue
+                logic_extra = self._activity_logic_payload(signal)
                 self._publish_activity(
                     status="opportunity_found",
                     message=f"{symbol} setup accepted -> executing candidate",
@@ -258,7 +270,12 @@ class TradingOrchestrator:
                     confidence_building=True,
                     readiness=max(readiness, 70.0),
                     reason=reason,
-                    extra={"confidence_meter": round(float(signal.inference.confidence_score), 8), "strict_trade_score": round(score, 6), "regime": signal.snapshot.regime},
+                    extra={
+                        "confidence_meter": round(float(signal.inference.confidence_score), 8),
+                        "strict_trade_score": round(score, 6),
+                        "regime": signal.snapshot.regime,
+                        **logic_extra,
+                    },
                 )
                 generated.append((score * self._symbol_priority_multiplier(symbol), signal))
             except Exception as exc:
@@ -363,6 +380,7 @@ class TradingOrchestrator:
         frames = await self.market_data.fetch_multi_timeframe_ohlcv(symbol)
         order_book = await self.market_data.fetch_order_book(symbol)
         snapshot = self.feature_pipeline.build(symbol, frames, order_book)
+        snapshot.features["spread_bps"] = float(self._spread_bps(order_book))
         snapshot.features["regime_state"] = self._encode_market_state(snapshot.regime)
         snapshot.features["regime_confidence"] = float(snapshot.regime_confidence)
         if self.strategy_controller is not None:
@@ -432,6 +450,7 @@ class TradingOrchestrator:
                 "strict_trade_allowed": 1.0 if strict_gate["allow_trade"] else 0.0,
                 "strict_trade_confidence": float(effective_inference.confidence_score),
                 "strict_trade_reason": str(strict_gate["reason"]),
+                "strict_trade_components": dict(strict_gate.get("components", {}) or {}),
             }
         )
         diagnostics["strict_gate"] = strict_gate
@@ -2651,6 +2670,105 @@ class TradingOrchestrator:
             "trailing_aggressiveness": float(self.settings.trailing_aggressiveness),
             "symbol_priorities": {},
         }
+
+    def _activity_logic_payload(self, signal: SignalResponse) -> dict[str, object]:
+        features = dict(signal.snapshot.features or {})
+        strict_reason = str(features.get("strict_trade_reason", "") or "")
+        components = dict(features.get("strict_trade_components", {}) or {})
+        confluence_breakdown = self._confluence_breakdown(
+            features=features,
+            regime=str(signal.snapshot.regime or ""),
+            side=str(signal.inference.decision or ""),
+        )
+        risk_flags = self._risk_flags(
+            features=features,
+            volatility=float(signal.snapshot.volatility or 0.0),
+        )
+        logic_tags = self._logic_tags(
+            features=features,
+            regime=str(signal.snapshot.regime or ""),
+            side=str(signal.inference.decision or ""),
+        )
+        aligned_count = sum(
+            1
+            for value in confluence_breakdown.values()
+            if any(
+                token in str(value).lower()
+                for token in ("aligned", "spiking", "breakout", "supportive", "oversold", "tight", "acceptable", "bullish")
+            )
+        )
+        if components:
+            aligned_count = max(
+                aligned_count,
+                sum(
+                    1
+                    for key in ("market_structure", "volume_spike", "mfi_momentum", "trend_regime", "acceptable_volatility")
+                    if float(components.get(key, 0.0) or 0.0) > 0
+                ),
+            )
+        return {
+            "confluence_breakdown": confluence_breakdown,
+            "confluence_aligned": int(aligned_count),
+            "confluence_total": 5,
+            "risk_flags": risk_flags,
+            "logic_tags": logic_tags,
+            "strict_trade_reason": strict_reason,
+        }
+
+    def _confluence_breakdown(self, *, features: dict[str, object], regime: str, side: str) -> dict[str, str]:
+        normalized_side = str(side or "").upper()
+        rsi = float(features.get("5m_rsi", features.get("15m_rsi", 50.0)) or 50.0)
+        mfi = float(features.get("15m_mfi", features.get("5m_mfi", 50.0)) or 50.0)
+        volume_ratio = float(features.get("strict_trade_components", {}).get("volume_ratio", 0.0) or 0.0)
+        ema_spread = float(features.get("15m_ema_spread", features.get("5m_ema_spread", 0.0)) or 0.0)
+        adx = float(features.get("15m_adx", features.get("5m_adx", 0.0)) or 0.0)
+        structure_bullish = float(features.get("15m_structure_bullish", features.get("5m_structure_bullish", 0.0)) or 0.0) >= 1.0
+        structure_bearish = float(features.get("15m_structure_bearish", features.get("5m_structure_bearish", 0.0)) or 0.0) >= 1.0
+        if normalized_side == "BUY":
+            structure_label = "Bullish breakout aligned" if structure_bullish else "Structure not confirmed"
+            rsi_label = "Oversold rebound" if rsi <= 35 else "Balanced momentum"
+            trend_label = "Bullish trend regime" if ema_spread >= 0 and str(regime).upper() == "TRENDING" else "Trend still forming"
+        else:
+            structure_label = "Bearish breakdown aligned" if structure_bearish else "Structure not confirmed"
+            rsi_label = "Overbought fade" if rsi >= 65 else "Balanced momentum"
+            trend_label = "Bearish trend regime" if ema_spread <= 0 and str(regime).upper() == "TRENDING" else "Trend still forming"
+        return {
+            "structure": structure_label,
+            "volume": "Volume spiking" if volume_ratio >= float(self.settings.strict_trade_volume_spike_threshold) else "Volume muted",
+            "momentum": "MFI supportive" if ((normalized_side == "BUY" and mfi > 50) or (normalized_side == "SELL" and mfi < 50)) else "Momentum mixed",
+            "rsi": rsi_label,
+            "trend": trend_label if adx >= float(self.settings.strict_trade_structure_adx_floor) else "Trend strength light",
+        }
+
+    def _risk_flags(self, *, features: dict[str, object], volatility: float) -> dict[str, str | bool]:
+        spread_bps = float(features.get("spread_bps", 0.0) or 0.0)
+        volume_ratio = float(features.get("strict_trade_components", {}).get("volume_ratio", 0.0) or 0.0)
+        return {
+            "volatility": "High" if volatility > float(self.settings.trade_safety_max_volatility) * 0.85 else "Contained",
+            "spread": "Wide" if spread_bps > max(25.0, float(self.settings.max_slippage_bps)) else "Tight",
+            "liquidity_warning": bool(volume_ratio < 1.0 or spread_bps > max(35.0, float(self.settings.max_slippage_bps) * 1.2)),
+        }
+
+    def _logic_tags(self, *, features: dict[str, object], regime: str, side: str) -> list[str]:
+        tags: list[str] = []
+        normalized_regime = str(regime or "").upper()
+        normalized_side = str(side or "").upper()
+        rsi = float(features.get("5m_rsi", features.get("15m_rsi", 50.0)) or 50.0)
+        volume_ratio = float(features.get("strict_trade_components", {}).get("volume_ratio", 0.0) or 0.0)
+        structure_ok = (
+            float(features.get("15m_structure_bullish", features.get("5m_structure_bullish", 0.0)) or 0.0) >= 1.0
+            if normalized_side == "BUY"
+            else float(features.get("15m_structure_bearish", features.get("5m_structure_bearish", 0.0)) or 0.0) >= 1.0
+        )
+        if normalized_regime == "TRENDING" and structure_ok:
+            tags.append("#TrendFollowing")
+        if volume_ratio >= float(self.settings.strict_trade_volume_spike_threshold):
+            tags.append("#BreakoutHunter")
+        if (normalized_side == "BUY" and rsi <= 35) or (normalized_side == "SELL" and rsi >= 65):
+            tags.append("#MeanReversion")
+        if not tags:
+            tags.append("#MomentumProbe")
+        return tags[:3]
 
     def _symbol_priority_multiplier(self, symbol: str) -> float:
         normalized = str(symbol or "").upper().strip()

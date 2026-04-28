@@ -40,6 +40,20 @@ class UserExperienceEngineTest(unittest.TestCase):
             intent="Watching BTC for stronger volume",
             readiness=41.0,
             reason="weak volume",
+            extra={
+                "confluence_breakdown": {
+                    "rsi": "Oversold rebound",
+                    "volume": "Volume spiking",
+                },
+                "confluence_aligned": 2,
+                "confluence_total": 5,
+                "risk_flags": {
+                    "volatility": "Contained",
+                    "spread": "Tight",
+                    "liquidity_warning": False,
+                },
+                "logic_tags": ["#MeanReversion", "#BreakoutHunter"],
+            },
         )
 
         self.assertEqual(engine.latest()["status"], "scanning")
@@ -48,6 +62,12 @@ class UserExperienceEngineTest(unittest.TestCase):
         self.assertEqual(payload["bot_state"], "SCANNING")
         self.assertEqual(engine.readiness(limit=10)[0]["symbol"], "BTCUSDT")
         self.assertEqual(engine.readiness(limit=10)[0]["readiness"], 41.0)
+        self.assertEqual(
+            engine.readiness(limit=10)[0]["confluence_breakdown"]["rsi"],
+            "Oversold rebound",
+        )
+        self.assertFalse(engine.readiness(limit=10)[0]["risk_flags"]["liquidity_warning"])
+        self.assertEqual(engine.readiness(limit=10)[0]["logic_tags"][0], "#MeanReversion")
 
 
 if __name__ == "__main__":
