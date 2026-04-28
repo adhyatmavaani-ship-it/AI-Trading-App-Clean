@@ -48,6 +48,8 @@ class ApiClient {
           final session = await _credentialsStore.loadSession();
           if (session != null && session.accessToken.trim().isNotEmpty) {
             _attachAuthHeaders(options, session);
+          } else {
+            _attachLocalDemoAuth(options);
           }
           handler.next(options);
         },
@@ -96,6 +98,18 @@ class ApiClient {
   final AuthCredentialsStore _credentialsStore;
   final Future<AuthSession?> Function(AuthSession currentSession)?
       _tokenRefresher;
+
+  void _attachLocalDemoAuth(RequestOptions options) {
+    final baseUri = Uri.tryParse(options.baseUrl);
+    final demoApiKey = AppConstants.localDemoApiKey.trim();
+    final isLocalhost = baseUri != null &&
+        (baseUri.host == '127.0.0.1' ||
+            baseUri.host == 'localhost');
+    if (!isLocalhost || demoApiKey.isEmpty) {
+      return;
+    }
+    options.headers['X-API-Key'] = demoApiKey;
+  }
 
   Future<List<SignalModel>> getSignals({int limit = 25}) async {
     final response = await _getWithRetry(

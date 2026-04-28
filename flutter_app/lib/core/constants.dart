@@ -4,6 +4,11 @@ class AppConstants {
     defaultValue: 'http://10.84.86.111:8000',
   );
 
+  static const String localDemoApiKey = String.fromEnvironment(
+    'DEMO_API_KEY',
+    defaultValue: '',
+  );
+
   static const String _configuredWsBaseUrl = String.fromEnvironment(
     'WS_BASE_URL',
     defaultValue: '',
