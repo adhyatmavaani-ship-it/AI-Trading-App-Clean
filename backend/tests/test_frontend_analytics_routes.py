@@ -56,7 +56,14 @@ class StubAnalyticsService:
 
 class StubUserExperienceEngine:
     def latest(self):
-        return {"status": "scanning", "bot_state": "SCANNING", "message": "BTC checked -> weak volume, skipped", "intent": "Watching BTC for stronger volume", "readiness": 41}
+        return {
+            "status": "scanning",
+            "bot_state": "SCANNING",
+            "message": "BTC checked -> weak volume, skipped",
+            "intent": "Watching BTC for stronger volume",
+            "readiness": 41,
+            "confidence_history": self.confidence_history(symbol="BTCUSDT"),
+        }
 
     def history(self, limit: int = 25):
         return [
@@ -91,9 +98,56 @@ class StubUserExperienceEngine:
 
     def readiness(self, limit: int = 8):
         return [
-            {"symbol": "ETHUSDT", "readiness": 68, "status": "almost_trade"},
-            {"symbol": "BTCUSDT", "readiness": 41, "status": "scanning"},
+            {
+                "symbol": "ETHUSDT",
+                "readiness": 68,
+                "status": "almost_trade",
+                "confidence_history": self.confidence_history(symbol="ETHUSDT"),
+            },
+            {
+                "symbol": "BTCUSDT",
+                "readiness": 41,
+                "status": "scanning",
+                "confidence_history": self.confidence_history(symbol="BTCUSDT"),
+            },
         ][:limit]
+
+    def confidence_history(self, symbol: str | None = None, limit: int = 24):
+        histories = {
+            "BTCUSDT": [
+                {
+                    "ts": 1777283700,
+                    "score": 0.41,
+                    "is_ghost": True,
+                    "symbol": "BTCUSDT",
+                    "message": "Scanning BTC...",
+                    "reason": "setup forming",
+                },
+                {
+                    "ts": 1777284900,
+                    "score": 0.77,
+                    "is_ghost": True,
+                    "symbol": "BTCUSDT",
+                    "message": "BTC almost triggered trade",
+                    "reason": "volume confirmation missing",
+                },
+            ],
+            "ETHUSDT": [
+                {
+                    "ts": 1777284300,
+                    "score": 0.68,
+                    "is_ghost": True,
+                    "symbol": "ETHUSDT",
+                    "message": "ETH almost triggered trade",
+                },
+            ],
+            None: [
+                {"ts": 1777283700, "score": 0.41, "is_ghost": True, "symbol": "BTCUSDT"},
+                {"ts": 1777284300, "score": 0.68, "is_ghost": True, "symbol": "ETHUSDT"},
+                {"ts": 1777284900, "score": 0.77, "is_ghost": True, "symbol": "BTCUSDT"},
+            ],
+        }
+        return list(histories.get(symbol, histories[None]))[:limit]
 
 
 class StubMarketData:
@@ -278,6 +332,7 @@ class FrontendAnalyticsRoutesTest(unittest.TestCase):
         response = self.client.get("/v1/activity/live", headers={"X-API-Key": "route-token"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["bot_state"], "SCANNING")
+        self.assertGreaterEqual(len(response.json()["confidence_history"]), 1)
 
     def test_activity_history_endpoint(self):
         response = self.client.get("/v1/activity/history", headers={"X-API-Key": "route-token"})
@@ -288,6 +343,7 @@ class FrontendAnalyticsRoutesTest(unittest.TestCase):
         response = self.client.get("/v1/activity/readiness", headers={"X-API-Key": "route-token"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["items"][0]["symbol"], "ETHUSDT")
+        self.assertIn("confidence_history", response.json()["items"][0])
 
     def test_mock_price_move_endpoint(self):
         response = self.client.post(
@@ -312,6 +368,7 @@ class FrontendAnalyticsRoutesTest(unittest.TestCase):
         self.assertEqual(payload["interval"], "5m")
         self.assertEqual(len(payload["candles"]), 20)
         self.assertGreaterEqual(len(payload["confidence_intervals"]), 1)
+        self.assertGreaterEqual(len(payload["confidence_history"]), 1)
         marker_types = [item["marker_type"] for item in payload["markers"]]
         self.assertIn("ENTRY", marker_types)
         self.assertIn("EXIT", marker_types)
@@ -328,6 +385,7 @@ class FrontendAnalyticsRoutesTest(unittest.TestCase):
         self.assertEqual(ghost_marker["marker_style"], "ghost")
         self.assertAlmostEqual(ghost_marker["confidence_score"], 0.77, places=6)
         self.assertEqual(ghost_marker["reason"], "volume confirmation missing")
+        self.assertTrue(payload["confidence_history"][-1]["is_ghost"])
         first_interval = payload["confidence_intervals"][0]
         self.assertIn(first_interval["zone_type"], {"STRONG_CONVICTION", "SOFT_CONVICTION"})
         self.assertGreaterEqual(first_interval["score"], 0.6)
@@ -355,6 +413,7 @@ class FrontendAnalyticsRoutesTest(unittest.TestCase):
         self.assertEqual(payload["sentiment_label"], "BULLISH")
         self.assertAlmostEqual(payload["sentiment_score"], 37.5, places=6)
         self.assertEqual(payload["ticker"][0]["symbol"], "BTCUSDT")
+        self.assertGreaterEqual(len(payload["confidence_history"]), 1)
 
     def test_market_summary_post_endpoint(self):
         response = self.client.post(

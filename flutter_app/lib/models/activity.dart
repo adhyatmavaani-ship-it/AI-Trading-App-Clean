@@ -1,3 +1,53 @@
+class ConfidenceHistoryPointModel {
+  const ConfidenceHistoryPointModel({
+    required this.timestamp,
+    required this.score,
+    required this.isGhost,
+    this.symbol,
+    this.message,
+    this.reason,
+    this.intent,
+    this.readiness,
+    this.confluenceBreakdown = const <String, String>{},
+    this.confluenceAligned,
+    this.confluenceTotal,
+    this.riskFlags = const <String, dynamic>{},
+    this.logicTags = const <String>[],
+  });
+
+  final DateTime timestamp;
+  final double score;
+  final bool isGhost;
+  final String? symbol;
+  final String? message;
+  final String? reason;
+  final String? intent;
+  final double? readiness;
+  final Map<String, String> confluenceBreakdown;
+  final int? confluenceAligned;
+  final int? confluenceTotal;
+  final Map<String, dynamic> riskFlags;
+  final List<String> logicTags;
+
+  factory ConfidenceHistoryPointModel.fromJson(Map<String, dynamic> json) {
+    return ConfidenceHistoryPointModel(
+      timestamp: _parseHistoryTimestamp(json['ts']),
+      score: (json['score'] as num?)?.toDouble() ?? 0,
+      isGhost: json['is_ghost'] as bool? ?? false,
+      symbol: json['symbol'] as String?,
+      message: json['message'] as String?,
+      reason: json['reason'] as String?,
+      intent: json['intent'] as String?,
+      readiness: (json['readiness'] as num?)?.toDouble(),
+      confluenceBreakdown: _stringMap(json['confluence_breakdown']),
+      confluenceAligned: (json['confluence_aligned'] as num?)?.toInt(),
+      confluenceTotal: (json['confluence_total'] as num?)?.toInt(),
+      riskFlags: _dynamicMap(json['risk_flags']),
+      logicTags: _stringList(json['logic_tags']),
+    );
+  }
+}
+
 class ActivityItemModel {
   const ActivityItemModel({
     required this.type,
@@ -22,6 +72,7 @@ class ActivityItemModel {
     this.confluenceTotal,
     this.riskFlags = const <String, dynamic>{},
     this.logicTags = const <String>[],
+    this.confidenceHistory = const <ConfidenceHistoryPointModel>[],
   });
 
   final String type;
@@ -46,6 +97,7 @@ class ActivityItemModel {
   final int? confluenceTotal;
   final Map<String, dynamic> riskFlags;
   final List<String> logicTags;
+  final List<ConfidenceHistoryPointModel> confidenceHistory;
 
   factory ActivityItemModel.fromJson(Map<String, dynamic> json) {
     return ActivityItemModel(
@@ -72,6 +124,7 @@ class ActivityItemModel {
       confluenceTotal: (json['confluence_total'] as num?)?.toInt(),
       riskFlags: _dynamicMap(json['risk_flags']),
       logicTags: _stringList(json['logic_tags']),
+      confidenceHistory: _confidenceHistory(json['confidence_history']),
     );
   }
 
@@ -105,6 +158,7 @@ class ReadinessCardModel {
     this.confluenceTotal,
     this.riskFlags = const <String, dynamic>{},
     this.logicTags = const <String>[],
+    this.confidenceHistory = const <ConfidenceHistoryPointModel>[],
   });
 
   final String symbol;
@@ -125,6 +179,7 @@ class ReadinessCardModel {
   final int? confluenceTotal;
   final Map<String, dynamic> riskFlags;
   final List<String> logicTags;
+  final List<ConfidenceHistoryPointModel> confidenceHistory;
 
   factory ReadinessCardModel.fromJson(Map<String, dynamic> json) {
     return ReadinessCardModel(
@@ -147,6 +202,7 @@ class ReadinessCardModel {
       confluenceTotal: (json['confluence_total'] as num?)?.toInt(),
       riskFlags: _dynamicMap(json['risk_flags']),
       logicTags: _stringList(json['logic_tags']),
+      confidenceHistory: _confidenceHistory(json['confidence_history']),
     );
   }
 
@@ -170,8 +226,23 @@ class ReadinessCardModel {
       confluenceTotal: item.confluenceTotal,
       riskFlags: item.riskFlags,
       logicTags: item.logicTags,
+      confidenceHistory: item.confidenceHistory,
     );
   }
+}
+
+DateTime _parseHistoryTimestamp(dynamic raw) {
+  if (raw is num) {
+    final value = raw.toDouble();
+    final milliseconds = value.abs() >= 1000000000000
+        ? value.round()
+        : (value * 1000).round();
+    return DateTime.fromMillisecondsSinceEpoch(milliseconds, isUtc: true);
+  }
+  if (raw is String) {
+    return DateTime.tryParse(raw) ?? DateTime.fromMillisecondsSinceEpoch(0);
+  }
+  return DateTime.fromMillisecondsSinceEpoch(0);
 }
 
 Map<String, String> _stringMap(dynamic raw) {
@@ -188,5 +259,12 @@ List<String> _stringList(dynamic raw) {
   return (raw as List<dynamic>? ?? const <dynamic>[])
       .map((item) => item.toString())
       .where((item) => item.trim().isNotEmpty)
+      .toList();
+}
+
+List<ConfidenceHistoryPointModel> _confidenceHistory(dynamic raw) {
+  return (raw as List<dynamic>? ?? const <dynamic>[])
+      .whereType<Map>()
+      .map((item) => ConfidenceHistoryPointModel.fromJson(Map<String, dynamic>.from(item)))
       .toList();
 }

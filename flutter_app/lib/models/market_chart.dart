@@ -1,3 +1,5 @@
+import 'activity.dart';
+
 class MarketCandleModel {
   const MarketCandleModel({
     required this.timestampMs,
@@ -115,6 +117,7 @@ class MarketChartModel {
     required this.candles,
     required this.markers,
     required this.confidenceIntervals,
+    required this.confidenceHistory,
   });
 
   final String symbol;
@@ -124,6 +127,7 @@ class MarketChartModel {
   final List<MarketCandleModel> candles;
   final List<TradeMarkerModel> markers;
   final List<ConfidenceIntervalModel> confidenceIntervals;
+  final List<ConfidenceHistoryPointModel> confidenceHistory;
 
   factory MarketChartModel.fromJson(Map<String, dynamic> json) {
     final candles = (json['candles'] as List<dynamic>? ?? const [])
@@ -140,6 +144,11 @@ class MarketChartModel {
               ),
             )
             .toList();
+    final confidenceHistory =
+        (json['confidence_history'] as List<dynamic>? ?? const [])
+            .whereType<Map>()
+            .map((item) => ConfidenceHistoryPointModel.fromJson(Map<String, dynamic>.from(item)))
+            .toList();
     return MarketChartModel(
       symbol: json['symbol'] as String? ?? 'BTCUSDT',
       interval: json['interval'] as String? ?? '5m',
@@ -148,6 +157,7 @@ class MarketChartModel {
       candles: candles,
       markers: markers,
       confidenceIntervals: confidenceIntervals,
+      confidenceHistory: confidenceHistory,
     );
   }
 }

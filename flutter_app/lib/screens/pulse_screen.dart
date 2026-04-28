@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'dart:async';
@@ -977,6 +978,15 @@ class _LogicHeadline extends StatelessWidget {
                   fontWeight: FontWeight.w700,
                 ),
           ),
+          if (activity.confidenceHistory.isNotEmpty) ...<Widget>[
+            const SizedBox(height: 14),
+            _ConvictionTrendPanel(
+              history: activity.confidenceHistory,
+              accent: accent,
+              title: 'AI Conviction Trend',
+              interactive: true,
+            ),
+          ],
           if (activity.confluenceBreakdown.isNotEmpty) ...<Widget>[
             const SizedBox(height: 12),
             _ConfluencePanel(
@@ -1133,10 +1143,157 @@ class _LogicFeedItem extends StatelessWidget {
                   ),
                 ),
               ),
+              if (card.confidenceHistory.isNotEmpty) ...<Widget>[
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: 60,
+                  height: 24,
+                  child: _ConvictionSparkline(
+                    history: card.confidenceHistory,
+                    accent: accent,
+                    interactive: false,
+                    compact: true,
+                  ),
+                ),
+              ],
             ],
           ),
         ],
       ),
+    );
+  }
+}
+
+class _ConvictionTrendPanel extends StatelessWidget {
+  const _ConvictionTrendPanel({
+    required this.history,
+    required this.accent,
+    required this.title,
+    this.interactive = false,
+  });
+
+  final List<ConfidenceHistoryPointModel> history;
+  final Color accent;
+  final String title;
+  final bool interactive;
+
+  @override
+  Widget build(BuildContext context) {
+    final trend = _confidenceTrendSummary(history);
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: TradingPalette.panelSoft.withOpacity(0.82),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: accent.withOpacity(0.24)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text(
+            title,
+            style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                  color: TradingPalette.textPrimary,
+                  fontWeight: FontWeight.w800,
+                ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            trend,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: _trendAccent(history),
+                  fontWeight: FontWeight.w700,
+                ),
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            height: 76,
+            child: _ConvictionSparkline(
+              history: history,
+              accent: accent,
+              interactive: interactive,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ConvictionSparkline extends StatefulWidget {
+  const _ConvictionSparkline({
+    required this.history,
+    required this.accent,
+    this.interactive = false,
+    this.compact = false,
+  });
+
+  final List<ConfidenceHistoryPointModel> history;
+  final Color accent;
+  final bool interactive;
+  final bool compact;
+
+  @override
+  State<_ConvictionSparkline> createState() => _ConvictionSparklineState();
+}
+
+class _ConvictionSparklineState extends State<_ConvictionSparkline>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 3600),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.history.length < 2) {
+      return const SizedBox.shrink();
+    }
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final size = Size(constraints.maxWidth, constraints.maxHeight);
+        return AnimatedBuilder(
+          animation: _controller,
+          builder: (context, child) {
+            return GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTapDown: widget.interactive
+                  ? (details) {
+                      final point = _nearestGhostHistoryPoint(
+                        history: widget.history,
+                        size: size,
+                        tap: details.localPosition,
+                      );
+                      if (point != null) {
+                        _showConfidencePointSheet(context, point);
+                      }
+                    }
+                  : null,
+              child: CustomPaint(
+                painter: _ConvictionSparklinePainter(
+                  history: widget.history,
+                  accent: widget.accent,
+                  phase: _controller.value,
+                  compact: widget.compact,
+                ),
+                child: const SizedBox.expand(),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 }
@@ -1267,6 +1424,99 @@ class _ConfluencePanel extends StatelessWidget {
   }
 }
 
+class _ConvictionSparklinePainter extends CustomPainter {
+  const _ConvictionSparklinePainter({
+    required this.history,
+    required this.accent,
+    required this.phase,
+    required this.compact,
+  });
+
+  final List<ConfidenceHistoryPointModel> history;
+  final Color accent;
+  final double phase;
+  final bool compact;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (history.length < 2 || size.width <= 0 || size.height <= 0) {
+      return;
+    }
+    final points = _historyOffsets(history, size);
+    if (points.length < 2) {
+      return;
+    }
+    final lineAccent = _trendAccent(history);
+    final path = Path()..moveTo(points.first.dx, points.first.dy);
+    for (var index = 1; index < points.length; index += 1) {
+      final previous = points[index - 1];
+      final current = points[index];
+      final controlX = (previous.dx + current.dx) / 2;
+      path.quadraticBezierTo(controlX, previous.dy, current.dx, current.dy);
+    }
+
+    if (!compact) {
+      final area = Path.from(path)
+        ..lineTo(points.last.dx, size.height - 2)
+        ..lineTo(points.first.dx, size.height - 2)
+        ..close();
+      canvas.drawPath(
+        area,
+        Paint()
+          ..shader = LinearGradient(
+            colors: <Color>[
+              lineAccent.withOpacity(0.18),
+              lineAccent.withOpacity(0.02),
+            ],
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+          ).createShader(Offset.zero & size),
+      );
+    }
+
+    canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = compact ? 2.0 : 2.4
+        ..strokeCap = StrokeCap.round
+        ..color = lineAccent,
+    );
+
+    final pulseIndex = math.min(
+      points.length - 1,
+      math.max(0, (phase * (points.length - 1)).round()),
+    );
+    final pulsePoint = points[pulseIndex];
+    canvas.drawCircle(
+      pulsePoint,
+      compact ? 2.5 : 3.5,
+      Paint()
+        ..color = lineAccent.withOpacity(compact ? 0.7 : 0.9)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+    );
+
+    for (var index = 0; index < history.length; index += 1) {
+      if (!history[index].isGhost) {
+        continue;
+      }
+      canvas.drawCircle(
+        points[index],
+        compact ? 2.0 : 3.0,
+        Paint()..color = TradingPalette.textMuted.withOpacity(0.9),
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ConvictionSparklinePainter oldDelegate) {
+    return oldDelegate.phase != phase ||
+        oldDelegate.history != history ||
+        oldDelegate.accent != accent ||
+        oldDelegate.compact != compact;
+  }
+}
+
 List<Widget> _riskFlagChips(Map<String, dynamic> riskFlags) {
   return riskFlags.entries.map((entry) {
     final label = '${_titleCase(entry.key.replaceAll('_', ' '))}: ${entry.value}';
@@ -1333,4 +1583,175 @@ String _titleCase(String raw) {
       .where((part) => part.trim().isNotEmpty)
       .map((part) => '${part[0].toUpperCase()}${part.substring(1)}')
       .join(' ');
+}
+
+List<Offset> _historyOffsets(List<ConfidenceHistoryPointModel> history, Size size) {
+  if (history.isEmpty) {
+    return const <Offset>[];
+  }
+  final points = <Offset>[];
+  final startMs = history.first.timestamp.millisecondsSinceEpoch.toDouble();
+  final endMs = history.last.timestamp.millisecondsSinceEpoch.toDouble();
+  final minScore = history
+      .map((item) => item.score)
+      .reduce(math.min);
+  final maxScore = history
+      .map((item) => item.score)
+      .reduce(math.max);
+  final scoreRange = (maxScore - minScore).abs() < 1e-6 ? 1.0 : (maxScore - minScore);
+  final timeRange = (endMs - startMs).abs() < 1e-6 ? 1.0 : (endMs - startMs);
+  for (final item in history) {
+    final timeRatio =
+        (item.timestamp.millisecondsSinceEpoch.toDouble() - startMs) / timeRange;
+    final scoreRatio = (item.score - minScore) / scoreRange;
+    points.add(
+      Offset(
+        2 + (timeRatio * (size.width - 4)),
+        size.height - 4 - (scoreRatio * math.max(size.height - 8, 1)),
+      ),
+    );
+  }
+  return points;
+}
+
+ConfidenceHistoryPointModel? _nearestGhostHistoryPoint({
+  required List<ConfidenceHistoryPointModel> history,
+  required Size size,
+  required Offset tap,
+}) {
+  final points = _historyOffsets(history, size);
+  ConfidenceHistoryPointModel? best;
+  var bestDistance = 22.0;
+  for (var index = 0; index < history.length; index += 1) {
+    if (!history[index].isGhost) {
+      continue;
+    }
+    final distance = (points[index] - tap).distance;
+    if (distance < bestDistance) {
+      best = history[index];
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+String _confidenceTrendSummary(List<ConfidenceHistoryPointModel> history) {
+  if (history.length < 2) {
+    return 'Confidence stable';
+  }
+  final first = history.first.score;
+  final last = history.last.score;
+  final deltaPct = ((last - first) * 100).round();
+  final spanMinutes = math.max(
+    history.last.timestamp.difference(history.first.timestamp).inMinutes,
+    1,
+  );
+  if (deltaPct >= 2) {
+    return 'Rising conviction ($deltaPct% in ${spanMinutes}m)';
+  }
+  if (deltaPct <= -2) {
+    return 'Fading conviction (${deltaPct.abs()}% in ${spanMinutes}m)';
+  }
+  return 'Conviction steady (${last * 100 ~/ 1}% now)';
+}
+
+Color _trendAccent(List<ConfidenceHistoryPointModel> history) {
+  if (history.length < 2) {
+    return TradingPalette.electricBlue;
+  }
+  final delta = history.last.score - history.first.score;
+  if (delta >= 0.02) {
+    return TradingPalette.neonGreen;
+  }
+  if (delta <= -0.02) {
+    return TradingPalette.neonRed;
+  }
+  return TradingPalette.amber;
+}
+
+void _showConfidencePointSheet(
+  BuildContext context,
+  ConfidenceHistoryPointModel point,
+) {
+  showModalBottomSheet<void>(
+    context: context,
+    backgroundColor: TradingPalette.deepNavy,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+    ),
+    builder: (context) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Text(
+              point.isGhost ? 'Ghost Setup Pulse' : 'Confidence Snapshot',
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    color: TradingPalette.textPrimary,
+                    fontWeight: FontWeight.w800,
+                  ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              point.reason?.isNotEmpty == true
+                  ? point.reason!
+                  : point.message ?? 'AI conviction moved at this point in the scan.',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: TradingPalette.textPrimary,
+                  ),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: <Widget>[
+                _LogicChip(
+                  label: 'Score ${(point.score * 100).toStringAsFixed(0)}%',
+                  accent: _trendAccent(<ConfidenceHistoryPointModel>[point, point]),
+                ),
+                if ((point.symbol ?? '').isNotEmpty)
+                  _LogicChip(
+                    label: point.symbol!,
+                    accent: TradingPalette.electricBlue,
+                  ),
+                if (point.readiness != null)
+                  _LogicChip(
+                    label: 'Readiness ${point.readiness!.toStringAsFixed(0)}%',
+                    accent: TradingPalette.amber,
+                  ),
+              ],
+            ),
+            if (point.confluenceBreakdown.isNotEmpty) ...<Widget>[
+              const SizedBox(height: 14),
+              _ConfluencePanel(
+                breakdown: point.confluenceBreakdown,
+                aligned: point.confluenceAligned,
+                total: point.confluenceTotal,
+              ),
+            ],
+            if (point.logicTags.isNotEmpty) ...<Widget>[
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: point.logicTags
+                    .map((tag) => _LogicChip(label: tag, accent: TradingPalette.violet))
+                    .toList(),
+              ),
+            ],
+            if (point.riskFlags.isNotEmpty) ...<Widget>[
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: _riskFlagChips(point.riskFlags),
+              ),
+            ],
+          ],
+        ),
+      );
+    },
+  );
 }

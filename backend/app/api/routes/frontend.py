@@ -201,6 +201,7 @@ async def get_market_candles(
                 "candles": [],
                 "markers": [],
                 "confidence_intervals": [],
+                "confidence_history": [],
                 "latest_price": 0.0,
                 "change_pct": 0.0,
             }
@@ -232,6 +233,12 @@ async def get_market_candles(
             candles=candles,
             markers=markers,
         )
+        activity_engine = getattr(container, "user_experience_engine", None)
+        confidence_history = (
+            activity_engine.confidence_history(symbol=normalized_symbol, limit=24)
+            if activity_engine is not None
+            else []
+        )
         return {
             "symbol": normalized_symbol,
             "interval": normalized_interval,
@@ -240,6 +247,7 @@ async def get_market_candles(
             "candles": candles,
             "markers": markers,
             "confidence_intervals": confidence_intervals,
+            "confidence_history": confidence_history,
         }
     except AuthenticationError as exc:
         raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
@@ -290,8 +298,14 @@ async def _market_summary_response(
             "ticker": [],
             "heatmap": [],
             "top_movers": [],
+            "confidence_history": [],
         }
-    return await scanner.summary(limit=limit)
+    summary = await scanner.summary(limit=limit)
+    activity_engine = getattr(container, "user_experience_engine", None)
+    summary["confidence_history"] = (
+        activity_engine.confidence_history(limit=24) if activity_engine is not None else []
+    )
+    return summary
 
 
 @router.get(

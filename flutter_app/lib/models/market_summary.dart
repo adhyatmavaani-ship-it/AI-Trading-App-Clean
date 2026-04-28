@@ -1,3 +1,5 @@
+import 'activity.dart';
+
 class MarketTickerItemModel {
   const MarketTickerItemModel({
     required this.symbol,
@@ -146,6 +148,7 @@ class MarketSummaryModel {
     required this.ticker,
     required this.heatmap,
     required this.scanner,
+    required this.confidenceHistory,
   });
 
   final double sentimentScore;
@@ -158,6 +161,7 @@ class MarketSummaryModel {
   final List<MarketTickerItemModel> ticker;
   final List<MarketHeatmapItemModel> heatmap;
   final MarketScannerModel scanner;
+  final List<ConfidenceHistoryPointModel> confidenceHistory;
 
   factory MarketSummaryModel.fromJson(Map<String, dynamic> json) {
     final ticker = (json['ticker'] as List<dynamic>? ?? const [])
@@ -172,6 +176,11 @@ class MarketSummaryModel {
               MarketHeatmapItemModel.fromJson(item as Map<String, dynamic>),
         )
         .toList();
+    final confidenceHistory =
+        (json['confidence_history'] as List<dynamic>? ?? const [])
+            .whereType<Map>()
+            .map((item) => ConfidenceHistoryPointModel.fromJson(Map<String, dynamic>.from(item)))
+            .toList();
     return MarketSummaryModel(
       sentimentScore: (json['sentiment_score'] as num?)?.toDouble() ?? 0,
       sentimentLabel: json['sentiment_label'] as String? ?? 'NEUTRAL',
@@ -187,6 +196,7 @@ class MarketSummaryModel {
       scanner: MarketScannerModel.fromJson(
         json['scanner'] as Map<String, dynamic>? ?? const <String, dynamic>{},
       ),
+      confidenceHistory: confidenceHistory,
     );
   }
 }

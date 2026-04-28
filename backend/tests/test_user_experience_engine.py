@@ -68,6 +68,9 @@ class UserExperienceEngineTest(unittest.TestCase):
         )
         self.assertFalse(engine.readiness(limit=10)[0]["risk_flags"]["liquidity_warning"])
         self.assertEqual(engine.readiness(limit=10)[0]["logic_tags"][0], "#MeanReversion")
+        self.assertGreaterEqual(len(payload["confidence_history"]), 1)
+        self.assertTrue(payload["confidence_history"][-1]["is_ghost"])
+        self.assertEqual(engine.confidence_history(symbol="BTCUSDT")[-1]["score"], 0.42)
 
 
 if __name__ == "__main__":
