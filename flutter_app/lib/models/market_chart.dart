@@ -42,6 +42,11 @@ class TradeMarkerModel {
     this.reason,
     this.message,
     this.intent,
+    this.confluenceBreakdown = const <String, String>{},
+    this.confluenceAligned,
+    this.confluenceTotal,
+    this.riskFlags = const <String, dynamic>{},
+    this.logicTags = const <String>[],
   });
 
   final String type;
@@ -57,6 +62,11 @@ class TradeMarkerModel {
   final String? reason;
   final String? message;
   final String? intent;
+  final Map<String, String> confluenceBreakdown;
+  final int? confluenceAligned;
+  final int? confluenceTotal;
+  final Map<String, dynamic> riskFlags;
+  final List<String> logicTags;
 
   factory TradeMarkerModel.fromJson(Map<String, dynamic> json) {
     return TradeMarkerModel(
@@ -74,6 +84,11 @@ class TradeMarkerModel {
       reason: json['reason'] as String?,
       message: json['message'] as String?,
       intent: json['intent'] as String?,
+      confluenceBreakdown: _markerStringMap(json['confluence_breakdown']),
+      confluenceAligned: (json['confluence_aligned'] as num?)?.toInt(),
+      confluenceTotal: (json['confluence_total'] as num?)?.toInt(),
+      riskFlags: _markerDynamicMap(json['risk_flags']),
+      logicTags: _markerStringList(json['logic_tags']),
     );
   }
 }
@@ -193,6 +208,23 @@ class MarketUniverseEntryModel {
       category: json['category'] as String? ?? 'watch',
     );
   }
+}
+
+Map<String, String> _markerStringMap(dynamic raw) {
+  final source = raw as Map<dynamic, dynamic>? ?? const <dynamic, dynamic>{};
+  return source.map((key, value) => MapEntry(key.toString(), value.toString()));
+}
+
+Map<String, dynamic> _markerDynamicMap(dynamic raw) {
+  final source = raw as Map<dynamic, dynamic>? ?? const <dynamic, dynamic>{};
+  return source.map((key, value) => MapEntry(key.toString(), value));
+}
+
+List<String> _markerStringList(dynamic raw) {
+  return (raw as List<dynamic>? ?? const <dynamic>[])
+      .map((item) => item.toString())
+      .where((item) => item.trim().isNotEmpty)
+      .toList();
 }
 
 class MarketUniverseModel {

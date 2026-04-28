@@ -991,6 +991,12 @@ def _build_market_markers(
         opened_at = trade.get("opened_at") or trade.get("created_at") or trade.get("submitted_at")
         closed_at = trade.get("closed_at") or trade.get("updated_at")
         if entry > 0 and opened_at:
+            marker_payload = _marker_logic_payload(
+                source=trade,
+                side=side,
+                regime=str(trade.get("regime", "") or ""),
+                confidence_score=confidence_score,
+            )
             markers.append(
                 {
                     "type": "entry",
@@ -1002,9 +1008,16 @@ def _build_market_markers(
                     "timestamp": _normalize_marker_timestamp(opened_at),
                     "confidence_score": confidence_score,
                     "status": str(trade.get("status", "OPEN") or "OPEN"),
+                    **marker_payload,
                 }
             )
         if exit_price > 0 and closed_at:
+            marker_payload = _marker_logic_payload(
+                source=trade,
+                side=side,
+                regime=str(trade.get("regime", "") or ""),
+                confidence_score=confidence_score,
+            )
             markers.append(
                 {
                     "type": "exit",
@@ -1017,6 +1030,7 @@ def _build_market_markers(
                     "exit_reason": trade.get("exit_reason"),
                     "confidence_score": confidence_score,
                     "status": str(trade.get("status", "CLOSED") or "CLOSED"),
+                    **marker_payload,
                 }
             )
 
@@ -1047,6 +1061,12 @@ def _build_market_markers(
                 "reason": activity.get("reason"),
                 "message": activity.get("message"),
                 "intent": activity.get("intent"),
+                **_marker_logic_payload(
+                    source=activity,
+                    side=str(activity.get("action", "") or "WATCH"),
+                    regime=str(activity.get("regime", "") or ""),
+                    confidence_score=confidence_score,
+                ),
             }
         )
 
@@ -1156,6 +1176,134 @@ def _build_confidence_intervals(
             )
         )
     return intervals
+
+
+def _marker_logic_payload(
+    *,
+    source: dict,
+    side: str,
+    regime: str,
+    confidence_score: float,
+) -> dict[str, object]:
+    existing_breakdown = source.get("confluence_breakdown")
+    confluence_breakdown = (
+        {
+            str(key): str(value)
+            for key, value in dict(existing_breakdown or {}).items()
+            if str(key).strip() and str(value).strip()
+        }
+        if isinstance(existing_breakdown, dict)
+        else {}
+    )
+    if not confluence_breakdown:
+        confluence_breakdown = _infer_confluence_breakdown(
+            entry_reason=str(source.get("entry_reason", source.get("reason", "")) or ""),
+            regime=regime,
+            side=side,
+        )
+
+    existing_risk = source.get("risk_flags")
+    risk_flags = (
+        {
+            str(key): value
+            for key, value in dict(existing_risk or {}).items()
+            if str(key).strip()
+        }
+        if isinstance(existing_risk, dict)
+        else {}
+    )
+    if not risk_flags:
+        risk_flags = _infer_risk_flags(
+            regime=regime,
+            confidence_score=confidence_score,
+            source=source,
+        )
+
+    logic_tags = [
+        str(tag)
+        for tag in (source.get("logic_tags") or source.get("tags") or [])
+        if str(tag).strip()
+    ]
+    if not logic_tags:
+        logic_tags = _infer_logic_tags(
+            entry_reason=str(source.get("entry_reason", source.get("reason", "")) or ""),
+            regime=regime,
+            side=side,
+        )
+
+    aligned = sum(
+        1
+        for value in confluence_breakdown.values()
+        if any(
+            token in str(value).lower()
+            for token in ("aligned", "spiking", "supportive", "breakout", "acceptable", "oversold", "bullish", "tight")
+        )
+    )
+    total = max(len(confluence_breakdown), 1)
+    return {
+        "confluence_breakdown": confluence_breakdown,
+        "confluence_aligned": int(aligned),
+        "confluence_total": int(total),
+        "risk_flags": risk_flags,
+        "logic_tags": logic_tags[:3],
+    }
+
+
+def _infer_confluence_breakdown(
+    *,
+    entry_reason: str,
+    regime: str,
+    side: str,
+) -> dict[str, str]:
+    reason = entry_reason.lower()
+    normalized_side = str(side or "").upper()
+    return {
+        "structure": "Bullish breakout aligned"
+        if ("structure" in reason or "breakout" in reason or "trend" in reason) and normalized_side != "SELL"
+        else "Bearish breakdown aligned"
+        if ("structure" in reason or "breakdown" in reason) and normalized_side == "SELL"
+        else "Structure scan active",
+        "volume": "Volume spiking" if "volume" in reason else "Volume watch",
+        "momentum": "Momentum supportive" if any(token in reason for token in ("momentum", "mfi", "rsi")) else "Momentum mixed",
+        "trend": "Bullish trend regime"
+        if str(regime).upper() == "TRENDING" and normalized_side != "SELL"
+        else "Bearish trend regime"
+        if str(regime).upper() == "TRENDING" and normalized_side == "SELL"
+        else "Trend still forming",
+    }
+
+
+def _infer_risk_flags(
+    *,
+    regime: str,
+    confidence_score: float,
+    source: dict,
+) -> dict[str, str | bool]:
+    exit_reason = str(source.get("exit_reason", "") or "").lower()
+    return {
+        "volatility": "High" if str(regime).upper() == "HIGH_VOL" or "reversal" in exit_reason else "Contained",
+        "spread": "Tight" if confidence_score >= 0.7 else "Watch",
+        "liquidity_warning": bool(confidence_score < 0.45),
+    }
+
+
+def _infer_logic_tags(
+    *,
+    entry_reason: str,
+    regime: str,
+    side: str,
+) -> list[str]:
+    reason = entry_reason.lower()
+    tags: list[str] = []
+    if "breakout" in reason or "volume" in reason:
+        tags.append("#BreakoutHunter")
+    if "rsi" in reason or "reversion" in reason:
+        tags.append("#MeanReversion")
+    if str(regime).upper() == "TRENDING":
+        tags.append("#TrendFollowing")
+    if not tags and str(side).upper() in {"BUY", "SELL"}:
+        tags.append("#MomentumProbe")
+    return tags
 
 
 def _confidence_interval_payload(

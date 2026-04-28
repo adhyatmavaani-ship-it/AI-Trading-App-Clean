@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/trading_palette.dart';
+import '../features/activity/providers/activity_providers.dart';
 import '../features/market/providers/market_providers.dart';
 import '../models/activity.dart';
 import '../models/market_chart.dart';
@@ -25,6 +26,7 @@ class MarketChartPanel extends ConsumerWidget {
     final chartAsync = ref.watch(marketChartProvider);
     final universeAsync = ref.watch(marketUniverseProvider);
     final summary = ref.watch(marketSummaryProvider).valueOrNull;
+    final readinessBoard = ref.watch(readinessBoardProvider);
     final selectedSymbol = ref.watch(selectedMarketSymbolProvider);
     final selectedInterval = ref.watch(selectedMarketIntervalProvider);
 
@@ -94,6 +96,7 @@ class MarketChartPanel extends ConsumerWidget {
               chart: chart,
               selectedSymbol: selectedSymbol,
               scannerCandidates: summary?.scanner.candidates ?? const <ScannerCandidateModel>[],
+              readinessBoard: readinessBoard,
               secondsUntilRotation: summary?.scanner.secondsUntilRotation ?? 0,
               rotationWindowSeconds: _rotationWindowSeconds(summary),
               onSelectSymbol: (symbol) =>
@@ -125,6 +128,7 @@ class _ChartBody extends StatelessWidget {
     required this.chart,
     required this.selectedSymbol,
     required this.scannerCandidates,
+    required this.readinessBoard,
     required this.secondsUntilRotation,
     required this.rotationWindowSeconds,
     required this.onSelectSymbol,
@@ -133,6 +137,7 @@ class _ChartBody extends StatelessWidget {
   final MarketChartModel chart;
   final String selectedSymbol;
   final List<ScannerCandidateModel> scannerCandidates;
+  final List<ReadinessCardModel> readinessBoard;
   final int secondsUntilRotation;
   final int rotationWindowSeconds;
   final ValueChanged<String> onSelectSymbol;
@@ -162,6 +167,10 @@ class _ChartBody extends StatelessWidget {
     final scannerCandidate = scannerCandidates.cast<ScannerCandidateModel?>().firstWhere(
           (item) => item?.symbol == chart.symbol,
           orElse: () => scannerCandidates.isNotEmpty ? scannerCandidates.first : null,
+        );
+    final readinessCard = readinessBoard.cast<ReadinessCardModel?>().firstWhere(
+          (item) => item?.symbol == chart.symbol,
+          orElse: () => null,
         );
     final scoreAccent = _scannerAccent(scannerCandidate?.potentialScore ?? 0);
     final countdownProgress = rotationWindowSeconds <= 0
@@ -197,6 +206,7 @@ class _ChartBody extends StatelessWidget {
                           label: 'Score ${scannerCandidate.potentialScore.toStringAsFixed(0)}',
                           accent: scoreAccent,
                         ),
+                      ..._headerRiskBadges(readinessCard?.riskFlags ?? const <String, dynamic>{}),
                       _HeaderInfoChip(
                         label: _formatCountdown(secondsUntilRotation),
                         accent: countdownColor,
@@ -256,7 +266,7 @@ class _ChartBody extends StatelessWidget {
         Text(
           scannerCandidate == null
               ? 'TradingView-style market pulse with AI markers'
-              : 'Scanner pulse ${scannerCandidate.volumeSpikePct.toStringAsFixed(0)}% spike  •  Vol ${scannerCandidate.volatilityPct.toStringAsFixed(1)}%',
+              : 'Scanner pulse ${scannerCandidate.volumeSpikePct.toStringAsFixed(0)}% spike | Vol ${scannerCandidate.volatilityPct.toStringAsFixed(1)}%',
           style: Theme.of(context).textTheme.bodyMedium,
         ),
         const SizedBox(height: 16),
@@ -283,6 +293,7 @@ class _ChartBody extends StatelessWidget {
                       minPrice: minPrice,
                       maxPrice: maxPrice,
                       scannerCandidates: scannerCandidates,
+                      readinessBoard: readinessBoard,
                       selectedSymbol: selectedSymbol,
                       onSelectSymbol: onSelectSymbol,
                     ),
@@ -397,6 +408,7 @@ class _ChartCanvasWithDock extends StatelessWidget {
     required this.minPrice,
     required this.maxPrice,
     required this.scannerCandidates,
+    required this.readinessBoard,
     required this.selectedSymbol,
     required this.onSelectSymbol,
   });
@@ -406,6 +418,7 @@ class _ChartCanvasWithDock extends StatelessWidget {
   final double minPrice;
   final double maxPrice;
   final List<ScannerCandidateModel> scannerCandidates;
+  final List<ReadinessCardModel> readinessBoard;
   final String selectedSymbol;
   final ValueChanged<String> onSelectSymbol;
 
@@ -417,15 +430,15 @@ class _ChartCanvasWithDock extends StatelessWidget {
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTapDown: (details) {
-              final ghostMarker = _nearestGhostMarker(
+              final selectedMarker = _nearestDetailMarker(
                 geometry: geometry,
                 tap: details.localPosition,
                 markers: chart.markers,
               );
-              if (ghostMarker == null) {
+              if (selectedMarker == null) {
                 return;
               }
-              _showGhostMarkerSheet(context, ghostMarker);
+              _showMarkerDetailSheet(context, selectedMarker);
             },
             child: CustomPaint(
               painter: _CandlestickPainter(
@@ -446,6 +459,7 @@ class _ChartCanvasWithDock extends StatelessWidget {
             bottom: 12,
             child: _ScannerQuickDock(
               candidates: scannerCandidates.take(5).toList(),
+              readinessBoard: readinessBoard,
               selectedSymbol: selectedSymbol,
               onSelectSymbol: onSelectSymbol,
             ),
@@ -458,11 +472,13 @@ class _ChartCanvasWithDock extends StatelessWidget {
 class _ScannerQuickDock extends StatefulWidget {
   const _ScannerQuickDock({
     required this.candidates,
+    required this.readinessBoard,
     required this.selectedSymbol,
     required this.onSelectSymbol,
   });
 
   final List<ScannerCandidateModel> candidates;
+  final List<ReadinessCardModel> readinessBoard;
   final String selectedSymbol;
   final ValueChanged<String> onSelectSymbol;
 
@@ -527,6 +543,10 @@ class _ScannerQuickDockState extends State<_ScannerQuickDock> {
                               padding: const EdgeInsets.only(bottom: 10),
                               child: _QuickSwitchCoinButton(
                                 candidate: candidate,
+                                readinessCard: widget.readinessBoard.cast<ReadinessCardModel?>().firstWhere(
+                                      (item) => item?.symbol == candidate.symbol,
+                                      orElse: () => null,
+                                    ),
                                 expanded: _expanded,
                                 selected: candidate.symbol == widget.selectedSymbol,
                                 onTap: () => widget.onSelectSymbol(candidate.symbol),
@@ -549,12 +569,14 @@ class _ScannerQuickDockState extends State<_ScannerQuickDock> {
 class _QuickSwitchCoinButton extends StatelessWidget {
   const _QuickSwitchCoinButton({
     required this.candidate,
+    required this.readinessCard,
     required this.expanded,
     required this.selected,
     required this.onTap,
   });
 
   final ScannerCandidateModel candidate;
+  final ReadinessCardModel? readinessCard;
   final bool expanded;
   final bool selected;
   final VoidCallback onTap;
@@ -566,7 +588,11 @@ class _QuickSwitchCoinButton extends StatelessWidget {
     final shortName = _shortSymbol(candidate.symbol);
     return GestureDetector(
       onTap: onTap,
-      onLongPress: () => _showScannerTooltip(context, candidate),
+      onLongPress: () => _showScannerTooltip(
+        context,
+        candidate,
+        readinessCard: readinessCard,
+      ),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 220),
         curve: Curves.easeOutCubic,
@@ -804,16 +830,21 @@ class _HeaderInfoChip extends StatelessWidget {
   }
 }
 
-void _showScannerTooltip(BuildContext context, ScannerCandidateModel candidate) {
+void _showScannerTooltip(
+  BuildContext context,
+  ScannerCandidateModel candidate, {
+  ReadinessCardModel? readinessCard,
+}) {
   final messenger = ScaffoldMessenger.maybeOf(context);
+  final strategyText = (readinessCard?.logicTags ?? _derivedScannerTags(candidate)).join(' ');
   messenger?.hideCurrentSnackBar();
   messenger?.showSnackBar(
     SnackBar(
       behavior: SnackBarBehavior.floating,
       backgroundColor: const Color(0xEE0F1730),
-      duration: const Duration(seconds: 2),
+      duration: const Duration(seconds: 3),
       content: Text(
-        '${_shortSymbol(candidate.symbol)}  •  Volume Spike +${candidate.volumeSpikePct.toStringAsFixed(0)}%  |  Trend ${_trendLabel(candidate)}',
+        '${_shortSymbol(candidate.symbol)} | Volume Spike +${candidate.volumeSpikePct.toStringAsFixed(0)}% | Trend ${_trendLabel(candidate)}${strategyText.isEmpty ? '' : ' | $strategyText'}',
         style: const TextStyle(
           color: TradingPalette.textPrimary,
           fontWeight: FontWeight.w600,
@@ -821,6 +852,19 @@ void _showScannerTooltip(BuildContext context, ScannerCandidateModel candidate) 
       ),
     ),
   );
+}
+
+List<String> _derivedScannerTags(ScannerCandidateModel candidate) {
+  if (candidate.potentialScore >= 80 && candidate.changePct >= 0) {
+    return const <String>['#BreakoutHunter', '#TrendFollowing'];
+  }
+  if (candidate.volumeSpikePct >= 20 && candidate.changePct.abs() <= 2.5) {
+    return const <String>['#MeanReversion'];
+  }
+  if (candidate.changePct < 0 && candidate.volatilityPct >= 4) {
+    return const <String>['#RiskOff', '#FadeSetup'];
+  }
+  return const <String>['#ScannerWatch'];
 }
 
 String _shortSymbol(String symbol) {
@@ -907,7 +951,7 @@ class _ChartGeometry {
   }
 }
 
-TradeMarkerModel? _nearestGhostMarker({
+TradeMarkerModel? _nearestDetailMarker({
   required _ChartGeometry geometry,
   required Offset tap,
   required List<TradeMarkerModel> markers,
@@ -915,7 +959,7 @@ TradeMarkerModel? _nearestGhostMarker({
   TradeMarkerModel? best;
   double bestDistance = 30;
   for (final marker in markers) {
-    if (marker.markerStyle != 'ghost') {
+    if (marker.markerType == 'EXIT') {
       continue;
     }
     final offset = geometry.markerOffset(marker);
@@ -928,7 +972,13 @@ TradeMarkerModel? _nearestGhostMarker({
   return best;
 }
 
-void _showGhostMarkerSheet(BuildContext context, TradeMarkerModel marker) {
+void _showMarkerDetailSheet(BuildContext context, TradeMarkerModel marker) {
+  final accent = _markerAccent(marker);
+  final title = marker.markerStyle == 'ghost'
+      ? 'Ghost Setup'
+      : marker.markerType == 'ENTRY'
+          ? 'AI Entry Logic'
+          : 'Marker Detail';
   showModalBottomSheet<void>(
     context: context,
     backgroundColor: TradingPalette.deepNavy,
@@ -948,13 +998,13 @@ void _showGhostMarkerSheet(BuildContext context, TradeMarkerModel marker) {
                   width: 12,
                   height: 12,
                   decoration: BoxDecoration(
-                    color: TradingPalette.textMuted,
+                    color: accent,
                     borderRadius: BorderRadius.circular(999),
                   ),
                 ),
                 const SizedBox(width: 10),
                 Text(
-                  'Ghost Setup',
+                  title,
                   style: Theme.of(context).textTheme.titleLarge?.copyWith(
                         color: TradingPalette.textPrimary,
                         fontWeight: FontWeight.w800,
@@ -964,11 +1014,17 @@ void _showGhostMarkerSheet(BuildContext context, TradeMarkerModel marker) {
             ),
             const SizedBox(height: 14),
             Text(
-              marker.reason ?? marker.message ?? 'AI rejected this setup.',
+              marker.reason ??
+                  marker.message ??
+                  'AI attached contextual logic to this market marker.',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: TradingPalette.textPrimary,
                   ),
             ),
+            if (marker.confluenceBreakdown.isNotEmpty) ...<Widget>[
+              const SizedBox(height: 14),
+              _SheetConfluencePanel(marker: marker),
+            ],
             const SizedBox(height: 14),
             Wrap(
               spacing: 8,
@@ -989,12 +1045,90 @@ void _showGhostMarkerSheet(BuildContext context, TradeMarkerModel marker) {
                   ),
               ],
             ),
+            if (marker.logicTags.isNotEmpty) ...<Widget>[
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: marker.logicTags
+                    .map(
+                      (tag) => _DetailTagChip(
+                        label: tag,
+                        accent: TradingPalette.violet,
+                      ),
+                    )
+                    .toList(),
+              ),
+            ],
+            if (marker.riskFlags.isNotEmpty) ...<Widget>[
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: marker.riskFlags.entries
+                    .map(
+                      (entry) => _DetailTagChip(
+                        label:
+                            '${_titleCase(entry.key.replaceAll('_', ' '))}: ${entry.value}',
+                        accent: _riskBadgeAccent(entry.value),
+                      ),
+                    )
+                    .toList(),
+              ),
+            ],
           ],
         ),
       );
     },
   );
 }
+
+Color _markerAccent(TradeMarkerModel marker) {
+  if (marker.markerStyle == 'ghost') {
+    return TradingPalette.textMuted;
+  }
+  if (marker.markerType == 'ENTRY') {
+    return TradingPalette.neonGreen;
+  }
+  return TradingPalette.neonRed;
+}
+
+List<Widget> _headerRiskBadges(Map<String, dynamic> riskFlags) {
+  final badges = <Widget>[];
+  final volatility = riskFlags['volatility']?.toString().toLowerCase() ?? '';
+  final spread = riskFlags['spread']?.toString().toLowerCase() ?? '';
+  final liquidityWarning = riskFlags['liquidity_warning'] == true;
+
+  if (volatility.contains('high')) {
+    badges.add(
+      const _HeaderInfoChip(
+        label: 'High Volatility',
+        accent: TradingPalette.neonRed,
+      ),
+    );
+  }
+  if (spread.contains('tight') && !liquidityWarning) {
+    badges.add(
+      const _HeaderInfoChip(
+        label: 'Safe Liquidity',
+        accent: TradingPalette.neonGreen,
+      ),
+    );
+  } else if (spread.contains('wide') || liquidityWarning) {
+    badges.add(
+      const _HeaderInfoChip(
+        label: 'Wide Spread',
+        accent: TradingPalette.amber,
+      ),
+    );
+  }
+
+  return badges;
+}
+
+Color _confluenceChipAccent(String value) => _confluenceAccent(value);
+
+Color _riskBadgeAccent(dynamic value) => _riskAccent(value);
 
 class _CategoryRow extends StatelessWidget {
   const _CategoryRow({
@@ -1380,6 +1514,128 @@ class _CandlestickPainter extends CustomPainter {
     }
     return bestIndex;
   }
+}
+
+class _SheetConfluencePanel extends StatelessWidget {
+  const _SheetConfluencePanel({required this.marker});
+
+  final TradeMarkerModel marker;
+
+  @override
+  Widget build(BuildContext context) {
+    final aligned = marker.confluenceAligned ?? marker.confluenceBreakdown.length;
+    final total = marker.confluenceTotal ?? math.max(marker.confluenceBreakdown.length, 1);
+    final progress = total <= 0 ? 0.0 : (aligned / total).clamp(0.0, 1.0);
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: TradingPalette.panelSoft,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: TradingPalette.panelBorder),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text(
+            '$aligned/$total Indicators Aligned',
+            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  color: TradingPalette.textPrimary,
+                  fontWeight: FontWeight.w700,
+                ),
+          ),
+          const SizedBox(height: 10),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(999),
+            child: LinearProgressIndicator(
+              value: progress,
+              minHeight: 6,
+              backgroundColor: TradingPalette.panelBorder,
+              valueColor: const AlwaysStoppedAnimation<Color>(TradingPalette.neonGreen),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: marker.confluenceBreakdown.entries
+                .map(
+                  (entry) => _DetailTagChip(
+                    label: '${_titleCase(entry.key)}: ${entry.value}',
+                    accent: _confluenceChipAccent(entry.value),
+                  ),
+                )
+                .toList(),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DetailTagChip extends StatelessWidget {
+  const _DetailTagChip({
+    required this.label,
+    required this.accent,
+  });
+
+  final String label;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: accent.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: accent.withOpacity(0.34)),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: accent,
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+}
+
+Color _confluenceAccent(String value) {
+  final text = value.toLowerCase();
+  if (text.contains('aligned') ||
+      text.contains('spiking') ||
+      text.contains('supportive') ||
+      text.contains('bullish') ||
+      text.contains('oversold') ||
+      text.contains('breakout')) {
+    return TradingPalette.neonGreen;
+  }
+  if (text.contains('forming') || text.contains('balanced') || text.contains('mixed')) {
+    return TradingPalette.amber;
+  }
+  return TradingPalette.electricBlue;
+}
+
+Color _riskAccent(dynamic value) {
+  final text = value.toString().toLowerCase();
+  if (text == 'true' || text.contains('high') || text.contains('wide')) {
+    return TradingPalette.neonRed;
+  }
+  if (text.contains('contained') || text.contains('tight') || text == 'false') {
+    return TradingPalette.neonGreen;
+  }
+  return TradingPalette.amber;
+}
+
+String _titleCase(String raw) {
+  return raw
+      .split(' ')
+      .where((part) => part.trim().isNotEmpty)
+      .map((part) => '${part[0].toUpperCase()}${part.substring(1)}')
+      .join(' ');
 }
 
 class _TickerPill extends StatelessWidget {
