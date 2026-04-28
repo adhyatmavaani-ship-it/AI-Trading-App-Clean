@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'dart:async';
 
+import '../core/trading_palette.dart';
 import '../features/activity/providers/activity_providers.dart';
 import '../features/meta/providers/meta_providers.dart';
 import '../features/monitoring/providers/monitoring_providers.dart';
@@ -217,6 +218,7 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
     final modelStabilityConcentrationAsync =
         ref.watch(modelStabilityConcentrationHistoryProvider);
     final metaAnalyticsAsync = ref.watch(metaAnalyticsProvider);
+    final latestActivity = activityFeed.latest;
 
     return RefreshIndicator(
       onRefresh: () async {
@@ -273,7 +275,15 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
           const SizedBox(height: 20),
           const MarketSentimentGauge(),
           const SizedBox(height: 20),
-          MarketChartPanel(latestActivity: activityFeed.latest),
+          _AmbientMoodShell(
+            activity: latestActivity,
+            child: MarketChartPanel(latestActivity: latestActivity),
+          ),
+          const SizedBox(height: 20),
+          _LogicFeedCard(
+            latestActivity: latestActivity,
+            readinessBoard: readinessBoard,
+          ),
           const SizedBox(height: 20),
           SectionCard(
             title: 'Trade Readiness Board',
@@ -787,4 +797,344 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
       ),
     );
   }
+}
+
+class _AmbientMoodShell extends StatelessWidget {
+  const _AmbientMoodShell({
+    required this.activity,
+    required this.child,
+  });
+
+  final ActivityItemModel? activity;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final mood = _activityMood(activity);
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 400),
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(30),
+        gradient: RadialGradient(
+          colors: <Color>[
+            mood.withOpacity(0.18),
+            mood.withOpacity(0.06),
+            Colors.transparent,
+          ],
+          center: const Alignment(-0.15, -0.4),
+          radius: 1.15,
+        ),
+        boxShadow: <BoxShadow>[
+          BoxShadow(
+            color: mood.withOpacity(0.14),
+            blurRadius: 32,
+            spreadRadius: 2,
+          ),
+        ],
+      ),
+      child: child,
+    );
+  }
+}
+
+class _LogicFeedCard extends StatelessWidget {
+  const _LogicFeedCard({
+    required this.latestActivity,
+    required this.readinessBoard,
+  });
+
+  final ActivityItemModel? latestActivity;
+  final List<ReadinessCardModel> readinessBoard;
+
+  @override
+  Widget build(BuildContext context) {
+    final topCards = readinessBoard.take(3).toList();
+    return SectionCard(
+      title: 'AI Logic Feed',
+      trailing: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: const Color(0x2214FFB8),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: const Color(0x4414FFB8)),
+        ),
+        child: const Text(
+          'AI Eyes',
+          style: TextStyle(
+            color: TradingPalette.textPrimary,
+            fontWeight: FontWeight.w700,
+            fontSize: 12,
+          ),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          if (latestActivity != null)
+            _LogicHeadline(activity: latestActivity!)
+          else
+            const EmptyState(
+              title: 'Waiting for AI context',
+              subtitle:
+                  'Scanning intent, confidence drift, and setup reasons will appear here once the engine starts narrating the market.',
+            ),
+          if (topCards.isNotEmpty) ...<Widget>[
+            const SizedBox(height: 16),
+            Text(
+              'What AI is noticing',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 10),
+            Column(
+              children: topCards
+                  .map((card) => Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: _LogicFeedItem(card: card),
+                      ))
+                  .toList(),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _LogicHeadline extends StatelessWidget {
+  const _LogicHeadline({required this.activity});
+
+  final ActivityItemModel activity;
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = _activityMood(activity);
+    final confidence = (activity.confidenceMeter ??
+            activity.confidence ??
+            ((activity.readiness ?? 0) / 100))
+        .clamp(0.0, 1.0);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(20),
+        gradient: LinearGradient(
+          colors: <Color>[
+            accent.withOpacity(0.22),
+            TradingPalette.panelSoft,
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        border: Border.all(color: accent.withOpacity(0.35)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: <Widget>[
+              _LogicChip(label: activity.status.toUpperCase(), accent: accent),
+              if ((activity.symbol ?? '').isNotEmpty)
+                _LogicChip(label: activity.symbol!, accent: TradingPalette.electricBlue),
+              if ((activity.regime ?? '').isNotEmpty)
+                _LogicChip(label: activity.regime!, accent: TradingPalette.amber),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            activity.intent?.isNotEmpty == true ? activity.intent! : activity.message,
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  color: TradingPalette.textPrimary,
+                  fontWeight: FontWeight.w700,
+                ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            activity.reason?.isNotEmpty == true
+                ? activity.reason!
+                : 'AI is aligning structure, momentum, and participation before committing.',
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: TradingPalette.textMuted,
+                ),
+          ),
+          const SizedBox(height: 12),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(999),
+            child: LinearProgressIndicator(
+              value: confidence,
+              minHeight: 7,
+              backgroundColor: TradingPalette.panelBorder,
+              valueColor: AlwaysStoppedAnimation<Color>(accent),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Confidence ${(confidence * 100).toStringAsFixed(0)}%  •  Readiness ${(activity.readiness ?? 0).toStringAsFixed(0)}%',
+            style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: accent,
+                  fontWeight: FontWeight.w700,
+                ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LogicFeedItem extends StatelessWidget {
+  const _LogicFeedItem({required this.card});
+
+  final ReadinessCardModel card;
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = _readinessAccent(card);
+    final confidence = (card.confidenceMeter ??
+            card.confidence ??
+            (card.readiness / 100))
+        .clamp(0.0, 1.0);
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: TradingPalette.panelSoft,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: accent.withOpacity(0.28)),
+      ),
+      child: Row(
+        children: <Widget>[
+          Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: accent.withOpacity(0.14),
+              border: Border.all(color: accent.withOpacity(0.35)),
+            ),
+            child: Center(
+              child: Text(
+                card.symbol.replaceAll('USDT', ''),
+                style: const TextStyle(
+                  color: TradingPalette.textPrimary,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  card.intent?.isNotEmpty == true ? card.intent! : card.message ?? card.status,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: TradingPalette.textPrimary,
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  card.reason?.isNotEmpty == true
+                      ? card.reason!
+                      : 'Readiness is building across the latest scan.',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: TradingPalette.textMuted,
+                      ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: <Widget>[
+              Text(
+                '${card.readiness.toStringAsFixed(0)}%',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      color: accent,
+                      fontWeight: FontWeight.w800,
+                    ),
+              ),
+              const SizedBox(height: 4),
+              SizedBox(
+                width: 52,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(999),
+                  child: LinearProgressIndicator(
+                    value: confidence,
+                    minHeight: 6,
+                    backgroundColor: TradingPalette.panelBorder,
+                    valueColor: AlwaysStoppedAnimation<Color>(accent),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LogicChip extends StatelessWidget {
+  const _LogicChip({
+    required this.label,
+    required this.accent,
+  });
+
+  final String label;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: accent.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: accent.withOpacity(0.35)),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: accent,
+          fontSize: 12,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+}
+
+Color _activityMood(ActivityItemModel? activity) {
+  final status = (activity?.status ?? '').toLowerCase();
+  final confidence =
+      activity?.confidenceMeter ?? activity?.confidence ?? ((activity?.readiness ?? 0) / 100);
+  if (status.contains('almost') || confidence >= 0.75) {
+    return TradingPalette.neonGreen;
+  }
+  if (status.contains('waiting')) {
+    return TradingPalette.amber;
+  }
+  if (status.contains('rejected')) {
+    return TradingPalette.neonRed;
+  }
+  return TradingPalette.electricBlue;
+}
+
+Color _readinessAccent(ReadinessCardModel card) {
+  if (card.readiness >= 75) {
+    return TradingPalette.neonGreen;
+  }
+  if (card.readiness >= 50) {
+    return TradingPalette.amber;
+  }
+  return TradingPalette.electricBlue;
 }
