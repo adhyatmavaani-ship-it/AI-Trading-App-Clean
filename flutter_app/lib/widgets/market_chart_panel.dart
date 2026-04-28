@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/trading_palette.dart';
@@ -594,7 +595,12 @@ class _QuickSwitchCoinButton extends StatelessWidget {
     final accent = _scannerAccent(candidate.potentialScore);
     final shortName = _shortSymbol(candidate.symbol);
     return GestureDetector(
-      onTap: onTap,
+      onTap: () {
+        if (!selected) {
+          HapticFeedback.selectionClick();
+        }
+        onTap();
+      },
       onLongPress: () => _showScannerTooltip(
         context,
         candidate,

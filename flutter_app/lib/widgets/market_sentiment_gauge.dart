@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/trading_palette.dart';
@@ -381,7 +382,12 @@ class _ScannerCoinCard extends StatelessWidget {
     final accent = _scannerAverageColor(item.potentialScore);
     final progress = (item.potentialScore / 100).clamp(0.0, 1.0);
     return GestureDetector(
-      onTap: onTap,
+      onTap: () {
+        if (!selected) {
+          HapticFeedback.selectionClick();
+        }
+        onTap();
+      },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 220),
         width: 164,
