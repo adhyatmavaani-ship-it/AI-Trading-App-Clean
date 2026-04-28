@@ -2,6 +2,8 @@ import sys
 import unittest
 from pathlib import Path
 
+import pandas as pd
+
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 try:
@@ -19,10 +21,29 @@ if FASTAPI_AVAILABLE:
 
 class StubAnalyticsService:
     def active_trades(self, user_id: str):
-        return [{"trade_id": "t1", "symbol": "BTCUSDT"}]
+        return [
+            {
+                "trade_id": "t1",
+                "symbol": "BTCUSDT",
+                "side": "BUY",
+                "entry": 100.25,
+                "created_at": "2026-04-27T10:00:00+00:00",
+            }
+        ]
 
     def trade_history(self, user_id: str, limit: int = 100):
-        return [{"trade_id": "t1", "profit_pct": 1.25}]
+        return [
+            {
+                "trade_id": "t1",
+                "symbol": "BTCUSDT",
+                "side": "BUY",
+                "entry": 100.25,
+                "exit": 101.75,
+                "profit_pct": 1.25,
+                "closed_at": "2026-04-27T11:00:00+00:00",
+                "exit_reason": "structure_break",
+            }
+        ]
 
     def summary(self, user_id: str):
         return {"user_id": user_id, "win_rate": 0.6, "expectancy": 0.4, "best_symbols": ["BTCUSDT"], "best_regime": "TRENDING", "worst_regime": "RANGING", "regime_win_rates": {"TRENDING": 0.64, "RANGING": 0.42}, "worst_exit_reasons": ["volume_reversal"], "most_profitable_setup": "structure + momentum", "false_signal_rate": 0.25, "capital_utilization": 0.42, "risk_exposure": 0.03, "correlation_risk": 0.6, "regime_distribution": {"TRENDING": 0.5, "RANGING": 0.3, "HIGH_VOL": 0.2}}
@@ -62,7 +83,24 @@ class StubMarketData:
         return {"bids": [{"price": 99.5, "qty": 1.0}], "asks": [{"price": 100.5, "qty": 1.0}]}
 
     async def fetch_multi_timeframe_ohlcv(self, symbol: str, intervals=("1m", "5m", "15m")):
-        return {interval: [] for interval in intervals}
+        frames = {}
+        for index, interval in enumerate(intervals):
+            base_open = 100.0 + index
+            rows = []
+            for candle_index in range(24):
+                rows.append(
+                    {
+                        "open_time": 1714212000000 + (candle_index * 300000),
+                        "close_time": 1714212300000 + (candle_index * 300000),
+                        "open": base_open + candle_index * 0.1,
+                        "high": base_open + candle_index * 0.1 + 1.0,
+                        "low": base_open + candle_index * 0.1 - 1.0,
+                        "close": base_open + candle_index * 0.1 + 0.4,
+                        "volume": 10 + candle_index,
+                    }
+                )
+            frames[interval] = pd.DataFrame(rows)
+        return frames
 
     def inject_test_market_move(self, symbol: str, *, change: float, volume_multiplier: float = 3.0, intervals=("1m", "5m", "15m", "1h")):
         self.last_move = {
@@ -89,12 +127,48 @@ class StubActiveTradeMonitor:
         self.runs += 1
 
 
+class StubMarketUniverseScanner:
+    async def snapshot(self, limit: int | None = None):
+        items = [
+            {
+                "symbol": "ETHUSDT",
+                "price": 2500.0,
+                "change_pct": 1.8,
+                "volume_ratio": 1.4,
+                "volatility_pct": 2.2,
+                "trend_pct": 3.4,
+                "quote_volume": 2500000.0,
+                "category": "high_volatility",
+            },
+            {
+                "symbol": "BTCUSDT",
+                "price": 65000.0,
+                "change_pct": 1.1,
+                "volume_ratio": 1.2,
+                "volatility_pct": 1.6,
+                "trend_pct": 2.1,
+                "quote_volume": 5000000.0,
+                "category": "top_gainer",
+            },
+        ][: max(1, limit or 2)]
+        return {
+            "count": len(items),
+            "items": items,
+            "categories": {
+                "top_gainers": items,
+                "high_volatility": items[:1],
+                "ai_picks": items,
+            },
+        }
+
+
 class StubContainer:
     def __init__(self):
         self.analytics_service = StubAnalyticsService()
         self.user_experience_engine = StubUserExperienceEngine()
         self.market_data = StubMarketData()
         self.active_trade_monitor = StubActiveTradeMonitor()
+        self.market_universe_scanner = StubMarketUniverseScanner()
 
 
 @unittest.skipUnless(FASTAPI_AVAILABLE, "fastapi is not installed")
@@ -168,6 +242,31 @@ class FrontendAnalyticsRoutesTest(unittest.TestCase):
         self.assertEqual(payload["symbol"], "BTCUSDT")
         self.assertTrue(payload["monitor_ran"])
         self.assertEqual(payload["move"]["change"], -0.02)
+
+    def test_market_candles_endpoint(self):
+        response = self.client.get(
+            "/v1/market/candles?symbol=btcusdt&interval=5m&limit=20&user_id=alice",
+            headers={"X-API-Key": "route-token"},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["symbol"], "BTCUSDT")
+        self.assertEqual(payload["interval"], "5m")
+        self.assertEqual(len(payload["candles"]), 20)
+        self.assertEqual(payload["markers"][0]["timestamp"], "2026-04-27T10:00:00+00:00")
+        self.assertEqual(payload["markers"][1]["timestamp"], "2026-04-27T11:00:00+00:00")
+
+    def test_market_universe_endpoint(self):
+        response = self.client.get(
+            "/v1/market/universe?limit=8",
+            headers={"X-API-Key": "route-token"},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertGreaterEqual(payload["count"], 1)
+        self.assertIn("categories", payload)
+        self.assertIn("ai_picks", payload["categories"])
+        self.assertEqual(payload["categories"]["ai_picks"][0]["symbol"], "ETHUSDT")
 
 
 if __name__ == "__main__":

@@ -190,7 +190,7 @@ async def get_market_candles(
             intervals=(normalized_interval,),
         )
         frame = frames.get(normalized_interval)
-        if frame is None or frame.empty:
+        if frame is None or getattr(frame, "empty", True):
             return {
                 "symbol": normalized_symbol,
                 "interval": normalized_interval,
@@ -236,7 +236,7 @@ async def get_market_candles(
                         "trade_id": trade_id,
                         "side": side,
                         "price": round(entry, 8),
-                        "timestamp": opened_at,
+                        "timestamp": _normalize_marker_timestamp(opened_at),
                     }
                 )
             if exit_price > 0 and closed_at:
@@ -246,7 +246,7 @@ async def get_market_candles(
                         "trade_id": trade_id,
                         "side": side,
                         "price": round(exit_price, 8),
-                        "timestamp": closed_at,
+                        "timestamp": _normalize_marker_timestamp(closed_at),
                         "exit_reason": trade.get("exit_reason"),
                     }
                 )
@@ -893,6 +893,23 @@ def _ensure_user_access(authenticated_user_id: str, requested_user_id: str) -> N
             "Cannot access another user's data",
             error_code="UNAUTHORIZED_RESOURCE_ACCESS",
         )
+
+
+def _normalize_marker_timestamp(value: object) -> str:
+    if isinstance(value, datetime):
+        normalized = value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return normalized.isoformat()
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
+    text = str(value or "").strip()
+    if not text:
+        return datetime.fromtimestamp(0, tz=timezone.utc).isoformat()
+    try:
+        parsed = datetime.fromisoformat(text)
+        normalized = parsed.astimezone(timezone.utc) if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        return normalized.isoformat()
+    except ValueError:
+        return text
 
 
 def _load_viewer_signal_subscription(container: ServiceContainer, user_id: str) -> dict:

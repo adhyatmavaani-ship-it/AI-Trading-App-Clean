@@ -49,14 +49,26 @@ class TradeMarkerModel {
       type: json['type'] as String? ?? 'entry',
       side: json['side'] as String? ?? 'BUY',
       price: (json['price'] as num?)?.toDouble() ?? 0,
-      timestamp: DateTime.tryParse(json['timestamp'] as String? ?? '') ??
-          DateTime.fromMillisecondsSinceEpoch(0),
+      timestamp: _parseMarkerTimestamp(json['timestamp']),
       tradeId: json['trade_id'] as String?,
       exitReason: json['exit_reason'] as String?,
     );
   }
 }
 
+DateTime _parseMarkerTimestamp(dynamic raw) {
+  if (raw is num) {
+    final value = raw.toDouble();
+    final milliseconds = value.abs() >= 1000000000000
+        ? value.round()
+        : (value * 1000).round();
+    return DateTime.fromMillisecondsSinceEpoch(milliseconds, isUtc: true);
+  }
+  if (raw is String) {
+    return DateTime.tryParse(raw) ?? DateTime.fromMillisecondsSinceEpoch(0);
+  }
+  return DateTime.fromMillisecondsSinceEpoch(0);
+}
 class MarketChartModel {
   const MarketChartModel({
     required this.symbol,
