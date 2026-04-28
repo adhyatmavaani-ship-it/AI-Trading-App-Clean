@@ -16,43 +16,32 @@ class MarketSentimentGauge extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final summaryAsync = ref.watch(marketSummaryProvider);
     final selectedSymbol = ref.watch(selectedMarketSymbolProvider);
-    return SectionCard(
-      title: 'Market Sentiment',
-      trailing: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(
-          color: const Color(0x2214FFB8),
-          borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: const Color(0x4414FFB8)),
-        ),
-        child: const Text(
-          'AI Pulse Gauge',
-          style: TextStyle(
-            color: TradingPalette.textPrimary,
-            fontWeight: FontWeight.w700,
-            fontSize: 12,
-          ),
-        ),
+    return summaryAsync.when(
+      data: (summary) => _AnimatedSentimentShell(
+        summary: summary,
+        selectedSymbol: selectedSymbol,
+        onSelectSymbol: (symbol) =>
+            ref.read(selectedMarketSymbolProvider.notifier).state = symbol,
       ),
-      child: summaryAsync.when(
-        data: (summary) => _GaugeBody(
-          summary: summary,
-          selectedSymbol: selectedSymbol,
-          onSelectSymbol: (symbol) =>
-              ref.read(selectedMarketSymbolProvider.notifier).state = symbol,
-        ),
-        loading: () => const SizedBox(
+      loading: () => SectionCard(
+        title: 'Market Sentiment',
+        trailing: _gaugePill(),
+        child: const SizedBox(
           height: 260,
           child: LoadingState(label: 'Scanning market sentiment'),
         ),
-        error: (error, _) => ErrorState(message: error.toString()),
+      ),
+      error: (error, _) => SectionCard(
+        title: 'Market Sentiment',
+        trailing: _gaugePill(),
+        child: ErrorState(message: error.toString()),
       ),
     );
   }
 }
 
-class _GaugeBody extends StatelessWidget {
-  const _GaugeBody({
+class _AnimatedSentimentShell extends StatefulWidget {
+  const _AnimatedSentimentShell({
     required this.summary,
     required this.selectedSymbol,
     required this.onSelectSymbol,
@@ -63,8 +52,111 @@ class _GaugeBody extends StatelessWidget {
   final ValueChanged<String> onSelectSymbol;
 
   @override
+  State<_AnimatedSentimentShell> createState() => _AnimatedSentimentShellState();
+}
+
+class _AnimatedSentimentShellState extends State<_AnimatedSentimentShell>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1500),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final sentimentColor = _sentimentColor(summary.sentimentScore);
+    final scannerAverage = widget.summary.scanner.averagePotentialScore;
+    final extremePulse = scannerAverage >= 85;
+    final effectiveScore = _effectiveSentimentScore(
+      sentimentScore: widget.summary.sentimentScore,
+      scannerAverage: scannerAverage,
+    );
+    final effectiveLabel = _effectiveSentimentLabel(
+      widget.summary.sentimentLabel,
+      scannerAverage,
+    );
+    final sentimentColor = _sentimentColor(effectiveScore);
+
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        final pulse = extremePulse ? _controller.value : 0.0;
+        final glowStrength = extremePulse ? (0.18 + (pulse * 0.16)) : 0.0;
+        return SectionCard(
+          title: 'Market Sentiment',
+          trailing: _gaugePill(label: extremePulse ? 'Extreme Pulse' : 'AI Pulse Gauge'),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 320),
+            padding: const EdgeInsets.all(2),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(26),
+              border: Border.all(
+                color: extremePulse
+                    ? TradingPalette.neonGreen.withOpacity(0.55 + (pulse * 0.25))
+                    : Colors.transparent,
+                width: extremePulse ? 1.5 : 0,
+              ),
+              boxShadow: extremePulse
+                  ? <BoxShadow>[
+                      BoxShadow(
+                        color: TradingPalette.neonGreen.withOpacity(glowStrength),
+                        blurRadius: 28 + (pulse * 10),
+                        spreadRadius: 1 + (pulse * 2),
+                      ),
+                    ]
+                  : const <BoxShadow>[],
+            ),
+            child: _GaugeBody(
+              summary: widget.summary,
+              selectedSymbol: widget.selectedSymbol,
+              onSelectSymbol: widget.onSelectSymbol,
+              effectiveScore: effectiveScore,
+              effectiveLabel: effectiveLabel,
+              sentimentColor: sentimentColor,
+              pulseValue: pulse,
+              extremePulse: extremePulse,
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _GaugeBody extends StatelessWidget {
+  const _GaugeBody({
+    required this.summary,
+    required this.selectedSymbol,
+    required this.onSelectSymbol,
+    required this.effectiveScore,
+    required this.effectiveLabel,
+    required this.sentimentColor,
+    required this.pulseValue,
+    required this.extremePulse,
+  });
+
+  final MarketSummaryModel summary;
+  final String selectedSymbol;
+  final ValueChanged<String> onSelectSymbol;
+  final double effectiveScore;
+  final String effectiveLabel;
+  final Color sentimentColor;
+  final double pulseValue;
+  final bool extremePulse;
+
+  @override
+  Widget build(BuildContext context) {
     final scannerAccent = _scannerAverageColor(summary.scanner.averagePotentialScore);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -77,30 +169,37 @@ class _GaugeBody extends StatelessWidget {
                 flex: 5,
                 child: CustomPaint(
                   painter: _GaugePainter(
-                    score: summary.sentimentScore,
+                    score: effectiveScore,
                     accent: sentimentColor,
+                    wobble: extremePulse ? ((pulseValue - 0.5) * 0.08) : 0.0,
+                    pulse: pulseValue,
+                    extremePulse: extremePulse,
                   ),
                   child: Center(
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: <Widget>[
                         Text(
-                          summary.sentimentLabel,
-                          style:
-                              Theme.of(context).textTheme.titleMedium?.copyWith(
-                                    color: sentimentColor,
-                                    fontWeight: FontWeight.w800,
-                                  ),
+                          effectiveLabel,
+                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                color: sentimentColor,
+                                fontWeight: FontWeight.w800,
+                              ),
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          summary.sentimentScore.toStringAsFixed(0),
-                          style: Theme.of(context)
-                              .textTheme
-                              .headlineSmall
-                              ?.copyWith(
+                          effectiveScore.toStringAsFixed(0),
+                          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                                 fontWeight: FontWeight.w800,
                                 color: TradingPalette.textPrimary,
+                              ),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          'Scanner ${summary.scanner.averagePotentialScore.toStringAsFixed(0)}',
+                          style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                                color: scannerAccent,
+                                fontWeight: FontWeight.w700,
                               ),
                         ),
                       ],
@@ -122,20 +221,18 @@ class _GaugeBody extends StatelessWidget {
                     const SizedBox(height: 12),
                     _MiniMetric(
                       label: 'Breadth',
-                      value:
-                          '${(summary.marketBreadth * 100).toStringAsFixed(0)}%',
+                      value: '${(summary.marketBreadth * 100).toStringAsFixed(0)}%',
                     ),
                     const SizedBox(height: 12),
                     _MiniMetric(
-                      label: 'Participation',
-                      value:
-                          '${(summary.participationScore * 100).toStringAsFixed(0)}%',
+                      label: 'Scanner Avg',
+                      value: summary.scanner.averagePotentialScore.toStringAsFixed(0),
+                      accent: scannerAccent,
                     ),
                     const SizedBox(height: 12),
                     _MiniMetric(
                       label: 'Confidence',
-                      value:
-                          '${(summary.confidenceScore * 100).toStringAsFixed(0)}%',
+                      value: '${(summary.confidenceScore * 100).toStringAsFixed(0)}%',
                     ),
                   ],
                 ),
@@ -229,7 +326,10 @@ class _MiniMetric extends StatelessWidget {
       decoration: BoxDecoration(
         color: TradingPalette.panelSoft,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: (accent ?? TradingPalette.panelBorder).withOpacity(accent == null ? 1 : 0.35)),
+        border: Border.all(
+          color: (accent ?? TradingPalette.panelBorder)
+              .withOpacity(accent == null ? 1 : 0.35),
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -277,9 +377,7 @@ class _ScannerCoinCard extends StatelessWidget {
           ),
           gradient: LinearGradient(
             colors: <Color>[
-              selected
-                  ? accent.withOpacity(0.18)
-                  : TradingPalette.panelSoft,
+              selected ? accent.withOpacity(0.18) : TradingPalette.panelSoft,
               const Color(0xCC0E1630),
             ],
             begin: Alignment.topLeft,
@@ -308,33 +406,7 @@ class _ScannerCoinCard extends StatelessWidget {
                   ),
                 ),
                 if (item.isHot)
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: TradingPalette.neonRed.withOpacity(0.14),
-                      borderRadius: BorderRadius.circular(999),
-                      border: Border.all(color: TradingPalette.neonRed.withOpacity(0.35)),
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: <Widget>[
-                        Icon(
-                          Icons.local_fire_department_rounded,
-                          size: 12,
-                          color: TradingPalette.neonRed,
-                        ),
-                        SizedBox(width: 4),
-                        Text(
-                          'Hot',
-                          style: TextStyle(
-                            color: TradingPalette.neonRed,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+                  const _BreathingHotBadge(accent: TradingPalette.neonRed),
               ],
             ),
             const SizedBox(height: 10),
@@ -377,6 +449,81 @@ class _ScannerCoinCard extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _BreathingHotBadge extends StatefulWidget {
+  const _BreathingHotBadge({required this.accent});
+
+  final Color accent;
+
+  @override
+  State<_BreathingHotBadge> createState() => _BreathingHotBadgeState();
+}
+
+class _BreathingHotBadgeState extends State<_BreathingHotBadge>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        final scale = 0.96 + (_controller.value * 0.12);
+        return Transform.scale(
+          scale: scale,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: widget.accent.withOpacity(0.14),
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(color: widget.accent.withOpacity(0.35)),
+              boxShadow: <BoxShadow>[
+                BoxShadow(
+                  color: widget.accent.withOpacity(0.14 + (_controller.value * 0.12)),
+                  blurRadius: 12 + (_controller.value * 6),
+                ),
+              ],
+            ),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Icon(
+                  Icons.local_fire_department_rounded,
+                  size: 12,
+                  color: TradingPalette.neonRed,
+                ),
+                SizedBox(width: 4),
+                Text(
+                  'Hot',
+                  style: TextStyle(
+                    color: TradingPalette.neonRed,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -481,10 +628,16 @@ class _GaugePainter extends CustomPainter {
   const _GaugePainter({
     required this.score,
     required this.accent,
+    required this.wobble,
+    required this.pulse,
+    required this.extremePulse,
   });
 
   final double score;
   final Color accent;
+  final double wobble;
+  final double pulse;
+  final bool extremePulse;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -514,14 +667,14 @@ class _GaugePainter extends CustomPainter {
       ..color = accent;
     final glow = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 24
+      ..strokeWidth = extremePulse ? 28 : 24
       ..strokeCap = StrokeCap.round
-      ..color = accent.withOpacity(0.12);
+      ..color = accent.withOpacity(extremePulse ? 0.18 + (pulse * 0.08) : 0.12);
     canvas.drawArc(rect, math.pi, math.pi, false, track);
     canvas.drawArc(rect, math.pi, math.pi, false, background);
 
     final normalized = ((score + 100) / 200).clamp(0.0, 1.0);
-    final angle = math.pi + (math.pi * normalized);
+    final angle = math.pi + (math.pi * normalized) + wobble;
     final needleLength = radius - 18;
     final needleEnd = Offset(
       center.dx + math.cos(angle) * needleLength,
@@ -531,15 +684,59 @@ class _GaugePainter extends CustomPainter {
     canvas.drawLine(center, needleEnd, needle);
     canvas.drawCircle(
       center,
-      8,
+      extremePulse ? 9 + pulse : 8,
       Paint()..color = TradingPalette.textPrimary,
     );
   }
 
   @override
   bool shouldRepaint(covariant _GaugePainter oldDelegate) {
-    return oldDelegate.score != score || oldDelegate.accent != accent;
+    return oldDelegate.score != score ||
+        oldDelegate.accent != accent ||
+        oldDelegate.wobble != wobble ||
+        oldDelegate.pulse != pulse ||
+        oldDelegate.extremePulse != extremePulse;
   }
+}
+
+Widget _gaugePill({String label = 'AI Pulse Gauge'}) {
+  return Container(
+    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+    decoration: BoxDecoration(
+      color: const Color(0x2214FFB8),
+      borderRadius: BorderRadius.circular(999),
+      border: Border.all(color: const Color(0x4414FFB8)),
+    ),
+    child: Text(
+      label,
+      style: const TextStyle(
+        color: TradingPalette.textPrimary,
+        fontWeight: FontWeight.w700,
+        fontSize: 12,
+      ),
+    ),
+  );
+}
+
+double _effectiveSentimentScore({
+  required double sentimentScore,
+  required double scannerAverage,
+}) {
+  final scannerBias = ((scannerAverage - 50) / 50) * 100;
+  return (sentimentScore * 0.62) + (scannerBias * 0.38);
+}
+
+String _effectiveSentimentLabel(String baseLabel, double scannerAverage) {
+  if (scannerAverage >= 85) {
+    return 'EXTREME BULLISH';
+  }
+  if (scannerAverage >= 70) {
+    return 'HIGH CONVICTION';
+  }
+  if (scannerAverage <= 20 && baseLabel == 'BEARISH') {
+    return 'EXTREME BEARISH';
+  }
+  return baseLabel;
 }
 
 Color _sentimentColor(double score) {
