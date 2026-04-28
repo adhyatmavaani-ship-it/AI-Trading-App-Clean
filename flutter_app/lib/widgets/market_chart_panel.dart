@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -7,6 +8,7 @@ import '../core/trading_palette.dart';
 import '../features/market/providers/market_providers.dart';
 import '../models/activity.dart';
 import '../models/market_chart.dart';
+import '../models/market_summary.dart';
 import 'section_card.dart';
 import 'state_widgets.dart';
 
@@ -22,6 +24,7 @@ class MarketChartPanel extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final chartAsync = ref.watch(marketChartProvider);
     final universeAsync = ref.watch(marketUniverseProvider);
+    final summary = ref.watch(marketSummaryProvider).valueOrNull;
     final selectedSymbol = ref.watch(selectedMarketSymbolProvider);
     final selectedInterval = ref.watch(selectedMarketIntervalProvider);
 
@@ -87,7 +90,13 @@ class MarketChartPanel extends ConsumerWidget {
           ),
           const SizedBox(height: 18),
           chartAsync.when(
-            data: (chart) => _ChartBody(chart: chart),
+            data: (chart) => _ChartBody(
+              chart: chart,
+              selectedSymbol: selectedSymbol,
+              scannerCandidates: summary?.scanner.candidates ?? const <ScannerCandidateModel>[],
+              onSelectSymbol: (symbol) =>
+                  ref.read(selectedMarketSymbolProvider.notifier).state = symbol,
+            ),
             loading: () => const SizedBox(
               height: 360,
               child: LoadingState(label: 'Loading chart'),
@@ -101,9 +110,17 @@ class MarketChartPanel extends ConsumerWidget {
 }
 
 class _ChartBody extends StatelessWidget {
-  const _ChartBody({required this.chart});
+  const _ChartBody({
+    required this.chart,
+    required this.selectedSymbol,
+    required this.scannerCandidates,
+    required this.onSelectSymbol,
+  });
 
   final MarketChartModel chart;
+  final String selectedSymbol;
+  final List<ScannerCandidateModel> scannerCandidates;
+  final ValueChanged<String> onSelectSymbol;
 
   @override
   Widget build(BuildContext context) {
@@ -198,29 +215,14 @@ class _ChartBody extends StatelessWidget {
               return Column(
                 children: <Widget>[
                   Expanded(
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onTapDown: (details) {
-                        final ghostMarker = _nearestGhostMarker(
-                          geometry: geometry,
-                          tap: details.localPosition,
-                          markers: chart.markers,
-                        );
-                        if (ghostMarker == null) {
-                          return;
-                        }
-                        _showGhostMarkerSheet(context, ghostMarker);
-                      },
-                      child: CustomPaint(
-                        painter: _CandlestickPainter(
-                          candles: candles,
-                          minPrice: minPrice,
-                          maxPrice: maxPrice,
-                          markers: chart.markers,
-                          confidenceIntervals: chart.confidenceIntervals,
-                        ),
-                        child: const SizedBox.expand(),
-                      ),
+                    child: _ChartCanvasWithDock(
+                      geometry: geometry,
+                      chart: chart,
+                      minPrice: minPrice,
+                      maxPrice: maxPrice,
+                      scannerCandidates: scannerCandidates,
+                      selectedSymbol: selectedSymbol,
+                      onSelectSymbol: onSelectSymbol,
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -324,6 +326,316 @@ class _ChartBody extends StatelessWidget {
       );
     }).toList();
   }
+}
+
+class _ChartCanvasWithDock extends StatelessWidget {
+  const _ChartCanvasWithDock({
+    required this.geometry,
+    required this.chart,
+    required this.minPrice,
+    required this.maxPrice,
+    required this.scannerCandidates,
+    required this.selectedSymbol,
+    required this.onSelectSymbol,
+  });
+
+  final _ChartGeometry geometry;
+  final MarketChartModel chart;
+  final double minPrice;
+  final double maxPrice;
+  final List<ScannerCandidateModel> scannerCandidates;
+  final String selectedSymbol;
+  final ValueChanged<String> onSelectSymbol;
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: <Widget>[
+        Positioned.fill(
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTapDown: (details) {
+              final ghostMarker = _nearestGhostMarker(
+                geometry: geometry,
+                tap: details.localPosition,
+                markers: chart.markers,
+              );
+              if (ghostMarker == null) {
+                return;
+              }
+              _showGhostMarkerSheet(context, ghostMarker);
+            },
+            child: CustomPaint(
+              painter: _CandlestickPainter(
+                candles: chart.candles,
+                minPrice: minPrice,
+                maxPrice: maxPrice,
+                markers: chart.markers,
+                confidenceIntervals: chart.confidenceIntervals,
+              ),
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+        if (scannerCandidates.isNotEmpty)
+          Positioned(
+            top: 12,
+            right: 10,
+            bottom: 12,
+            child: _ScannerQuickDock(
+              candidates: scannerCandidates.take(5).toList(),
+              selectedSymbol: selectedSymbol,
+              onSelectSymbol: onSelectSymbol,
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _ScannerQuickDock extends StatefulWidget {
+  const _ScannerQuickDock({
+    required this.candidates,
+    required this.selectedSymbol,
+    required this.onSelectSymbol,
+  });
+
+  final List<ScannerCandidateModel> candidates;
+  final String selectedSymbol;
+  final ValueChanged<String> onSelectSymbol;
+
+  @override
+  State<_ScannerQuickDock> createState() => _ScannerQuickDockState();
+}
+
+class _ScannerQuickDockState extends State<_ScannerQuickDock> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 320),
+      curve: Curves.easeOutBack,
+      width: _expanded ? 92 : 54,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(24),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+            decoration: BoxDecoration(
+              color: const Color(0xAA0F1730),
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: TradingPalette.panelBorder.withOpacity(0.7)),
+              boxShadow: <BoxShadow>[
+                BoxShadow(
+                  color: TradingPalette.midnight.withOpacity(0.22),
+                  blurRadius: 18,
+                  offset: const Offset(0, 10),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: <Widget>[
+                GestureDetector(
+                  onTap: () => setState(() => _expanded = !_expanded),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    decoration: BoxDecoration(
+                      color: TradingPalette.panelSoft,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: TradingPalette.panelBorder.withOpacity(0.7)),
+                    ),
+                    child: Icon(
+                      _expanded ? Icons.chevron_right_rounded : Icons.chevron_left_rounded,
+                      color: TradingPalette.textPrimary,
+                      size: 18,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Expanded(
+                  child: SingleChildScrollView(
+                    child: Column(
+                      children: widget.candidates
+                          .map(
+                            (candidate) => Padding(
+                              padding: const EdgeInsets.only(bottom: 10),
+                              child: _QuickSwitchCoinButton(
+                                candidate: candidate,
+                                expanded: _expanded,
+                                selected: candidate.symbol == widget.selectedSymbol,
+                                onTap: () => widget.onSelectSymbol(candidate.symbol),
+                              ),
+                            ),
+                          )
+                          .toList(),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _QuickSwitchCoinButton extends StatelessWidget {
+  const _QuickSwitchCoinButton({
+    required this.candidate,
+    required this.expanded,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final ScannerCandidateModel candidate;
+  final bool expanded;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final progress = (candidate.potentialScore / 100).clamp(0.0, 1.0);
+    final accent = candidate.potentialScore >= 70
+        ? TradingPalette.neonGreen
+        : candidate.potentialScore >= 45
+            ? TradingPalette.electricBlue
+            : TradingPalette.textMuted;
+    final shortName = _shortSymbol(candidate.symbol);
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+        width: double.infinity,
+        padding: EdgeInsets.symmetric(
+          horizontal: expanded ? 8 : 4,
+          vertical: expanded ? 8 : 6,
+        ),
+        decoration: BoxDecoration(
+          color: selected
+              ? accent.withOpacity(0.16)
+              : TradingPalette.panelSoft.withOpacity(0.78),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(
+            color: selected ? accent : TradingPalette.panelBorder.withOpacity(0.55),
+          ),
+          boxShadow: selected
+              ? <BoxShadow>[
+                  BoxShadow(
+                    color: accent.withOpacity(0.22),
+                    blurRadius: 14,
+                    spreadRadius: 1,
+                  ),
+                ]
+              : const <BoxShadow>[],
+        ),
+        child: expanded
+            ? Row(
+                children: <Widget>[
+                  _PotentialRing(
+                    progress: progress,
+                    accent: accent,
+                    child: Text(
+                      shortName,
+                      style: const TextStyle(
+                        color: TradingPalette.textPrimary,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Text(
+                          shortName,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: TradingPalette.textPrimary,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          candidate.potentialScore.toStringAsFixed(0),
+                          style: TextStyle(
+                            color: accent,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              )
+            : Center(
+                child: _PotentialRing(
+                  progress: progress,
+                  accent: accent,
+                  child: Text(
+                    shortName,
+                    style: const TextStyle(
+                      color: TradingPalette.textPrimary,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+              ),
+      ),
+    );
+  }
+}
+
+class _PotentialRing extends StatelessWidget {
+  const _PotentialRing({
+    required this.progress,
+    required this.accent,
+    required this.child,
+  });
+
+  final double progress;
+  final Color accent;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 30,
+      height: 30,
+      child: Stack(
+        alignment: Alignment.center,
+        children: <Widget>[
+          CircularProgressIndicator(
+            value: progress,
+            strokeWidth: 3,
+            backgroundColor: TradingPalette.panelBorder,
+            valueColor: AlwaysStoppedAnimation<Color>(accent),
+          ),
+          child,
+        ],
+      ),
+    );
+  }
+}
+
+String _shortSymbol(String symbol) {
+  final normalized = symbol.toUpperCase();
+  for (final suffix in const <String>['USDT', 'USDC', 'USD']) {
+    if (normalized.endsWith(suffix) && normalized.length > suffix.length) {
+      return normalized.substring(0, normalized.length - suffix.length);
+    }
+  }
+  return normalized;
 }
 
 class _ChartGeometry {
