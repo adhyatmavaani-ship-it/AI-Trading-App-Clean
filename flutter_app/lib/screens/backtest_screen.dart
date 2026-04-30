@@ -5,6 +5,7 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../core/error_mapper.dart';
 import '../features/pnl/providers/pnl_providers.dart';
 import '../models/backtest_job.dart';
 import '../providers/app_providers.dart';
@@ -205,9 +206,9 @@ class _BacktestScreenState extends ConsumerState<BacktestScreen> {
                 ),
                 if ((_status!.error ?? '').isNotEmpty) ...<Widget>[
                   const SizedBox(height: 8),
-                  Text(
-                    _status!.error!,
-                    style: const TextStyle(color: Color(0xFFFF8E72)),
+                  const Text(
+                    'Backtest encountered an issue. Please try again.',
+                    style: TextStyle(color: Color(0xFFFF8E72)),
                   ),
                 ],
                 if (_status!.isTerminal) ...<Widget>[
@@ -296,8 +297,10 @@ class _BacktestScreenState extends ConsumerState<BacktestScreen> {
       if (!mounted) {
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Backtest start failed: $error')),
+      showSafeError(
+        context,
+        error,
+        fallback: 'Backtest could not be started. Please try again.',
       );
     } finally {
       if (mounted) {
@@ -325,7 +328,8 @@ class _BacktestScreenState extends ConsumerState<BacktestScreen> {
       if (nextStatus.isTerminal) {
         _pollTimer?.cancel();
       }
-    } catch (_) {
+    } catch (error, stackTrace) {
+      logError(error, stackTrace: stackTrace);
       _pollTimer?.cancel();
     }
   }
@@ -352,8 +356,10 @@ class _BacktestScreenState extends ConsumerState<BacktestScreen> {
       if (!mounted) {
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('CSV export failed: $error')),
+      showSafeError(
+        context,
+        error,
+        fallback: 'CSV export failed. Please try again.',
       );
     } finally {
       if (mounted) {

@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 import uvicorn
 
-from app.api.routes import admin, backtest_jobs, backtests, frontend, health, meta, monitoring, public, realtime, simulation, trading
+from app.api.routes import admin, backtest_jobs, backtests, frontend, health, meta, monitoring, public, realtime, risk_coach, simulation, trading
 from app.core.config import get_settings
 from app.core.exceptions import TradingSystemException
 from app.core.logging import configure_logging
@@ -19,6 +19,7 @@ from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.request_context import RequestContextMiddleware
 from app.services.container import get_container
 from app.services.signal_websocket_manager import get_signal_websocket_manager
+from app.api.routes.risk_coach import get_risk_coach_market_service
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,7 @@ def _startup_status_summary(container) -> dict[str, object]:
 async def lifespan(app: FastAPI):
     """Manage application lifecycle - startup and shutdown."""
     container = get_container()
+    await get_risk_coach_market_service().start()
     await get_signal_websocket_manager().start()
     await container.active_trade_monitor.start()
     await container.strategy_optimizer.start()
@@ -73,6 +75,7 @@ async def lifespan(app: FastAPI):
     await container.active_trade_monitor.stop()
     await container.backtest_job_service.stop()
     await get_signal_websocket_manager().stop()
+    await get_risk_coach_market_service().stop()
     await asyncio.sleep(0.1)
     logger.info("Shutdown complete")
 
@@ -153,6 +156,7 @@ app.add_middleware(
     allow_credentials=settings.cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Correlation-ID", "X-Process-Time-Ms"],
 )
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(AuthMiddleware)
@@ -172,6 +176,8 @@ app.include_router(admin.router, prefix="/v1", dependencies=[Depends(get_api_key
 app.include_router(simulation.router, prefix="/v1", dependencies=[Depends(get_api_key)])
 app.include_router(realtime.router)
 app.include_router(realtime.router, prefix="/v1")
+app.include_router(risk_coach.router, prefix="/v1")
+app.include_router(risk_coach.router)
 
 
 @app.api_route("/", methods=["GET", "HEAD"])

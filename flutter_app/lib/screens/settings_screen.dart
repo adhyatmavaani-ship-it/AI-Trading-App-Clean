@@ -2,11 +2,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/auth_credentials_store.dart';
-import '../features/monitoring/providers/diagnostic_providers.dart';
+import '../core/constants.dart';
+import '../core/error_mapper.dart';
+import '../core/trading_palette.dart';
 import '../features/pnl/providers/pnl_providers.dart';
 import '../features/settings/providers/settings_provider.dart';
+import '../providers/app_providers.dart';
+import '../widgets/glass_panel.dart';
+import '../widgets/gradient_action_button.dart';
 import '../widgets/section_card.dart';
-import '../widgets/state_widgets.dart';
+import '../widgets/status_badge.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -18,11 +23,9 @@ class SettingsScreen extends ConsumerStatefulWidget {
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   late final TextEditingController _apiKeyController;
   AuthScheme _authScheme = AuthScheme.apiKey;
-  String _debugSymbol = 'BTCUSDT';
-  bool _debugBusy = false;
-  bool _adminSafetyBusy = false;
-  Map<String, dynamic>? _lastDebugResult;
-  Map<String, dynamic>? _adminModelState;
+  bool _connectivityBusy = false;
+  Map<String, dynamic>? _connectivitySnapshot;
+  String? _connectivityError;
 
   @override
   void initState() {
@@ -31,7 +34,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     Future<void>.microtask(() {
       final userId = ref.read(activeUserIdProvider);
       ref.read(appSettingsProvider.notifier).loadTradingControls(userId);
-      _loadAdminModelState();
     });
   }
 
@@ -45,616 +47,401 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   Widget build(BuildContext context) {
     final settings = ref.watch(appSettingsProvider);
     final controller = ref.read(appSettingsProvider.notifier);
-    final diagnosticsAsync = ref.watch(exchangeDiagnosticsProvider);
     final userId = ref.watch(activeUserIdProvider);
-    final activeTradesAsync = ref.watch(activeTradesProvider(userId));
-
-    return ListView(
-      padding: const EdgeInsets.all(20),
-      children: <Widget>[
-        SectionCard(
-          title: 'System Health',
-          child: diagnosticsAsync.when(
-            data: (diagnostics) => Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+    return RefreshIndicator(
+      onRefresh: () async {
+        await controller.loadTradingControls(userId);
+      },
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(20, 6, 20, 32),
+        children: <Widget>[
+          SectionCard(
+            title: 'Backend Credentials',
+            subtitle: 'Securely store the Render API key used by protected backend routes.',
+            trailing: StatusBadge(
+              label: settings.hasStoredApiKey ? 'SAVED' : 'MISSING',
+              color: settings.hasStoredApiKey
+                  ? TradingPalette.neonGreen
+                  : TradingPalette.amber,
+            ),
+            glowColor: TradingPalette.violet,
+            child: Column(
               children: <Widget>[
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: <Widget>[
-                    Chip(
-                      label: Text(
-                        'Mode ${diagnostics.resolvedMode.toUpperCase()}',
-                      ),
-                      backgroundColor: diagnostics.usingMockData
-                          ? const Color(0xFF4A2A14)
-                          : const Color(0xFF173A2F),
+                TextField(
+                  controller: _apiKeyController,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                    labelText: 'API key or bearer token',
+                    hintText: 'Paste Render credential here',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<AuthScheme>(
+                  value: _authScheme,
+                  decoration: const InputDecoration(labelText: 'Auth scheme'),
+                  items: const <DropdownMenuItem<AuthScheme>>[
+                    DropdownMenuItem<AuthScheme>(
+                      value: AuthScheme.apiKey,
+                      child: Text('X-API-Key'),
                     ),
-                    Chip(
-                      label: Text(
-                        diagnostics.forceExecutionOverrideEnabled
-                            ? 'Force Paper ON'
-                            : 'Force Paper OFF',
+                    DropdownMenuItem<AuthScheme>(
+                      value: AuthScheme.bearer,
+                      child: Text('Authorization Bearer'),
+                    ),
+                  ],
+                  onChanged: (value) {
+                    if (value == null) {
+                      return;
+                    }
+                    setState(() => _authScheme = value);
+                  },
+                ),
+                const SizedBox(height: 14),
+                Row(
+                  children: <Widget>[
+                    Expanded(
+                      child: GradientActionButton(
+                        label: 'Save Credential',
+                        icon: Icons.lock_rounded,
+                        onPressed: () async {
+                          await controller.saveApiKey(
+                            _apiKeyController.text,
+                            scheme: _authScheme,
+                          );
+                          if (!context.mounted) {
+                            return;
+                          }
+                          _apiKeyController.clear();
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Credential saved securely'),
+                            ),
+                          );
+                        },
+                        expanded: true,
                       ),
-                      backgroundColor: diagnostics.forceExecutionOverrideEnabled
-                          ? const Color(0xFF4A2A14)
-                          : const Color(0xFF153540),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: settings.hasStoredApiKey
+                            ? () async {
+                                await controller.clearApiKey();
+                                if (!context.mounted) {
+                                  return;
+                                }
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('Stored credential removed'),
+                                  ),
+                                );
+                              }
+                            : null,
+                        icon: const Icon(Icons.delete_outline_rounded),
+                        label: const Text('Clear'),
+                      ),
                     ),
                   ],
                 ),
-                const SizedBox(height: 12),
-                ...diagnostics.exchangeStatuses.map(
-                  (exchange) => ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: Icon(
-                      Icons.circle,
-                      size: 12,
-                      color: exchange.isHealthy
-                          ? const Color(0xFF4DE2B1)
-                          : const Color(0xFFFF8E72),
+              ],
+            ),
+          ),
+          const SizedBox(height: 18),
+          SectionCard(
+            title: 'E2E Diagnostics',
+            subtitle:
+                'Run a phone-to-Render connectivity test covering REST health, authenticated root, websocket, and latency.',
+            trailing: const StatusBadge(label: 'CHECK'),
+            glowColor: TradingPalette.electricBlue,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                _DiagnosticRow(
+                  label: 'REST base URL',
+                  value: ref.read(apiClientProvider).baseUrl,
+                ),
+                const SizedBox(height: 8),
+                _DiagnosticRow(
+                  label: 'WebSocket URL',
+                  value: ref.read(webSocketServiceProvider).baseUrl,
+                ),
+                const SizedBox(height: 8),
+                _DiagnosticRow(
+                  label: 'Polling interval',
+                  value: '${AppConstants.pollingInterval.inSeconds}s',
+                ),
+                const SizedBox(height: 16),
+                GradientActionButton(
+                  label: _connectivityBusy
+                      ? 'Running diagnostics...'
+                      : 'Run E2E Connectivity Check',
+                  icon: Icons.wifi_tethering_rounded,
+                  onPressed:
+                      _connectivityBusy ? null : () => _runConnectivityCheck(context),
+                  expanded: true,
+                ),
+                if (_connectivityBusy) ...<Widget>[
+                  const SizedBox(height: 14),
+                  const LinearProgressIndicator(),
+                ],
+                if (_connectivityError != null) ...<Widget>[
+                  const SizedBox(height: 14),
+                  GlassPanel(
+                    glowColor: TradingPalette.neonRed,
+                    child: Text(
+                      _connectivityError!,
+                      style: const TextStyle(color: TradingPalette.textPrimary),
                     ),
-                    title: Text(exchange.name.toUpperCase()),
-                    subtitle: Text(
-                      exchange.lastError?.isNotEmpty == true
-                          ? exchange.lastError!
-                          : 'Connected successfully',
-                    ),
-                    trailing: Text(exchange.status.toUpperCase()),
+                  ),
+                ],
+                if (_connectivitySnapshot != null) ...<Widget>[
+                  const SizedBox(height: 14),
+                  _ConnectivitySnapshotCard(snapshot: _connectivitySnapshot!),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(height: 18),
+          SectionCard(
+            title: 'Runtime Controls',
+            subtitle:
+                'Client-side experience settings plus backend toggles already exposed by the app.',
+            trailing: const StatusBadge(label: 'RUNTIME'),
+            glowColor: TradingPalette.violet,
+            child: Column(
+              children: <Widget>[
+                SwitchListTile(
+                  value: settings.autoplayEnabled,
+                  onChanged: controller.toggleAutoplay,
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Autoplay live signals'),
+                  subtitle: const Text(
+                    'Automatically keep the dashboard synchronized with websocket signals.',
+                  ),
+                ),
+                SwitchListTile(
+                  value: settings.notificationsEnabled,
+                  onChanged: controller.toggleNotifications,
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Push notification preference'),
+                  subtitle: const Text(
+                    'Local app preference for surfacing major market changes.',
+                  ),
+                ),
+                SwitchListTile(
+                  value: settings.engineEnabled,
+                  onChanged: (value) async {
+                    await controller.saveEngineState(userId, enabled: value);
+                  },
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('AI trading engine'),
+                  subtitle: const Text(
+                    'Backend control that enables or pauses new AI trade execution.',
                   ),
                 ),
               ],
             ),
-            loading: () => const LoadingState(label: 'Checking exchange health'),
-            error: (error, _) => ErrorState(message: error.toString()),
-          ),
-        ),
-        const SizedBox(height: 20),
-        SectionCard(
-          title: 'Trading Controls',
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('AI Trading Engine'),
-                subtitle: Text(
-                  settings.engineEnabled
-                      ? 'Engine is active. The system can scan and execute within your risk rules.'
-                      : 'Engine is paused by user control. No new trades should execute.',
-                ),
-                value: settings.engineEnabled,
-                onChanged: (value) async {
-                  final messenger = ScaffoldMessenger.of(context);
-                  await controller.saveEngineState(userId, enabled: value);
-                  if (!mounted) {
-                    return;
-                  }
-                  messenger.showSnackBar(
-                    SnackBar(
-                      content: Text(
-                        value ? 'Trading engine enabled' : 'Trading engine paused',
-                      ),
-                    ),
-                  );
-                },
-              ),
-              const SizedBox(height: 16),
-              Text(
-                'Risk profile',
-                style: Theme.of(context).textTheme.titleSmall,
-              ),
-              const SizedBox(height: 8),
-              SegmentedButton<String>(
-                segments: const <ButtonSegment<String>>[
-                  ButtonSegment<String>(value: 'low', label: Text('Low')),
-                  ButtonSegment<String>(value: 'medium', label: Text('Medium')),
-                  ButtonSegment<String>(value: 'high', label: Text('High')),
-                ],
-                selected: <String>{settings.riskLevel},
-                onSelectionChanged: (selection) async {
-                  final messenger = ScaffoldMessenger.of(context);
-                  final userId = ref.read(activeUserIdProvider);
-                  final selected = selection.first;
-                  await controller.saveRiskLevel(userId, selected);
-                  if (!mounted) {
-                    return;
-                  }
-                  messenger.showSnackBar(
-                    SnackBar(
-                      content: Text(
-                          'Risk profile updated to ${selected.toUpperCase()}'),
-                    ),
-                  );
-                },
-              ),
-              const SizedBox(height: 12),
-              Text(
-                settings.riskLevel == 'low'
-                    ? 'Sniper mode: 0.85 confidence floor, tight loss control, BTC/ETH focus.'
-                    : settings.riskLevel == 'high'
-                        ? 'Aggressive mode: 0.60 confidence floor, higher drawdown allowance, wider asset set.'
-                        : 'Balanced mode: 0.70 confidence floor with standard trend-following rules.',
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 20),
-        SectionCard(
-          title: 'Admin Debug',
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              Text(
-                'God mode controls for deterministic demos and exit validation.',
-                style: Theme.of(context).textTheme.bodyMedium,
-              ),
-              const SizedBox(height: 12),
-              DropdownButtonFormField<String>(
-                value: _debugSymbol,
-                decoration: const InputDecoration(labelText: 'Debug symbol'),
-                items: const <DropdownMenuItem<String>>[
-                  DropdownMenuItem<String>(
-                    value: 'BTCUSDT',
-                    child: Text('BTCUSDT'),
-                  ),
-                  DropdownMenuItem<String>(
-                    value: 'ETHUSDT',
-                    child: Text('ETHUSDT'),
-                  ),
-                  DropdownMenuItem<String>(
-                    value: 'SOLUSDT',
-                    child: Text('SOLUSDT'),
-                  ),
-                ],
-                onChanged: (value) {
-                  if (value == null) {
-                    return;
-                  }
-                  setState(() {
-                    _debugSymbol = value;
-                  });
-                },
-              ),
-              const SizedBox(height: 12),
-              activeTradesAsync.when(
-                data: (trades) => Text(
-                  'Tracked active positions: ${trades.length} | current risk tier: ${settings.riskLevel.toUpperCase()}',
-                ),
-                loading: () => const Text('Checking active positions...'),
-                error: (error, _) => Text('Active position check failed: $error'),
-              ),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 12,
-                runSpacing: 12,
-                children: <Widget>[
-                  FilledButton.icon(
-                    onPressed: _debugBusy
-                        ? null
-                        : () => _runMockMove(
-                              context,
-                              controller,
-                              userId: userId,
-                              symbol: _debugSymbol,
-                              change: -0.02,
-                            ),
-                    icon: const Icon(Icons.trending_down_rounded),
-                    label: const Text('-2% crash'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: _debugBusy
-                        ? null
-                        : () => _runMockMove(
-                              context,
-                              controller,
-                              userId: userId,
-                              symbol: _debugSymbol,
-                              change: 0.02,
-                            ),
-                    icon: const Icon(Icons.trending_up_rounded),
-                    label: const Text('+2% spike'),
-                  ),
-                ],
-              ),
-              if (_debugBusy) ...<Widget>[
-                const SizedBox(height: 16),
-                const LinearProgressIndicator(),
-              ],
-              if (_lastDebugResult != null) ...<Widget>[
-                const SizedBox(height: 16),
-                Builder(
-                  builder: (context) {
-                    final closedTradeIds = ((_lastDebugResult!['closed_trade_ids']
-                                    as List<dynamic>?) ??
-                                const [])
-                            .map((item) => item.toString())
-                            .where((item) => item.trim().isNotEmpty)
-                            .toList();
-                    final closedTradeLabel = closedTradeIds.isEmpty
-                        ? '-'
-                        : closedTradeIds.join(', ');
-                    return Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF10242C),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: const Color(0xFF1B3741)),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: <Widget>[
-                          Text(
-                            'Last debug result',
-                            style: Theme.of(context).textTheme.titleSmall,
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            '${_lastDebugResult!['symbol']} | active before ${_lastDebugResult!['before_active_count']} -> after ${_lastDebugResult!['after_active_count']}',
-                          ),
-                          const SizedBox(height: 4),
-                          Text('Closed trades: $closedTradeLabel'),
-                          const SizedBox(height: 4),
-                          Text(
-                            'Monitor ran: ${_lastDebugResult!['monitor_ran'] == true ? 'yes' : 'no'}',
-                          ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
-              ],
-              const SizedBox(height: 20),
-              const Divider(),
-              const SizedBox(height: 12),
-              Text(
-                'AI Safety Override',
-                style: Theme.of(context).textTheme.titleSmall,
-              ),
-              const SizedBox(height: 8),
-              Text(
-                settings.learningFrozen
-                    ? 'Learning freeze is active. New samples still collect, but retraining is blocked.'
-                    : 'Learning is live. Emergency rollback and freeze controls are available for elevated operators.',
-              ),
-              const SizedBox(height: 12),
-              if (_adminModelState != null)
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF10242C),
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: const Color(0xFF1B3741)),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: <Widget>[
-                      Text(
-                        'Active ${( (_adminModelState!['active_model'] as Map<String, dynamic>? ?? const {})['model_version'] ?? 'unknown')}  |  '
-                        'Fallback ${( (_adminModelState!['fallback_model'] as Map<String, dynamic>? ?? const {})['model_version'] ?? 'none')}',
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Lift ${((((_adminModelState!['latest_event'] as Map<String, dynamic>? ?? const {})['recent_validation_accuracy_lift'] ?? 0) as num).toDouble() * 100).toStringAsFixed(1)}%  |  '
-                        'Mode ${((_adminModelState!['latest_event'] as Map<String, dynamic>? ?? const {})['trigger_mode'] ?? '-').toString()}',
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        (((_adminModelState!['latest_event'] as Map<String, dynamic>? ?? const {})['summary'] ?? 'No promotion audit yet')).toString(),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Rollback cooldown until: ${((_adminModelState!['guard_state'] as Map<String, dynamic>? ?? const {})['rollback_cooldown_until'] ?? 'none').toString()}',
-                      ),
-                    ],
-                  ),
-                ),
-              const SizedBox(height: 12),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('AI Learning Freeze'),
-                subtitle: const Text(
-                  'Blocks retraining while still allowing the system to keep collecting fresh samples.',
-                ),
-                value: settings.learningFrozen,
-                onChanged: _adminSafetyBusy
-                    ? null
-                    : (value) => _toggleLearningFreeze(context, controller, value),
-              ),
-              const SizedBox(height: 12),
-              FilledButton.icon(
-                onPressed: _adminSafetyBusy ? null : () => _confirmRollback(context, controller),
-                icon: const Icon(Icons.restore_rounded),
-                label: const Text('Rollback to Stable'),
-              ),
-              if (_adminSafetyBusy) ...<Widget>[
-                const SizedBox(height: 12),
-                const LinearProgressIndicator(),
-              ],
-            ],
-          ),
-        ),
-        const SizedBox(height: 20),
-        SectionCard(
-          title: 'Backend Authentication',
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              TextField(
-                controller: _apiKeyController,
-                obscureText: true,
-                enableSuggestions: false,
-                autocorrect: false,
-                decoration: InputDecoration(
-                  labelText: 'API key or bearer token',
-                  helperText: settings.hasStoredApiKey
-                      ? 'A backend credential is already stored securely.'
-                      : 'Stored in secure storage and attached automatically.',
-                ),
-              ),
-              const SizedBox(height: 12),
-              DropdownButtonFormField<AuthScheme>(
-                // ignore: deprecated_member_use
-                value: _authScheme,
-                decoration: const InputDecoration(labelText: 'Header type'),
-                items: const <DropdownMenuItem<AuthScheme>>[
-                  DropdownMenuItem<AuthScheme>(
-                    value: AuthScheme.apiKey,
-                    child: Text('X-API-Key'),
-                  ),
-                  DropdownMenuItem<AuthScheme>(
-                    value: AuthScheme.bearer,
-                    child: Text('Authorization Bearer'),
-                  ),
-                ],
-                onChanged: (value) {
-                  if (value == null) {
-                    return;
-                  }
-                  setState(() {
-                    _authScheme = value;
-                  });
-                },
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: <Widget>[
-                  FilledButton(
-                    onPressed: () async {
-                      final messenger = ScaffoldMessenger.of(context);
-                      await controller.saveApiKey(
-                        _apiKeyController.text,
-                        scheme: _authScheme,
-                      );
-                      if (!mounted) {
-                        return;
-                      }
-                      _apiKeyController.clear();
-                      messenger.showSnackBar(
-                        const SnackBar(
-                          content: Text('Credential saved securely'),
-                        ),
-                      );
-                    },
-                    child: const Text('Save'),
-                  ),
-                  const SizedBox(width: 12),
-                  TextButton(
-                    onPressed: settings.hasStoredApiKey
-                        ? () async {
-                            final messenger = ScaffoldMessenger.of(context);
-                            await controller.clearApiKey();
-                            if (!mounted) {
-                              return;
-                            }
-                            messenger.showSnackBar(
-                              const SnackBar(
-                                content: Text('Stored credential removed'),
-                              ),
-                            );
-                          }
-                        : null,
-                    child: const Text('Clear'),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 20),
-        SectionCard(
-          title: 'Runtime Preferences',
-          child: Column(
-            children: <Widget>[
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Autoplay live signals'),
-                subtitle: const Text(
-                  'Follow incoming websocket updates automatically.',
-                ),
-                value: settings.autoplayEnabled,
-                onChanged: controller.toggleAutoplay,
-              ),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Push notifications'),
-                subtitle: const Text(
-                  'Enable mobile alerts for major signal changes.',
-                ),
-                value: settings.notificationsEnabled,
-                onChanged: controller.toggleNotifications,
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  Future<void> _runMockMove(
-    BuildContext context,
-    AppSettingsNotifier controller, {
-    required String userId,
-    required String symbol,
-    required double change,
-  }) async {
-    final messenger = ScaffoldMessenger.of(context);
-    setState(() {
-      _debugBusy = true;
-    });
-    try {
-      final result = await controller.triggerMockPriceMove(
-        symbol: symbol,
-        change: change,
-        userId: userId,
-      );
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _lastDebugResult = result;
-      });
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(
-            '${symbol.toUpperCase()} debug move sent. Closed ${((result['closed_trade_ids'] as List<dynamic>?) ?? const []).length} trade(s).',
-          ),
-        ),
-      );
-    } catch (error) {
-      if (!mounted) {
-        return;
-      }
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text('Debug move failed: $error'),
-        ),
-      );
-    } finally {
-      if (mounted) {
-        setState(() {
-          _debugBusy = false;
-        });
-      }
-    }
-  }
-
-  Future<void> _loadAdminModelState() async {
-    final controller = ref.read(appSettingsProvider.notifier);
-    try {
-      final payload = await controller.fetchAdminModelState();
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _adminModelState = payload;
-      });
-    } catch (_) {
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _adminModelState = null;
-      });
-    }
-  }
-
-  Future<void> _toggleLearningFreeze(
-    BuildContext context,
-    AppSettingsNotifier controller,
-    bool enabled,
-  ) async {
-    final messenger = ScaffoldMessenger.of(context);
-    setState(() {
-      _adminSafetyBusy = true;
-    });
-    try {
-      final payload = await controller.setLearningFreeze(enabled: enabled);
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _adminModelState = {
-          ...?_adminModelState,
-          'guard_state': payload['guard_state'],
-        };
-      });
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(enabled ? 'AI learning frozen' : 'AI learning resumed'),
-        ),
-      );
-    } catch (error) {
-      if (!mounted) {
-        return;
-      }
-      messenger.showSnackBar(
-        SnackBar(content: Text('Freeze update failed: $error')),
-      );
-    } finally {
-      if (mounted) {
-        setState(() {
-          _adminSafetyBusy = false;
-        });
-      }
-    }
-  }
-
-  Future<void> _confirmRollback(
-    BuildContext context,
-    AppSettingsNotifier controller,
-  ) async {
-    final messenger = ScaffoldMessenger.of(context);
-    final fallbackModel = ((_adminModelState?['fallback_model'] as Map<String, dynamic>?) ?? const {})['model_version']?.toString() ?? 'unknown';
-    final summary = ((_adminModelState?['latest_event'] as Map<String, dynamic>?) ?? const {})['summary']?.toString() ?? 'No fallback audit summary available.';
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Rollback to Stable Model'),
-        content: Text(
-          'Fallback target: $fallbackModel\n\n$summary\n\nThis will immediately swap the live probability model and start rollback cooldown.',
-        ),
-        actions: <Widget>[
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Rollback'),
           ),
         ],
       ),
     );
-    if (confirmed != true) {
-      return;
-    }
+  }
+
+  Future<void> _runConnectivityCheck(BuildContext context) async {
+    final apiClient = ref.read(apiClientProvider);
+    final webSocketService = ref.read(webSocketServiceProvider);
+    final startedAt = DateTime.now();
     setState(() {
-      _adminSafetyBusy = true;
+      _connectivityBusy = true;
+      _connectivityError = null;
     });
     try {
-      await controller.rollbackAdminModel();
-      await _loadAdminModelState();
-      if (!mounted) {
+      final health = await apiClient.getHealthStatus();
+      final root = await apiClient.getRootStatus();
+      final websocket = await webSocketService.probeSignals();
+      if (!context.mounted) {
         return;
       }
-      messenger.showSnackBar(
-        const SnackBar(content: Text('Rolled back to previous stable model')),
+      setState(() {
+        _connectivitySnapshot = <String, dynamic>{
+          'rest_health': health['status'] == 'ok',
+          'auth_status': root['status'] == 'running',
+          'websocket_status': websocket['type'] == 'pong',
+          'latency_ms': DateTime.now().difference(startedAt).inMilliseconds,
+          'backend_version': health['version'],
+          'environment': root['environment'],
+        };
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('E2E connectivity check passed')),
       );
     } catch (error) {
-      if (!mounted) {
+      if (!context.mounted) {
         return;
       }
-      messenger.showSnackBar(
-        SnackBar(content: Text('Rollback failed: $error')),
+      final message = ErrorMapper.map(
+        error,
+        fallback: 'Connectivity check failed. Please try again.',
+      );
+      setState(() {
+        _connectivityError = message;
+        _connectivitySnapshot = null;
+      });
+      showSafeError(
+        context,
+        error,
+        fallback: 'Connectivity check failed. Please try again.',
+        onRetry: () {
+          _runConnectivityCheck(context);
+        },
       );
     } finally {
       if (mounted) {
-        setState(() {
-          _adminSafetyBusy = false;
-        });
+        setState(() => _connectivityBusy = false);
       }
     }
+  }
+}
+
+class _ConnectivitySnapshotCard extends StatelessWidget {
+  const _ConnectivitySnapshotCard({required this.snapshot});
+
+  final Map<String, dynamic> snapshot;
+
+  @override
+  Widget build(BuildContext context) {
+    return GlassPanel(
+      glowColor: TradingPalette.neonGreen,
+      child: Wrap(
+        spacing: 12,
+        runSpacing: 12,
+        children: <Widget>[
+          _DiagnosticStatusTile(
+            label: 'REST health',
+            ok: snapshot['rest_health'] == true,
+          ),
+          _DiagnosticStatusTile(
+            label: 'Auth status',
+            ok: snapshot['auth_status'] == true,
+          ),
+          _DiagnosticStatusTile(
+            label: 'WebSocket status',
+            ok: snapshot['websocket_status'] == true,
+          ),
+          _DiagnosticTextTile(
+            label: 'Latency',
+            value: '${snapshot['latency_ms']} ms',
+          ),
+          _DiagnosticTextTile(
+            label: 'Version',
+            value: (snapshot['backend_version'] ?? '-').toString(),
+          ),
+          _DiagnosticTextTile(
+            label: 'Environment',
+            value: (snapshot['environment'] ?? '-').toString(),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DiagnosticStatusTile extends StatelessWidget {
+  const _DiagnosticStatusTile({
+    required this.label,
+    required this.ok,
+  });
+
+  final String label;
+  final bool ok;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: TradingPalette.overlay,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: TradingPalette.panelBorder),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text(label, style: Theme.of(context).textTheme.bodySmall),
+          const SizedBox(height: 4),
+          Text(
+            ok ? 'OK' : 'FAILED',
+            style: TextStyle(
+              color: ok ? TradingPalette.neonGreen : TradingPalette.neonRed,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DiagnosticTextTile extends StatelessWidget {
+  const _DiagnosticTextTile({
+    required this.label,
+    required this.value,
+  });
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: TradingPalette.overlay,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: TradingPalette.panelBorder),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text(label, style: Theme.of(context).textTheme.bodySmall),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            style: const TextStyle(fontWeight: FontWeight.w800),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DiagnosticRow extends StatelessWidget {
+  const _DiagnosticRow({
+    required this.label,
+    required this.value,
+  });
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        SizedBox(
+          width: 116,
+          child: Text(label, style: Theme.of(context).textTheme.bodySmall),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: TradingPalette.textPrimary,
+                ),
+          ),
+        ),
+      ],
+    );
   }
 }

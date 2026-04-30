@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/auth_credentials_store.dart';
+import '../../../core/error_mapper.dart';
 import '../../../models/app_settings.dart';
 import '../../../providers/app_providers.dart';
 import '../../../repositories/trading_repository.dart';
@@ -55,7 +56,8 @@ class AppSettingsNotifier extends StateNotifier<AppSettings> {
     Map<String, dynamic> admin = const <String, dynamic>{};
     try {
       admin = await _repository.fetchAdminModelState();
-    } catch (_) {
+    } catch (error, stackTrace) {
+      logError(error, stackTrace: stackTrace);
       admin = const <String, dynamic>{};
     }
     final guardState = (admin['guard_state'] as Map<String, dynamic>?) ?? const <String, dynamic>{};

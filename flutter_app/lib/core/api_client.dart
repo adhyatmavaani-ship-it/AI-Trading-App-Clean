@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:dio/dio.dart';
@@ -16,11 +17,15 @@ import '../models/signal.dart';
 import '../models/active_trade.dart';
 import '../models/system_diagnostics.dart';
 import '../models/system_health.dart';
+import '../models/trade_execution.dart';
 import '../models/trade_timeline.dart';
 import '../models/user_pnl.dart';
+import '../features/risk_coach/models/risk_coach_models.dart';
+import 'api_exception.dart';
 import 'auth_credentials_store.dart';
 import 'backend_warmup_state.dart';
 import 'constants.dart';
+import 'retry.dart';
 
 class ApiClient {
   ApiClient({
@@ -31,11 +36,13 @@ class ApiClient {
         _tokenRefresher = tokenRefresher,
         _dio = Dio(
           BaseOptions(
-            baseUrl: baseUrl ?? AppConstants.defaultApiBaseUrl,
-            connectTimeout: AppConstants.requestTimeout,
-            receiveTimeout: AppConstants.requestTimeout,
-            sendTimeout: AppConstants.requestTimeout,
+            baseUrl:
+                _normalizeBaseUrl(baseUrl ?? AppConstants.defaultApiBaseUrl),
+            connectTimeout: AppConstants.connectTimeout,
+            receiveTimeout: AppConstants.receiveTimeout,
+            sendTimeout: AppConstants.sendTimeout,
             headers: const <String, String>{
+              'X-API-Key': AppConstants.defaultApiKey,
               'Accept': 'application/json',
             },
           ),
@@ -48,6 +55,9 @@ class ApiClient {
             'APP_ENV',
             defaultValue: 'mobile',
           );
+          if (AppConstants.defaultApiKey.trim().isEmpty) {
+            options.headers.remove('X-API-Key');
+          }
           final session = await _credentialsStore.loadSession();
           if (session != null && session.accessToken.trim().isNotEmpty) {
             _attachAuthHeaders(options, session);
@@ -75,13 +85,7 @@ class ApiClient {
           }
 
           handler.next(
-            DioException(
-              requestOptions: error.requestOptions,
-              response: error.response,
-              type: error.type,
-              error: _buildReadableError(error),
-              message: _buildReadableError(error),
-            ),
+            _normalizeDioException(error),
           );
         },
       ),
@@ -102,12 +106,17 @@ class ApiClient {
   final Future<AuthSession?> Function(AuthSession currentSession)?
       _tokenRefresher;
 
+  String get baseUrl => _dio.options.baseUrl;
+
+  static String _normalizeBaseUrl(String value) {
+    return value.trim().replaceFirst(RegExp(r'\/+$'), '');
+  }
+
   void _attachLocalDemoAuth(RequestOptions options) {
     final baseUri = Uri.tryParse(options.baseUrl);
     final demoApiKey = AppConstants.localDemoApiKey.trim();
     final isLocalhost = baseUri != null &&
-        (baseUri.host == '127.0.0.1' ||
-            baseUri.host == 'localhost');
+        (baseUri.host == '127.0.0.1' || baseUri.host == 'localhost');
     if (!isLocalhost || demoApiKey.isEmpty) {
       return;
     }
@@ -116,13 +125,33 @@ class ApiClient {
 
   void warmUpServer() {
     unawaited(
-      _dio.get<dynamic>('/health/ping').then((_) {
+      _sendWithWakeRetry<dynamic>('GET', '/health').then((_) {
         markBackendReady();
       }).catchError((_) {
-        if (backendWarmupState.value != BackendWarmupState.ready) {
-          markBackendWaking();
-        }
+        markBackendSlow();
       }),
+    );
+  }
+
+  Future<Map<String, dynamic>> getHealthStatus() async {
+    final response = await _sendWithWakeRetry<dynamic>('GET', '/health');
+    return _requireMap(response.data, path: '/health');
+  }
+
+  Future<Map<String, dynamic>> getRootStatus() async {
+    final response = await _sendWithWakeRetry<dynamic>('GET', '/');
+    return _requireMap(response.data, path: '/');
+  }
+
+  Future<TradeExecutionResponseModel> executeTrade(
+    TradeExecutionRequestModel request,
+  ) async {
+    final response = await _dio.post<dynamic>(
+      '/v1/trading/execute',
+      data: request.toJson(),
+    );
+    return TradeExecutionResponseModel.fromJson(
+      _requireMap(response.data, path: '/v1/trading/execute'),
     );
   }
 
@@ -131,7 +160,10 @@ class ApiClient {
       '/v1/signals/live',
       queryParameters: <String, dynamic>{'limit': limit},
     );
-    final items = response.data['items'] as List<dynamic>? ?? const [];
+    final items =
+        _requireMap(response.data, path: '/v1/signals/live')['items']
+            as List<dynamic>? ??
+        const [];
     return items
         .map((item) => SignalModel.fromJson(item as Map<String, dynamic>))
         .toList();
@@ -139,7 +171,7 @@ class ApiClient {
 
   Future<ActivityItemModel?> getLiveActivity() async {
     final response = await _getWithRetry('/v1/activity/live');
-    final data = response.data as Map<String, dynamic>;
+    final data = _requireMap(response.data, path: '/v1/activity/live');
     if (data.isEmpty) {
       return null;
     }
@@ -151,7 +183,10 @@ class ApiClient {
       '/v1/activity/history',
       queryParameters: <String, dynamic>{'limit': limit},
     );
-    final items = response.data['items'] as List<dynamic>? ?? const [];
+    final items =
+        _requireMap(response.data, path: '/v1/activity/history')['items']
+            as List<dynamic>? ??
+        const [];
     return items
         .map(
           (item) => ActivityItemModel.fromJson(item as Map<String, dynamic>),
@@ -164,7 +199,10 @@ class ApiClient {
       '/v1/activity/readiness',
       queryParameters: <String, dynamic>{'limit': limit},
     );
-    final items = response.data['items'] as List<dynamic>? ?? const [];
+    final items =
+        _requireMap(response.data, path: '/v1/activity/readiness')['items']
+            as List<dynamic>? ??
+        const [];
     return items
         .map(
           (item) => ReadinessCardModel.fromJson(item as Map<String, dynamic>),
@@ -187,7 +225,9 @@ class ApiClient {
         'user_id': userId,
       },
     );
-    return MarketChartModel.fromJson(response.data as Map<String, dynamic>);
+    return MarketChartModel.fromJson(
+      _requireMap(response.data, path: '/v1/market/candles'),
+    );
   }
 
   Future<MarketUniverseModel> getMarketUniverse({int limit = 18}) async {
@@ -195,7 +235,9 @@ class ApiClient {
       '/v1/market/universe',
       queryParameters: <String, dynamic>{'limit': limit},
     );
-    return MarketUniverseModel.fromJson(response.data as Map<String, dynamic>);
+    return MarketUniverseModel.fromJson(
+      _requireMap(response.data, path: '/v1/market/universe'),
+    );
   }
 
   Future<MarketSummaryModel> getMarketSummary({int limit = 18}) async {
@@ -204,7 +246,140 @@ class ApiClient {
       '/v1/market/summary',
       data: <String, dynamic>{'limit': limit},
     );
-    return MarketSummaryModel.fromJson(response.data as Map<String, dynamic>);
+    return MarketSummaryModel.fromJson(
+      _requireMap(response.data, path: '/v1/market/summary'),
+    );
+  }
+
+  Future<RiskCoachOhlcResponse> getRiskCoachOhlc({
+    String symbol = 'BTCUSDT',
+    String interval = '1m',
+    int limit = 200,
+  }) async {
+    final response = await _getWithRetry(
+      '/v1/market/ohlc',
+      queryParameters: <String, dynamic>{
+        'symbol': symbol,
+        'interval': interval,
+        'limit': limit,
+      },
+    );
+    return RiskCoachOhlcResponse.fromJson(
+      _requireMap(response.data, path: '/v1/market/ohlc'),
+    );
+  }
+
+  Future<RiskPlan> evaluateRiskCoachPlan({
+    required double entry,
+    required double stopLoss,
+    required double takeProfit,
+  }) async {
+    final response = await _dio.post<dynamic>(
+      '/v1/risk-coach/evaluate',
+      data: <String, dynamic>{
+        'account_equity': 10000,
+        'risk_amount': 100,
+        'entry': entry,
+        'stop_loss': stopLoss,
+        'take_profit': takeProfit,
+        'confidence': 0.61,
+        'reliability': 0.74,
+      },
+    );
+    return RiskPlan.fromJson(
+      _requireMap(response.data, path: '/v1/risk-coach/evaluate'),
+    );
+  }
+
+  Future<HeatmapZoneModel> getRiskCoachHeatmap({
+    required double entry,
+    required double stopLoss,
+    required double takeProfit,
+  }) async {
+    final response = await _dio.post<dynamic>(
+      '/v1/risk-coach/heatmap',
+      data: <String, dynamic>{
+        'account_equity': 10000,
+        'risk_amount': 100,
+        'entry': entry,
+        'stop_loss': stopLoss,
+        'take_profit': takeProfit,
+        'confidence': 0.61,
+        'reliability': 0.74,
+      },
+    );
+    final body = _requireMap(response.data, path: '/v1/risk-coach/heatmap');
+    return HeatmapZoneModel.fromJson(
+      Map<String, dynamic>.from(body['zone'] as Map? ?? const <String, dynamic>{}),
+    );
+  }
+
+  Future<RiskCoachTrade> createRiskCoachTrade({
+    required double entry,
+    required double stopLoss,
+    required double takeProfit,
+    required double pWin,
+    required double reliability,
+  }) async {
+    final response = await _dio.post<dynamic>(
+      '/v1/risk-coach/trades',
+      data: <String, dynamic>{
+        'account_equity': 10000,
+        'risk_amount': 100,
+        'entry': entry,
+        'stop_loss': stopLoss,
+        'take_profit': takeProfit,
+        'p_win': pWin,
+        'reliability': reliability,
+      },
+    );
+    final body = _requireMap(response.data, path: '/v1/risk-coach/trades');
+    return RiskCoachTrade.fromJson(
+      Map<String, dynamic>.from(body['trade'] as Map? ?? const <String, dynamic>{}),
+    );
+  }
+
+  Future<RiskCoachTrade> patchRiskCoachTrade({
+    required String tradeId,
+    double? entry,
+    double? stopLoss,
+    double? takeProfit,
+  }) async {
+    final response = await _dio.patch<dynamic>(
+      '/v1/risk-coach/trades/$tradeId',
+      data: <String, dynamic>{
+        if (entry != null) 'entry': entry,
+        if (stopLoss != null) 'stop_loss': stopLoss,
+        if (takeProfit != null) 'take_profit': takeProfit,
+      },
+    );
+    final body = _requireMap(response.data, path: '/v1/risk-coach/trades/$tradeId');
+    return RiskCoachTrade.fromJson(
+      Map<String, dynamic>.from(body['trade'] as Map? ?? const <String, dynamic>{}),
+    );
+  }
+
+  Future<PostMortemReportModel> closeRiskCoachTrade({
+    required String tradeId,
+    required double exitPrice,
+  }) async {
+    final response = await _dio.post<dynamic>(
+      '/v1/risk-coach/trades/$tradeId/close',
+      data: <String, dynamic>{'exit_price': exitPrice},
+    );
+    return PostMortemReportModel.fromJson(
+      _requireMap(response.data, path: '/v1/risk-coach/trades/$tradeId/close'),
+    );
+  }
+
+  Future<Map<String, dynamic>> panicCloseRiskCoachTrades({
+    List<String> tradeIds = const <String>[],
+  }) async {
+    final response = await _dio.post<dynamic>(
+      '/v1/risk-coach/panic-close',
+      data: <String, dynamic>{'trade_ids': tradeIds},
+    );
+    return _requireMap(response.data, path: '/v1/risk-coach/panic-close');
   }
 
   Future<Map<String, dynamic>> getRiskProfile(String userId) async {
@@ -212,7 +387,7 @@ class ApiClient {
       '/v1/risk/profile',
       queryParameters: <String, dynamic>{'user_id': userId},
     );
-    return response.data as Map<String, dynamic>;
+    return _requireMap(response.data, path: '/v1/risk/profile');
   }
 
   Future<Map<String, dynamic>> updateRiskProfile(
@@ -226,7 +401,7 @@ class ApiClient {
         'level': level,
       },
     );
-    return response.data as Map<String, dynamic>;
+    return _requireMap(response.data, path: '/v1/risk/profile');
   }
 
   Future<Map<String, dynamic>> getEngineState(String userId) async {
@@ -234,7 +409,7 @@ class ApiClient {
       '/v1/engine/state',
       queryParameters: <String, dynamic>{'user_id': userId},
     );
-    return response.data as Map<String, dynamic>;
+    return _requireMap(response.data, path: '/v1/engine/state');
   }
 
   Future<Map<String, dynamic>> updateEngineState(
@@ -248,25 +423,26 @@ class ApiClient {
         'enabled': enabled,
       },
     );
-    return response.data as Map<String, dynamic>;
+    return _requireMap(response.data, path: '/v1/engine/state');
   }
 
   Future<Map<String, dynamic>> getAdminModelState() async {
     final response = await _getWithRetry('/v1/admin/model/state');
-    return response.data as Map<String, dynamic>;
+    return _requireMap(response.data, path: '/v1/admin/model/state');
   }
 
   Future<Map<String, dynamic>> rollbackAdminModel() async {
     final response = await _dio.post<dynamic>('/v1/admin/model/rollback');
-    return response.data as Map<String, dynamic>;
+    return _requireMap(response.data, path: '/v1/admin/model/rollback');
   }
 
-  Future<Map<String, dynamic>> setAdminModelFreeze({required bool enabled}) async {
+  Future<Map<String, dynamic>> setAdminModelFreeze(
+      {required bool enabled}) async {
     final response = await _dio.post<dynamic>(
       '/v1/admin/model/freeze',
       queryParameters: <String, dynamic>{'enabled': enabled},
     );
-    return response.data as Map<String, dynamic>;
+    return _requireMap(response.data, path: '/v1/admin/model/freeze');
   }
 
   Future<SystemDiagnosticsModel> getExchangeDiagnostics({
@@ -277,7 +453,7 @@ class ApiClient {
       queryParameters: <String, dynamic>{'sample_symbol': sampleSymbol},
     );
     return SystemDiagnosticsModel.fromJson(
-      response.data as Map<String, dynamic>,
+      _requireMap(response.data, path: '/v1/diag/exchange'),
     );
   }
 
@@ -286,7 +462,10 @@ class ApiClient {
       '/v1/trades/active',
       queryParameters: <String, dynamic>{'user_id': userId},
     );
-    final items = response.data['items'] as List<dynamic>? ?? const [];
+    final items =
+        _requireMap(response.data, path: '/v1/trades/active')['items']
+            as List<dynamic>? ??
+        const [];
     return items
         .map(
           (item) => ActiveTradeModel.fromJson(item as Map<String, dynamic>),
@@ -311,7 +490,7 @@ class ApiClient {
         'run_monitor': runMonitor,
       },
     );
-    return response.data as Map<String, dynamic>;
+    return _requireMap(response.data, path: '/v1/test/mock-price-move');
   }
 
   Future<List<BatchModel>> getBatches({int limit = 25}) async {
@@ -319,7 +498,10 @@ class ApiClient {
       '/v1/vom/batches',
       queryParameters: <String, dynamic>{'limit': limit},
     );
-    final items = response.data['items'] as List<dynamic>? ?? const [];
+    final items =
+        _requireMap(response.data, path: '/v1/vom/batches')['items']
+            as List<dynamic>? ??
+        const [];
     return items
         .map((item) => BatchModel.fromJson(item as Map<String, dynamic>))
         .toList();
@@ -333,14 +515,14 @@ class ApiClient {
       data: request.toJson(),
     );
     return BacktestJobStatusModel.fromJson(
-      response.data as Map<String, dynamic>,
+      _requireMap(response.data, path: '/v1/backtest/run'),
     );
   }
 
   Future<BacktestJobStatusModel> getBacktestStatus(String jobId) async {
     final response = await _getWithRetry('/v1/backtest/status/$jobId');
     return BacktestJobStatusModel.fromJson(
-      response.data as Map<String, dynamic>,
+      _requireMap(response.data, path: '/v1/backtest/status/$jobId'),
     );
   }
 
@@ -352,7 +534,7 @@ class ApiClient {
       data: request.toJson(),
     );
     return BacktestJobStatusModel.fromJson(
-      response.data as Map<String, dynamic>,
+      _requireMap(response.data, path: '/v1/backtest/compare'),
     );
   }
 
@@ -369,17 +551,23 @@ class ApiClient {
       '/v1/user/pnl',
       queryParameters: <String, dynamic>{'user_id': userId},
     );
-    return UserPnLModel.fromJson(response.data as Map<String, dynamic>);
+    return UserPnLModel.fromJson(
+      _requireMap(response.data, path: '/v1/user/pnl'),
+    );
   }
 
   Future<TradeTimelineModel> getTradeTimeline(String tradeId) async {
     final response = await _getWithRetry('/v1/trade/$tradeId/timeline');
-    return TradeTimelineModel.fromJson(response.data as Map<String, dynamic>);
+    return TradeTimelineModel.fromJson(
+      _requireMap(response.data, path: '/v1/trade/$tradeId/timeline'),
+    );
   }
 
   Future<SystemHealthModel> getSystemHealth() async {
     final response = await _getWithRetry('/v1/monitoring/system');
-    return SystemHealthModel.fromJson(response.data as Map<String, dynamic>);
+    return SystemHealthModel.fromJson(
+      _requireMap(response.data, path: '/v1/monitoring/system'),
+    );
   }
 
   Future<PortfolioConcentrationHistoryModel> getConcentrationHistory({
@@ -394,7 +582,7 @@ class ApiClient {
       },
     );
     return PortfolioConcentrationHistoryModel.fromJson(
-      response.data as Map<String, dynamic>,
+      _requireMap(response.data, path: '/v1/monitoring/concentration'),
     );
   }
 
@@ -411,24 +599,31 @@ class ApiClient {
       },
     );
     return ModelStabilityConcentrationHistoryModel.fromJson(
-      response.data as Map<String, dynamic>,
+      _requireMap(
+        response.data,
+        path: '/v1/monitoring/model-stability/concentration',
+      ),
     );
   }
 
   Future<MetaDecisionModel> getMetaDecision(String tradeId) async {
     final response = await _getWithRetry('/v1/meta/decision/$tradeId');
-    return MetaDecisionModel.fromJson(response.data as Map<String, dynamic>);
+    return MetaDecisionModel.fromJson(
+      _requireMap(response.data, path: '/v1/meta/decision/$tradeId'),
+    );
   }
 
   Future<MetaAnalyticsModel> getMetaAnalytics() async {
     final response = await _getWithRetry('/v1/meta/analytics');
-    return MetaAnalyticsModel.fromJson(response.data as Map<String, dynamic>);
+    return MetaAnalyticsModel.fromJson(
+      _requireMap(response.data, path: '/v1/meta/analytics'),
+    );
   }
 
   Future<PublicPerformanceModel> getPublicPerformance() async {
     final response = await _getWithRetry('/v1/public/performance');
     return PublicPerformanceModel.fromJson(
-      response.data as Map<String, dynamic>,
+      _requireMap(response.data, path: '/v1/public/performance'),
     );
   }
 
@@ -437,7 +632,10 @@ class ApiClient {
       '/v1/public/trades',
       queryParameters: <String, dynamic>{'limit': limit},
     );
-    final items = response.data['items'] as List<dynamic>? ?? const [];
+    final items =
+        _requireMap(response.data, path: '/v1/public/trades')['items']
+            as List<dynamic>? ??
+        const [];
     return items
         .map(
           (item) => PublicTradeModel.fromJson(item as Map<String, dynamic>),
@@ -450,7 +648,10 @@ class ApiClient {
       '/v1/public/daily',
       queryParameters: <String, dynamic>{'limit': limit},
     );
-    final items = response.data['items'] as List<dynamic>? ?? const [];
+    final items =
+        _requireMap(response.data, path: '/v1/public/daily')['items']
+            as List<dynamic>? ??
+        const [];
     return items
         .map(
           (item) =>
@@ -476,6 +677,7 @@ class ApiClient {
     Map<String, dynamic>? queryParameters,
     Object? data,
   }) async {
+    markBackendConnecting();
     try {
       final response = await _dio.request<T>(
         path,
@@ -487,48 +689,119 @@ class ApiClient {
       return response;
     } on DioException catch (error) {
       if (!_isWakeRetryCandidate(error)) {
+        markBackendSlow();
         rethrow;
       }
       markBackendWaking();
-      await Future<void>.delayed(const Duration(seconds: 5));
-      final retryResponse = await _dio.request<T>(
-        path,
-        data: data,
-        queryParameters: queryParameters,
-        options: Options(method: method),
-      );
-      markBackendReady();
-      return retryResponse;
+      await Future<void>.delayed(const Duration(seconds: 3));
+      try {
+        final retryResponse = await retry<Response<T>>(
+          () => _dio.request<T>(
+            path,
+            data: data,
+            queryParameters: queryParameters,
+            options: Options(method: method),
+          ),
+          shouldRetry: (error) =>
+              error is DioException && _isWakeRetryCandidate(error),
+        );
+        markBackendReady();
+        return retryResponse;
+      } on DioException {
+        markBackendSlow();
+        rethrow;
+      }
     }
   }
 
-  String _buildReadableError(DioException error) {
+  Map<String, dynamic> _requireMap(
+    Object? value, {
+    required String path,
+  }) {
+    if (value is Map<String, dynamic>) {
+      return value;
+    }
+    throw ApiException(
+      'Backend returned an invalid response format for $path.',
+      code: 'invalid_response',
+    );
+  }
+
+  DioException _normalizeDioException(DioException error) {
+    final apiException = _toApiException(error);
+    return DioException(
+      requestOptions: error.requestOptions,
+      response: error.response,
+      type: error.type,
+      error: apiException,
+      message: apiException.message,
+    );
+  }
+
+  ApiException _toApiException(DioException error) {
     final statusCode = error.response?.statusCode;
-    final detail = error.response?.data;
+    final lowerLevelError = error.error;
     if (statusCode != null) {
+      if (statusCode == 401) {
+        return const ApiException(
+          'Authentication failed. Check the production API key configured in the app.',
+          statusCode: 401,
+          code: 'unauthorized',
+        );
+      }
       if (statusCode == 403) {
-        return 'Access denied by the trading backend. Check API credentials or account permissions.';
+        return const ApiException(
+          'Access denied by the trading backend. Check API credentials or account permissions.',
+          statusCode: 403,
+          code: 'forbidden',
+        );
+      }
+      if (statusCode >= 500) {
+        return ApiException(
+          'Trading backend is temporarily unavailable. Please retry in a moment.',
+          statusCode: statusCode,
+          code: 'server_error',
+        );
       }
       if (statusCode == 451) {
-        return 'The requested market data is unavailable in this region or from this provider right now.';
+        return const ApiException(
+          'The requested market data is unavailable in this region or from this provider right now.',
+          statusCode: 451,
+          code: 'region_restricted',
+        );
       }
-      return 'Request failed ($statusCode): $detail';
+      return ApiException(
+        statusCode >= 400 && statusCode < 500
+            ? 'The request could not be completed. Please review your input and try again.'
+            : 'The request failed. Please try again.',
+        statusCode: statusCode,
+        code: 'http_error',
+      );
+    }
+    if (lowerLevelError is SocketException) {
+      return const ApiException(
+        'No internet connection or the server is unreachable right now.',
+        code: 'socket_error',
+      );
     }
     if (error.type == DioExceptionType.connectionError) {
-      if (backendWarmupState.value == BackendWarmupState.waking) {
-        return 'Waking up AI Engine... The backend is resuming from cold start. Please wait a few seconds.';
-      }
-      return 'Unable to reach the trading backend. Check the deployed API URL and network access.';
+      return const ApiException(
+        'Unable to reach the trading backend. Check mobile internet and try again.',
+        code: 'socket_error',
+      );
     }
     if (error.type == DioExceptionType.connectionTimeout ||
         error.type == DioExceptionType.receiveTimeout ||
         error.type == DioExceptionType.sendTimeout) {
-      if (backendWarmupState.value == BackendWarmupState.waking) {
-        return 'Waking up AI Engine... The backend is resuming from cold start. Please wait a few seconds.';
-      }
-      return 'The trading backend timed out after a wake retry. Please try again.';
+      return const ApiException(
+        'Request timed out while contacting the trading backend.',
+        code: 'timeout',
+      );
     }
-    return error.message ?? 'Unexpected network failure';
+    return const ApiException(
+      'Unexpected network failure. Please try again.',
+      code: 'network_error',
+    );
   }
 
   bool _isWakeRetryCandidate(DioException error) {

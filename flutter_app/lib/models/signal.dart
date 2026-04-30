@@ -35,6 +35,18 @@ class SignalModel {
   final String? rejectionReason;
   final bool lowConfidence;
 
+  List<String> get reasons {
+    final parsed = decisionReason
+        .split(RegExp(r'[.;|]'))
+        .map((item) => item.trim())
+        .where((item) => item.isNotEmpty)
+        .toList();
+    if (parsed.isNotEmpty) {
+      return parsed;
+    }
+    return <String>['AI engine detected a live opportunity.'];
+  }
+
   bool get isForcedPaperTrade => strategy == 'FORCED_PAPER_TRADE';
 
   bool get isHighPriority => isForcedPaperTrade || alphaScore >= 80;

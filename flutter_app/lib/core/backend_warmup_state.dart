@@ -2,7 +2,9 @@ import 'package:flutter/foundation.dart';
 
 enum BackendWarmupState {
   idle,
+  connecting,
   waking,
+  slow,
   ready,
 }
 
@@ -11,6 +13,14 @@ final ValueNotifier<BackendWarmupState> backendWarmupState =
 
 void markBackendWaking() {
   backendWarmupState.value = BackendWarmupState.waking;
+}
+
+void markBackendConnecting() {
+  backendWarmupState.value = BackendWarmupState.connecting;
+}
+
+void markBackendSlow() {
+  backendWarmupState.value = BackendWarmupState.slow;
 }
 
 void markBackendReady() {

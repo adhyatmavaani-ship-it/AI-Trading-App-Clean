@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../core/error_presenter.dart';
 import '../core/trading_palette.dart';
 import '../features/activity/providers/activity_providers.dart';
 import '../features/market/providers/market_providers.dart';
@@ -74,7 +75,7 @@ class MarketChartPanel extends ConsumerWidget {
               ],
             ),
             loading: () => const LoadingState(label: 'Loading market universe'),
-            error: (error, _) => ErrorState(message: error.toString()),
+            error: (error, _) => ErrorState(message: userMessageForError(error)),
           ),
           const SizedBox(height: 18),
           Wrap(
@@ -107,7 +108,7 @@ class MarketChartPanel extends ConsumerWidget {
               height: 360,
               child: LoadingState(label: 'Loading chart'),
             ),
-            error: (error, _) => ErrorState(message: error.toString()),
+            error: (error, _) => ErrorState(message: userMessageForError(error)),
           ),
         ],
       ),

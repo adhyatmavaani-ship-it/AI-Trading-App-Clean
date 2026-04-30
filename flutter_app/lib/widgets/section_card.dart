@@ -1,8 +1,7 @@
-import 'dart:ui';
-
 import 'package:flutter/material.dart';
 
-import '../core/trading_palette.dart';
+import 'glass_panel.dart';
+import 'status_badge.dart';
 
 class SectionCard extends StatelessWidget {
   const SectionCard({
@@ -10,51 +9,53 @@ class SectionCard extends StatelessWidget {
     required this.title,
     this.trailing,
     required this.child,
+    this.subtitle,
+    this.glowColor,
   });
 
   final String title;
   final Widget? trailing;
   final Widget child;
+  final String? subtitle;
+  final Color? glowColor;
 
   @override
   Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(26),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-        child: Container(
-          padding: const EdgeInsets.all(18),
-          decoration: BoxDecoration(
-            color: TradingPalette.panel,
-            borderRadius: BorderRadius.circular(26),
-            border: Border.all(color: TradingPalette.panelBorder),
-            boxShadow: const <BoxShadow>[
-              BoxShadow(
-                color: Color(0x33000000),
-                blurRadius: 24,
-                offset: Offset(0, 14),
-              ),
-            ],
-          ),
-          child: Column(
+    return GlassPanel(
+      glowColor: glowColor,
+      radius: 20,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
-              Row(
-                children: <Widget>[
-                  Expanded(
-                    child: Text(
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
                       title,
-                      style: Theme.of(context).textTheme.titleMedium,
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                            fontWeight: FontWeight.w800,
+                          ),
                     ),
-                  ),
-                  if (trailing != null) trailing!,
-                ],
+                    if (subtitle != null) ...<Widget>[
+                      const SizedBox(height: 6),
+                      Text(
+                        subtitle!,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ],
+                ),
               ),
-              const SizedBox(height: 16),
-              child,
+              if (trailing != null) trailing! else const StatusBadge(label: 'LIVE'),
             ],
           ),
-        ),
+          const SizedBox(height: 18),
+          child,
+        ],
       ),
     );
   }

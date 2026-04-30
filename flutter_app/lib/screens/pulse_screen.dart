@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'dart:async';
 
+import '../core/error_presenter.dart';
 import '../core/trading_palette.dart';
 import '../features/activity/providers/activity_providers.dart';
 import '../features/meta/providers/meta_providers.dart';
@@ -12,6 +13,7 @@ import '../features/trade/providers/trade_providers.dart';
 import '../models/activity.dart';
 import '../models/portfolio_concentration.dart';
 import '../models/signal.dart';
+import '../providers/app_bootstrap_provider.dart';
 import '../widgets/activity_feed_tile.dart';
 import '../widgets/batch_tile.dart';
 import '../widgets/bot_state_banner.dart';
@@ -32,7 +34,8 @@ class PulseScreen extends ConsumerStatefulWidget {
 }
 
 class _PulseScreenState extends ConsumerState<PulseScreen> {
-  ProviderSubscription<AsyncValue<List<SignalModel>>>? _initialSubscription;
+  ProviderSubscription<AsyncValue<AppBootstrapSnapshot>>?
+      _bootstrapSubscription;
   ProviderSubscription<AsyncValue<SignalModel>>? _streamSubscription;
   ProviderSubscription<AsyncValue<List<ActivityItemModel>>>?
       _initialActivitySubscription;
@@ -45,10 +48,10 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
   @override
   void initState() {
     super.initState();
-    _initialSubscription =
-        ref.listenManual(initialSignalsProvider, (previous, next) {
-      next.whenData((signals) {
-        ref.read(signalFeedProvider.notifier).hydrate(signals);
+    _bootstrapSubscription =
+        ref.listenManual(appBootstrapProvider, (previous, next) {
+      next.whenData((snapshot) {
+        ref.read(signalFeedProvider.notifier).hydrate(snapshot.signals);
       });
       next.whenOrNull(error: (error, _) {
         ref.read(signalFeedProvider.notifier).setError(error);
@@ -96,7 +99,7 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
 
   @override
   void dispose() {
-    _initialSubscription?.close();
+    _bootstrapSubscription?.close();
     _streamSubscription?.close();
     _initialActivitySubscription?.close();
     _initialReadinessSubscription?.close();
@@ -109,7 +112,7 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
     if (!mounted) {
       return;
     }
-    ref.invalidate(initialSignalsProvider);
+    ref.read(appBootstrapProvider.notifier).refresh();
     ref.invalidate(initialActivityHistoryProvider);
     ref.invalidate(initialReadinessBoardProvider);
     ref.invalidate(batchesProvider);
@@ -209,9 +212,19 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final bootstrapAsync = ref.watch(appBootstrapProvider);
     final feed = ref.watch(signalFeedProvider);
     final activityFeed = ref.watch(activityFeedProvider);
     final readinessBoard = ref.watch(readinessBoardProvider);
+    if (bootstrapAsync.isLoading && feed.items.isEmpty) {
+      return const LoadingState();
+    }
+    if (bootstrapAsync.hasError && feed.items.isEmpty) {
+      return ErrorState(
+        message: userMessageForError(bootstrapAsync.error),
+        onRetry: () => ref.read(appBootstrapProvider.notifier).refresh(),
+      );
+    }
     final batchesAsync = ref.watch(batchesProvider);
     final healthAsync = ref.watch(systemHealthProvider);
     final concentrationWindow = ref.watch(concentrationWindowProvider);
@@ -259,7 +272,7 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
               height: 120,
               child: LoadingState(label: 'Loading platform health'),
             ),
-            error: (error, _) => ErrorState(message: error.toString()),
+            error: (error, _) => ErrorState(message: userMessageForError(error)),
           ),
           const SizedBox(height: 20),
           if (activityFeed.latest != null)
@@ -618,7 +631,8 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
                   loading: () => const LoadingState(
                     label: 'Loading concentration history',
                   ),
-                  error: (error, _) => ErrorState(message: error.toString()),
+                  error: (error, _) =>
+                      ErrorState(message: userMessageForError(error)),
                 ),
               ],
             ),
@@ -797,7 +811,7 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
               loading: () => const LoadingState(
                 label: 'Loading model throttling history',
               ),
-              error: (error, _) => ErrorState(message: error.toString()),
+              error: (error, _) => ErrorState(message: userMessageForError(error)),
             ),
           ),
           const SizedBox(height: 20),
@@ -809,7 +823,7 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
             ),
             error: (error, _) => SectionCard(
               title: 'Meta Pulse',
-              child: ErrorState(message: error.toString()),
+              child: ErrorState(message: userMessageForError(error)),
             ),
           ),
           const SizedBox(height: 20),
@@ -857,7 +871,7 @@ class _PulseScreenState extends ConsumerState<PulseScreen> {
               },
               loading: () =>
                   const LoadingState(label: 'Syncing virtual batches'),
-              error: (error, _) => ErrorState(message: error.toString()),
+              error: (error, _) => ErrorState(message: userMessageForError(error)),
             ),
           ),
         ],
@@ -1038,14 +1052,19 @@ class _LogicHeadline extends StatelessWidget {
             children: <Widget>[
               _LogicChip(label: activity.status.toUpperCase(), accent: accent),
               if ((activity.symbol ?? '').isNotEmpty)
-                _LogicChip(label: activity.symbol!, accent: TradingPalette.electricBlue),
+                _LogicChip(
+                    label: activity.symbol!,
+                    accent: TradingPalette.electricBlue),
               if ((activity.regime ?? '').isNotEmpty)
-                _LogicChip(label: activity.regime!, accent: TradingPalette.amber),
+                _LogicChip(
+                    label: activity.regime!, accent: TradingPalette.amber),
             ],
           ),
           const SizedBox(height: 12),
           Text(
-            activity.intent?.isNotEmpty == true ? activity.intent! : activity.message,
+            activity.intent?.isNotEmpty == true
+                ? activity.intent!
+                : activity.message,
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
                   color: TradingPalette.textPrimary,
                   fontWeight: FontWeight.w700,
@@ -1101,7 +1120,8 @@ class _LogicHeadline extends StatelessWidget {
               spacing: 8,
               runSpacing: 8,
               children: activity.logicTags
-                  .map((tag) => _LogicChip(label: tag, accent: TradingPalette.violet))
+                  .map((tag) =>
+                      _LogicChip(label: tag, accent: TradingPalette.violet))
                   .toList(),
             ),
           ],
@@ -1127,10 +1147,9 @@ class _LogicFeedItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final accent = _readinessAccent(card);
-    final confidence = (card.confidenceMeter ??
-            card.confidence ??
-            (card.readiness / 100))
-        .clamp(0.0, 1.0);
+    final confidence =
+        (card.confidenceMeter ?? card.confidence ?? (card.readiness / 100))
+            .clamp(0.0, 1.0);
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -1165,7 +1184,9 @@ class _LogicFeedItem extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
                 Text(
-                  card.intent?.isNotEmpty == true ? card.intent! : card.message ?? card.status,
+                  card.intent?.isNotEmpty == true
+                      ? card.intent!
+                      : card.message ?? card.status,
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
@@ -1182,7 +1203,7 @@ class _LogicFeedItem extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: TradingPalette.textMuted,
-                  ),
+                      ),
                 ),
                 if (card.confluenceBreakdown.isNotEmpty) ...<Widget>[
                   const SizedBox(height: 8),
@@ -1619,7 +1640,8 @@ class _ConvictionSparklinePainter extends CustomPainter {
 
 List<Widget> _riskFlagChips(Map<String, dynamic> riskFlags) {
   return riskFlags.entries.map((entry) {
-    final label = '${_titleCase(entry.key.replaceAll('_', ' '))}: ${entry.value}';
+    final label =
+        '${_titleCase(entry.key.replaceAll('_', ' '))}: ${entry.value}';
     final accent = _riskAccent(entry.value);
     return _LogicChip(label: label, accent: accent);
   }).toList();
@@ -1627,8 +1649,9 @@ List<Widget> _riskFlagChips(Map<String, dynamic> riskFlags) {
 
 Color _activityMood(ActivityItemModel? activity) {
   final status = (activity?.status ?? '').toLowerCase();
-  final confidence =
-      activity?.confidenceMeter ?? activity?.confidence ?? ((activity?.readiness ?? 0) / 100);
+  final confidence = activity?.confidenceMeter ??
+      activity?.confidence ??
+      ((activity?.readiness ?? 0) / 100);
   if (status.contains('almost') || confidence >= 0.75) {
     return TradingPalette.neonGreen;
   }
@@ -1660,7 +1683,9 @@ Color _confluenceAccent(String value) {
       text.contains('oversold')) {
     return TradingPalette.neonGreen;
   }
-  if (text.contains('forming') || text.contains('balanced') || text.contains('mixed')) {
+  if (text.contains('forming') ||
+      text.contains('balanced') ||
+      text.contains('mixed')) {
     return TradingPalette.amber;
   }
   return TradingPalette.electricBlue;
@@ -1685,24 +1710,23 @@ String _titleCase(String raw) {
       .join(' ');
 }
 
-List<Offset> _historyOffsets(List<ConfidenceHistoryPointModel> history, Size size) {
+List<Offset> _historyOffsets(
+    List<ConfidenceHistoryPointModel> history, Size size) {
   if (history.isEmpty) {
     return const <Offset>[];
   }
   final points = <Offset>[];
   final startMs = history.first.timestamp.millisecondsSinceEpoch.toDouble();
   final endMs = history.last.timestamp.millisecondsSinceEpoch.toDouble();
-  final minScore = history
-      .map((item) => item.score)
-      .reduce(math.min);
-  final maxScore = history
-      .map((item) => item.score)
-      .reduce(math.max);
-  final scoreRange = (maxScore - minScore).abs() < 1e-6 ? 1.0 : (maxScore - minScore);
+  final minScore = history.map((item) => item.score).reduce(math.min);
+  final maxScore = history.map((item) => item.score).reduce(math.max);
+  final scoreRange =
+      (maxScore - minScore).abs() < 1e-6 ? 1.0 : (maxScore - minScore);
   final timeRange = (endMs - startMs).abs() < 1e-6 ? 1.0 : (endMs - startMs);
   for (final item in history) {
     final timeRatio =
-        (item.timestamp.millisecondsSinceEpoch.toDouble() - startMs) / timeRange;
+        (item.timestamp.millisecondsSinceEpoch.toDouble() - startMs) /
+            timeRange;
     final scoreRatio = (item.score - minScore) / scoreRange;
     points.add(
       Offset(
@@ -1797,7 +1821,8 @@ void _showConfidencePointSheet(
             Text(
               point.reason?.isNotEmpty == true
                   ? point.reason!
-                  : point.message ?? 'AI conviction moved at this point in the scan.',
+                  : point.message ??
+                      'AI conviction moved at this point in the scan.',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: TradingPalette.textPrimary,
                   ),
@@ -1809,7 +1834,8 @@ void _showConfidencePointSheet(
               children: <Widget>[
                 _LogicChip(
                   label: 'Score ${(point.score * 100).toStringAsFixed(0)}%',
-                  accent: _trendAccent(<ConfidenceHistoryPointModel>[point, point]),
+                  accent:
+                      _trendAccent(<ConfidenceHistoryPointModel>[point, point]),
                 ),
                 if ((point.symbol ?? '').isNotEmpty)
                   _LogicChip(
@@ -1837,7 +1863,8 @@ void _showConfidencePointSheet(
                 spacing: 8,
                 runSpacing: 8,
                 children: point.logicTags
-                    .map((tag) => _LogicChip(label: tag, accent: TradingPalette.violet))
+                    .map((tag) =>
+                        _LogicChip(label: tag, accent: TradingPalette.violet))
                     .toList(),
               ),
             ],

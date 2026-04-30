@@ -16,8 +16,10 @@ import '../models/public_dashboard.dart';
 import '../models/signal.dart';
 import '../models/system_diagnostics.dart';
 import '../models/system_health.dart';
+import '../models/trade_execution.dart';
 import '../models/trade_timeline.dart';
 import '../models/user_pnl.dart';
+import '../features/risk_coach/models/risk_coach_models.dart';
 
 class TradingRepository {
   TradingRepository({
@@ -61,6 +63,84 @@ class TradingRepository {
       limit: limit,
       userId: userId,
     );
+  }
+
+  Future<RiskCoachOhlcResponse> fetchRiskCoachOhlc() {
+    return _apiClient.getRiskCoachOhlc();
+  }
+
+  Stream<RiskCoachStreamEvent> watchRiskCoachMarket() {
+    return _webSocketService.connectRiskCoachMarket();
+  }
+
+  Future<RiskPlan> evaluateRiskCoachPlan({
+    required double entry,
+    required double stopLoss,
+    required double takeProfit,
+  }) {
+    return _apiClient.evaluateRiskCoachPlan(
+      entry: entry,
+      stopLoss: stopLoss,
+      takeProfit: takeProfit,
+    );
+  }
+
+  Future<HeatmapZoneModel> fetchRiskCoachHeatmap({
+    required double entry,
+    required double stopLoss,
+    required double takeProfit,
+  }) {
+    return _apiClient.getRiskCoachHeatmap(
+      entry: entry,
+      stopLoss: stopLoss,
+      takeProfit: takeProfit,
+    );
+  }
+
+  Future<RiskCoachTrade> createRiskCoachTrade({
+    required double entry,
+    required double stopLoss,
+    required double takeProfit,
+    required double pWin,
+    required double reliability,
+  }) {
+    return _apiClient.createRiskCoachTrade(
+      entry: entry,
+      stopLoss: stopLoss,
+      takeProfit: takeProfit,
+      pWin: pWin,
+      reliability: reliability,
+    );
+  }
+
+  Future<RiskCoachTrade> patchRiskCoachTrade({
+    required String tradeId,
+    double? entry,
+    double? stopLoss,
+    double? takeProfit,
+  }) {
+    return _apiClient.patchRiskCoachTrade(
+      tradeId: tradeId,
+      entry: entry,
+      stopLoss: stopLoss,
+      takeProfit: takeProfit,
+    );
+  }
+
+  Future<PostMortemReportModel> closeRiskCoachTrade({
+    required String tradeId,
+    required double exitPrice,
+  }) {
+    return _apiClient.closeRiskCoachTrade(
+      tradeId: tradeId,
+      exitPrice: exitPrice,
+    );
+  }
+
+  Future<Map<String, dynamic>> panicCloseRiskCoachTrades({
+    List<String> tradeIds = const <String>[],
+  }) {
+    return _apiClient.panicCloseRiskCoachTrades(tradeIds: tradeIds);
   }
 
   Future<MarketUniverseModel> fetchMarketUniverse({int limit = 18}) {
@@ -172,6 +252,12 @@ class TradingRepository {
 
   Future<List<BatchModel>> fetchBatches({int limit = 25}) {
     return _apiClient.getBatches(limit: limit);
+  }
+
+  Future<TradeExecutionResponseModel> executeTrade(
+    TradeExecutionRequestModel request,
+  ) {
+    return _apiClient.executeTrade(request);
   }
 
   Future<BacktestJobStatusModel> runBacktest(

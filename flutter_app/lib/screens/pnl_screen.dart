@@ -2,9 +2,11 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../core/error_presenter.dart';
 import '../features/pnl/providers/pnl_providers.dart';
 import '../models/active_trade.dart';
 import '../models/user_pnl.dart';
+import '../providers/app_bootstrap_provider.dart';
 import '../widgets/metric_card.dart';
 import '../widgets/section_card.dart';
 import '../widgets/state_widgets.dart';
@@ -15,13 +17,32 @@ class PnlScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final userId = ref.watch(activeUserIdProvider);
+    final bootstrapAsync = ref.watch(appBootstrapProvider);
     final pnlAsync = ref.watch(userPnLProvider(userId));
     final activeTradesAsync = ref.watch(activeTradesProvider(userId));
     final equityCurveAsync = ref.watch(equityCurveProvider(userId));
 
+    if (bootstrapAsync.isLoading && !pnlAsync.hasValue) {
+      return const LoadingState();
+    }
+    if (bootstrapAsync.hasError && !pnlAsync.hasValue) {
+      return ErrorState(
+        message: userMessageForError(bootstrapAsync.error),
+        onRetry: () => ref.read(appBootstrapProvider.notifier).refresh(),
+      );
+    }
+
     return pnlAsync.when(
       loading: () => const LoadingState(label: 'Loading portfolio'),
-      error: (error, _) => ErrorState(message: error.toString()),
+      error: (error, _) => ErrorState(
+        message: userMessageForError(error),
+        onRetry: () {
+          ref.read(appBootstrapProvider.notifier).refresh();
+          ref.invalidate(userPnLProvider(userId));
+          ref.invalidate(activeTradesProvider(userId));
+          ref.invalidate(equityCurveProvider(userId));
+        },
+      ),
       data: (pnl) => ListView(
         padding: const EdgeInsets.all(20),
         children: <Widget>[
@@ -120,9 +141,8 @@ class PnlScreen extends ConsumerWidget {
                               bottomTitles: AxisTitles(
                                 sideTitles: SideTitles(
                                   showTitles: true,
-                                  interval: spots.length > 6
-                                      ? (spots.length / 3)
-                                      : 1,
+                                  interval:
+                                      spots.length > 6 ? (spots.length / 3) : 1,
                                   getTitlesWidget: (value, meta) {
                                     return Text(
                                       value.toInt() == spots.length - 1
@@ -191,7 +211,8 @@ class PnlScreen extends ConsumerWidget {
                   ),
                 ),
               ),
-              error: (error, _) => ErrorState(message: error.toString()),
+              error: (error, _) =>
+                  ErrorState(message: userMessageForError(error)),
             ),
           ),
           const SizedBox(height: 20),
@@ -238,7 +259,8 @@ class PnlScreen extends ConsumerWidget {
               },
               loading: () =>
                   const LoadingState(label: 'Loading active positions'),
-              error: (error, _) => ErrorState(message: error.toString()),
+              error: (error, _) =>
+                  ErrorState(message: userMessageForError(error)),
             ),
           ),
         ],

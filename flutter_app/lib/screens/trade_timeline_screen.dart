@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../core/error_presenter.dart';
 import '../features/meta/providers/meta_providers.dart';
 import '../features/trade/providers/trade_providers.dart';
 import '../widgets/meta_widgets.dart';
@@ -92,7 +93,7 @@ class _TradeTimelineScreenState extends ConsumerState<TradeTimelineScreen> {
               ),
               error: (error, _) => SectionCard(
                 title: 'Meta Decision',
-                child: ErrorState(message: error.toString()),
+                child: ErrorState(message: userMessageForError(error)),
               ),
               data: (metaDecision) => MetaDecisionCard(
                 metaDecision: metaDecision,
@@ -106,7 +107,7 @@ class _TradeTimelineScreenState extends ConsumerState<TradeTimelineScreen> {
             ),
             error: (error, _) => SectionCard(
               title: 'Timeline',
-              child: ErrorState(message: error.toString()),
+              child: ErrorState(message: userMessageForError(error)),
             ),
             data: (timeline) => SectionCard(
               title: 'Trade ${timeline.tradeId}',

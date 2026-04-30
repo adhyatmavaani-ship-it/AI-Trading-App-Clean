@@ -1,8 +1,9 @@
+import json
 import os
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -368,6 +369,27 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
+
+    @field_validator("cors_allowed_origins", mode="before")
+    @classmethod
+    def _parse_cors_allowed_origins(cls, value):
+        if value is None or value == "":
+            return ["*"]
+        if isinstance(value, list):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip()
+            if not normalized:
+                return ["*"]
+            if normalized.startswith("["):
+                try:
+                    parsed = json.loads(normalized)
+                except json.JSONDecodeError:
+                    parsed = None
+                if isinstance(parsed, list):
+                    return [str(item).strip() for item in parsed if str(item).strip()]
+            return [item.strip() for item in normalized.split(",") if item.strip()]
+        return value
 
     @property
     def is_production(self) -> bool:

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../core/error_presenter.dart';
 import '../core/trading_palette.dart';
 import '../features/activity/providers/activity_providers.dart';
 import '../features/market/providers/market_providers.dart';
@@ -39,7 +40,7 @@ class MarketSentimentGauge extends ConsumerWidget {
       error: (error, _) => SectionCard(
         title: 'Market Sentiment',
         trailing: _gaugePill(),
-        child: ErrorState(message: error.toString()),
+        child: ErrorState(message: userMessageForError(error)),
       ),
     );
   }
