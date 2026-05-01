@@ -401,7 +401,45 @@ class Settings(BaseSettings):
             return True
         return not self.is_production
 
+    def validate_runtime_safety(self) -> None:
+        errors: list[str] = []
+        warnings: list[str] = []
+
+        if self.is_production:
+            if "*" in self.cors_allowed_origins:
+                errors.append("CORS_ALLOWED_ORIGINS cannot contain '*' in prod")
+            if self.force_execution_override_enabled:
+                errors.append("FORCE_EXECUTION_OVERRIDE_ENABLED must be false in prod")
+            if not self.auth_api_keys_json and not self.firestore_project_id:
+                errors.append("prod requires AUTH_API_KEYS_JSON or FIRESTORE_PROJECT_ID for authenticated access")
+            if self.training_buffer_path.strip().lower().endswith(".sqlite3"):
+                warnings.append(
+                    "TRAINING_BUFFER_PATH points to a local sqlite file; use managed persistence for authoritative production data"
+                )
+
+        if self.trading_mode == "live":
+            live_credential_sets = (
+                bool(self.binance_api_key and self.binance_api_secret),
+                bool(self.kraken_api_key and self.kraken_api_secret),
+                bool(self.coinbase_api_key and self.coinbase_api_secret and self.coinbase_api_passphrase),
+            )
+            if not any(live_credential_sets):
+                errors.append("TRADING_MODE=live requires at least one configured live exchange credential set")
+            if self.environment != "prod":
+                warnings.append("TRADING_MODE=live outside prod should be restricted to controlled staging only")
+
+        if errors:
+            raise ValueError("; ".join(errors))
+
+        setattr(self, "_runtime_warnings", warnings)
+
+    @property
+    def runtime_warnings(self) -> list[str]:
+        return list(getattr(self, "_runtime_warnings", []))
+
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    settings.validate_runtime_safety()
+    return settings

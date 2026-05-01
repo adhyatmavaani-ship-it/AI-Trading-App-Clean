@@ -17,6 +17,7 @@ Before any deployment, run the repo preflight from the repo root:
 
 - Bash: [`scripts/beta_preflight.sh`](./scripts/beta_preflight.sh)
 - PowerShell: [`scripts/beta_preflight.ps1`](./scripts/beta_preflight.ps1)
+- Python: `py -3.11 scripts/production_readiness_check.py`
 
 ## Local and beta expectations
 

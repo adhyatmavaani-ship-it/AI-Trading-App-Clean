@@ -17,3 +17,5 @@ backend/runtime.txt
 backend/artifacts/
 artifacts/
 backend/backtest_data/
+trades.db
+*.sqlite3

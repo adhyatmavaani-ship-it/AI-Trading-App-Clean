@@ -24,7 +24,7 @@ from backend.utils.logger import get_logger
 logger = get_logger("trading-system")
 BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = BASE_DIR / "config" / "settings.yaml"
-DEFAULT_DB_PATH = BASE_DIR / "trades.db"
+DEFAULT_DB_PATH = BASE_DIR / "backend" / "artifacts" / "trades.db"
 
 
 @dataclass

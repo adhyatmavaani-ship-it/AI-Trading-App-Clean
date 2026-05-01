@@ -12,6 +12,8 @@ Recommended operating stance:
 - `ENVIRONMENT=prod` for real production deploys
 - `FORCE_EXECUTION_OVERRIDE_ENABLED=false` unless a human operator has a tightly controlled reason to enable it
 
+Before promotion, run `py -3.11 scripts/production_readiness_check.py` from the repo root to catch obvious launch-scope mistakes such as unsafe defaults or committed runtime databases.
+
 ## Environment Variables Checklist
 
 ### Core Runtime
