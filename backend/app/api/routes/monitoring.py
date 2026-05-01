@@ -125,8 +125,10 @@ async def model_stability_concentration_history(
         if latest_notice_payload:
             latest_notice = ModelUpdateNotice(**latest_notice_payload)
         latest_promotion = None
-        if hasattr(container.trade_probability_engine.registry, "latest_probability_registry_event"):
-            latest_event = container.trade_probability_engine.registry.latest_probability_registry_event()
+        trade_probability_engine = getattr(container, "trade_probability_engine", None)
+        registry = getattr(trade_probability_engine, "registry", None)
+        if hasattr(registry, "latest_probability_registry_event"):
+            latest_event = registry.latest_probability_registry_event()
             if latest_event:
                 latest_promotion = ModelPromotionEvent(**latest_event)
         return ModelStabilityConcentrationHistoryResponse(

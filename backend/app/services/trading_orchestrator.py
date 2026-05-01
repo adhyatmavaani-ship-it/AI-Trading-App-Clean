@@ -2513,15 +2513,24 @@ class TradingOrchestrator:
         atr = float(feature_snapshot.get("atr", feature_snapshot.get("15m_atr", feature_snapshot.get("5m_atr", 0.0))) or 0.0)
         adaptive = self._adaptive_strategy_config()
         stop_loss_multiplier = float(adaptive.get("stop_loss_multiplier", 1.0) or 1.0)
+        macro_multiplier = float(macro_bias.get("multiplier", 1.0) or 1.0)
+        if macro_multiplier < 1.0:
+            stop_loss_multiplier *= max(0.25, macro_multiplier)
+        min_stop_pct = 0.006
+        if macro_multiplier < 1.0:
+            min_stop_pct = max(0.0025, min_stop_pct * max(0.25, macro_multiplier))
         volatility = float(
             feature_snapshot.get("volatility", feature_snapshot.get("expected_risk", abs(expected_return))) or 0.0
         )
+        if macro_multiplier < 1.0:
+            volatility *= max(0.25, macro_multiplier)
         exit_plan = initial_exit_plan(
             side=side,
             entry_price=executed_price,
             atr=atr,
             volatility=volatility,
             stop_loss_multiplier=stop_loss_multiplier,
+            min_stop_pct=min_stop_pct,
             take_profit_rr=float(self.settings.strict_trade_min_take_profit_rr),
         )
         self._assert_risk_consistency(

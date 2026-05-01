@@ -53,7 +53,7 @@ Backend:
 cd backend
 python -m compileall app tests
 python -m unittest discover -s tests -v
-python scripts/process_smoke_check.py --token local-dev-token
+python ./scripts/process_smoke_check.py --token local-dev-token
 ```
 
 Flutter:
@@ -90,7 +90,7 @@ Manual run:
 
 ```bash
 cd backend
-python scripts/process_smoke_check.py --token smoke-token
+python ./scripts/process_smoke_check.py --token smoke-token
 ```
 
 ## CI contract
@@ -101,7 +101,7 @@ GitHub Actions runs:
 2. `python -m compileall app tests`
 3. `python -m unittest discover -s tests -v`
 4. `python -m unittest tests.test_app_boot -v`
-5. `python scripts/process_smoke_check.py`
+5. `python ./scripts/process_smoke_check.py`
 6. Flutter `flutter analyze`
 7. Cloud Functions `npm test` and `node --check index.js`
 
@@ -149,7 +149,7 @@ Minimum beta preflight:
 ```bash
 cd backend
 python -m unittest discover -s tests -v
-python scripts/process_smoke_check.py --token beta-smoke-token
+python ./scripts/process_smoke_check.py --token beta-smoke-token
 ```
 
 ```bash

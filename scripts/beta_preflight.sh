@@ -2,20 +2,20 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON_BIN="${PYTHON_BIN:-python}"
+PYTHON_BIN="${PYTHON_BIN:-python3.11}"
 
 echo "[beta-preflight] backend compile"
-cd "$ROOT_DIR/backend"
-"$PYTHON_BIN" -m compileall app tests scripts
+cd "$ROOT_DIR"
+"$PYTHON_BIN" -m compileall backend/app backend/tests backend/scripts
 
 echo "[beta-preflight] backend tests"
-"$PYTHON_BIN" -m unittest discover -s tests -v
+"$PYTHON_BIN" -m unittest discover -s backend/tests -v
 
 echo "[beta-preflight] app boot smoke"
-"$PYTHON_BIN" -m unittest tests.test_app_boot -v
+"$PYTHON_BIN" -m unittest discover -s backend/tests -p test_app_boot.py -v
 
 echo "[beta-preflight] process + websocket smoke"
-"$PYTHON_BIN" scripts/process_smoke_check.py --token "${BETA_SMOKE_TOKEN:-beta-preflight-token}"
+"$PYTHON_BIN" backend/scripts/process_smoke_check.py --token "${BETA_SMOKE_TOKEN:-beta-preflight-token}"
 
 echo "[beta-preflight] flutter analyze"
 cd "$ROOT_DIR/flutter_app"
