@@ -5,6 +5,7 @@ import '../core/auth_credentials_store.dart';
 import '../core/constants.dart';
 import '../core/error_mapper.dart';
 import '../core/trading_palette.dart';
+import '../features/auth/providers/auth_provider.dart';
 import '../features/pnl/providers/pnl_providers.dart';
 import '../features/settings/providers/settings_provider.dart';
 import '../providers/app_providers.dart';
@@ -57,7 +58,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         children: <Widget>[
           SectionCard(
             title: 'Backend Credentials',
-            subtitle: 'Securely store the Render API key used by protected backend routes.',
+            subtitle:
+                'Securely store the Render API key used by protected backend routes.',
             trailing: StatusBadge(
               label: settings.hasStoredApiKey ? 'SAVED' : 'MISSING',
               color: settings.hasStoredApiKey
@@ -108,6 +110,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                             _apiKeyController.text,
                             scheme: _authScheme,
                           );
+                          await ref
+                              .read(authControllerProvider.notifier)
+                              .refresh();
                           if (!context.mounted) {
                             return;
                           }
@@ -127,6 +132,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         onPressed: settings.hasStoredApiKey
                             ? () async {
                                 await controller.clearApiKey();
+                                await ref
+                                    .read(authControllerProvider.notifier)
+                                    .signOut();
                                 if (!context.mounted) {
                                   return;
                                 }
@@ -176,8 +184,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       ? 'Running diagnostics...'
                       : 'Run E2E Connectivity Check',
                   icon: Icons.wifi_tethering_rounded,
-                  onPressed:
-                      _connectivityBusy ? null : () => _runConnectivityCheck(context),
+                  onPressed: _connectivityBusy
+                      ? null
+                      : () => _runConnectivityCheck(context),
                   expanded: true,
                 ),
                 if (_connectivityBusy) ...<Widget>[

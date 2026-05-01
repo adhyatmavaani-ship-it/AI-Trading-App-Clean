@@ -17,3 +17,4 @@ google-cloud-secret-manager
 tenacity
 websockets
 prometheus-client
+pyyaml

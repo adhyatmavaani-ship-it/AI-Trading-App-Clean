@@ -1,0 +1,56 @@
+app:
+  name: ai-trading-system
+  account_equity: 10000
+
+strategies:
+  - trend
+  - range
+  - breakout
+
+meta_engine:
+  last_n_trades: 20
+  min_history: 3
+  recent_trade_window: 10
+  weak_strategy_threshold: 0.2
+  kill_switch_score: 0.0
+
+risk_engine:
+  max_risk_per_trade_pct: 0.02
+  max_daily_loss_pct: 0.03
+  max_consecutive_losses: 3
+  stop_loss_pct: 0.01
+  take_profit_pct: 0.02
+  stop_loss_atr_multiplier: 1.5
+  take_profit_atr_multiplier: 3.0
+
+execution_engine:
+  risk_per_trade_pct: 0.02
+  min_confidence: 0.3
+  cooldown_minutes: 15
+  max_open_trades: 2
+
+execution:
+  slippage_bps: 10
+  min_tick: 0.01
+
+broker:
+  mode: paper
+  dry_run: false
+  kill_switch: false
+  max_total_exposure_pct: 3.0
+  binance_base_url: https://api.binance.com
+
+sync_engine:
+  auto_start: true
+  poll_interval_seconds: 5
+  attach_orphan_positions: false
+
+monitor_engine:
+  poll_interval_seconds: 3
+  auto_start: true
+  price_api_base_url: https://api.binance.com
+  secondary_price_api_base_url: https://api.bybit.com
+  price_timeout_seconds: 5
+  cache_max_age_seconds: 10
+  cache_exit_threshold_pct: 0.0015
+  mismatch_threshold_pct: 0.002

@@ -56,21 +56,23 @@ class LoadingState extends StatelessWidget {
             constraints: const BoxConstraints(maxWidth: 360),
             child: GlassPanel(
               glowColor: TradingPalette.electricBlue,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: <Widget>[
-                  const SkeletonBlock(height: 12, width: 120, radius: 999),
-                  const SizedBox(height: 16),
-                  const ShimmerBox(height: 76),
-                  const SizedBox(height: 12),
-                  const SkeletonBlock(height: 14, width: 220),
-                  const SizedBox(height: 16),
-                  Text(
-                    resolvedLabel,
-                    textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.bodyMedium,
-                  ),
-                ],
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    const SkeletonBlock(height: 12, width: 120, radius: 999),
+                    const SizedBox(height: 16),
+                    const ShimmerBox(height: 76),
+                    const SizedBox(height: 12),
+                    const SkeletonBlock(height: 14, width: 220),
+                    const SizedBox(height: 16),
+                    Text(
+                      resolvedLabel,
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -114,41 +116,43 @@ class ErrorState extends StatelessWidget {
             constraints: const BoxConstraints(maxWidth: 420),
             child: GlassPanel(
               glowColor: TradingPalette.neonRed,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: <Widget>[
-                  Icon(
-                    resolvedIcon,
-                    size: 42,
-                    color: TradingPalette.neonRed,
-                  ),
-                  const SizedBox(height: 14),
-                  Text(
-                    resolvedMessage,
-                    textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w800,
-                        ),
-                  ),
-                  if (!waking && message.trim().isNotEmpty) ...<Widget>[
-                    const SizedBox(height: 10),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    Icon(
+                      resolvedIcon,
+                      size: 42,
+                      color: TradingPalette.neonRed,
+                    ),
+                    const SizedBox(height: 14),
                     Text(
-                      message,
+                      resolvedMessage,
                       textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.bodySmall,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w800,
+                          ),
                     ),
+                    if (!waking && message.trim().isNotEmpty) ...<Widget>[
+                      const SizedBox(height: 10),
+                      Text(
+                        message,
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                    if (onRetry != null) ...<Widget>[
+                      const SizedBox(height: 18),
+                      GradientActionButton(
+                        label: errorType == AppErrorType.auth
+                            ? 'Review Credentials'
+                            : 'Retry Connection',
+                        icon: Icons.refresh_rounded,
+                        onPressed: onRetry,
+                      ),
+                    ],
                   ],
-                  if (onRetry != null) ...<Widget>[
-                    const SizedBox(height: 18),
-                    GradientActionButton(
-                      label: errorType == AppErrorType.auth
-                          ? 'Review Credentials'
-                          : 'Retry Connection',
-                      icon: Icons.refresh_rounded,
-                      onPressed: onRetry,
-                    ),
-                  ],
-                ],
+                ),
               ),
             ),
           ),

@@ -5,9 +5,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core/auth_credentials_store.dart';
 import 'core/constants.dart';
-import 'providers/app_bootstrap_provider.dart';
 import 'providers/app_providers.dart';
-import 'screens/app_shell.dart';
+import 'screens/auth_gate.dart';
 import 'theme/app_theme.dart';
 
 Future<void> main() async {
@@ -16,7 +15,6 @@ Future<void> main() async {
   final container = ProviderContainer();
   unawaited(Future<void>.microtask(() {
     container.read(apiClientProvider).warmUpServer();
-    container.read(appBootstrapProvider.future);
   }));
   runApp(
     UncontrolledProviderScope(
@@ -53,7 +51,7 @@ class TradingApp extends StatelessWidget {
       title: 'AI Trading Platform',
       debugShowCheckedModeBanner: false,
       theme: TradingAppTheme.darkTheme,
-      home: const AppShell(),
+      home: const AuthGate(),
     );
   }
 }

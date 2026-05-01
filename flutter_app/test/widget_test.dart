@@ -7,6 +7,7 @@ import 'package:ai_trading_app/main.dart';
 import 'package:ai_trading_app/models/batch.dart';
 import 'package:ai_trading_app/models/meta_analytics.dart';
 import 'package:ai_trading_app/models/meta_decision.dart';
+import 'package:ai_trading_app/models/portfolio_concentration.dart';
 import 'package:ai_trading_app/models/public_dashboard.dart';
 import 'package:ai_trading_app/models/signal.dart';
 import 'package:ai_trading_app/models/system_health.dart';
@@ -14,8 +15,49 @@ import 'package:ai_trading_app/models/trade_timeline.dart';
 import 'package:ai_trading_app/models/user_pnl.dart';
 import 'package:ai_trading_app/providers/app_providers.dart';
 import 'package:ai_trading_app/repositories/trading_repository.dart';
+import 'package:ai_trading_app/screens/login_screen.dart';
+import 'package:ai_trading_app/widgets/gradient_action_button.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+class MemoryAuthCredentialsStore extends AuthCredentialsStore {
+  MemoryAuthCredentialsStore({AuthSession? initialSession})
+      : _session = initialSession;
+
+  AuthSession? _session;
+
+  @override
+  Future<AuthSession?> loadSession() async => _session;
+
+  @override
+  Future<void> saveSession(AuthSession session) async {
+    _session = session;
+  }
+
+  @override
+  Future<void> saveApiKey(
+    String apiKey, {
+    AuthScheme scheme = AuthScheme.apiKey,
+    DateTime? expiresAt,
+  }) async {
+    final normalized = apiKey.trim();
+    if (normalized.isEmpty) {
+      _session = null;
+      return;
+    }
+    _session = AuthSession(
+      accessToken: normalized,
+      scheme: scheme,
+      expiresAt: expiresAt,
+    );
+  }
+
+  @override
+  Future<void> clear() async {
+    _session = null;
+  }
+}
 
 class FakeTradingRepository extends TradingRepository {
   FakeTradingRepository()
@@ -206,13 +248,139 @@ class FakeTradingRepository extends TradingRepository {
       activeTrades: 2,
     );
   }
+
+  @override
+  Stream<UserPnLModel> watchUserPnL(String userId) async* {
+    yield await fetchUserPnL(userId);
+  }
+
+  @override
+  Future<PortfolioConcentrationHistoryModel> fetchConcentrationHistory({
+    String window = '24h',
+    int limit = 24,
+  }) async {
+    return const PortfolioConcentrationHistoryModel(
+      history: <PortfolioConcentrationSnapshotModel>[
+        PortfolioConcentrationSnapshotModel(
+          updatedAt: null,
+          grossExposurePct: 0.34,
+          maxSymbolExposurePct: 0.18,
+          maxSideExposurePct: 0.12,
+          maxThemeExposurePct: 0.1,
+          maxClusterExposurePct: 0.09,
+          maxBetaBucketExposurePct: 0.08,
+          grossExposureDrift: 0.01,
+          clusterConcentrationDrift: 0.02,
+          betaBucketConcentrationDrift: 0.01,
+          clusterTurnover: 0.05,
+          factorSleeveBudgetTurnover: 0.03,
+          maxFactorSleeveBudgetGapPct: 0.04,
+          severity: 'normal',
+          severityReason: null,
+          factorRegime: 'TRENDING',
+          factorModel: 'demo-model',
+          factorUniverseSymbols: <String>['BTCUSDT'],
+          factorWeights: <String, double>{'momentum': 0.6},
+          factorAttribution: <String, double>{'momentum': 0.12},
+          factorSleevePerformance: <String, Map<String, dynamic>>{},
+          factorSleeveBudgetTargets: <String, double>{'momentum': 0.5},
+          factorSleeveBudgetDeltas: <String, double>{'momentum': 0.1},
+          dominantFactorSleeve: 'momentum',
+          dominantSymbol: 'BTCUSDT',
+          dominantSide: 'LONG',
+          dominantTheme: 'macro',
+          dominantCluster: 'majors',
+          dominantBetaBucket: 'high-beta',
+          dominantOverBudgetSleeve: null,
+          dominantUnderBudgetSleeve: null,
+        ),
+      ],
+      latest: PortfolioConcentrationSnapshotModel(
+        updatedAt: null,
+        grossExposurePct: 0.34,
+        maxSymbolExposurePct: 0.18,
+        maxSideExposurePct: 0.12,
+        maxThemeExposurePct: 0.1,
+        maxClusterExposurePct: 0.09,
+        maxBetaBucketExposurePct: 0.08,
+        grossExposureDrift: 0.01,
+        clusterConcentrationDrift: 0.02,
+        betaBucketConcentrationDrift: 0.01,
+        clusterTurnover: 0.05,
+        factorSleeveBudgetTurnover: 0.03,
+        maxFactorSleeveBudgetGapPct: 0.04,
+        severity: 'normal',
+        severityReason: null,
+        factorRegime: 'TRENDING',
+        factorModel: 'demo-model',
+        factorUniverseSymbols: <String>['BTCUSDT'],
+        factorWeights: <String, double>{'momentum': 0.6},
+        factorAttribution: <String, double>{'momentum': 0.12},
+        factorSleevePerformance: <String, Map<String, dynamic>>{},
+        factorSleeveBudgetTargets: <String, double>{'momentum': 0.5},
+        factorSleeveBudgetDeltas: <String, double>{'momentum': 0.1},
+        dominantFactorSleeve: 'momentum',
+        dominantSymbol: 'BTCUSDT',
+        dominantSide: 'LONG',
+        dominantTheme: 'macro',
+        dominantCluster: 'majors',
+        dominantBetaBucket: 'high-beta',
+        dominantOverBudgetSleeve: null,
+        dominantUnderBudgetSleeve: null,
+      ),
+    );
+  }
+
+  @override
+  Stream<PortfolioConcentrationHistoryModel> watchConcentrationHistory({
+    String window = '24h',
+    int limit = 24,
+  }) async* {
+    yield await fetchConcentrationHistory(window: window, limit: limit);
+  }
 }
 
 void main() {
-  testWidgets('app shell renders', (WidgetTester tester) async {
+  testWidgets('unauthenticated users see the login screen', (
+    WidgetTester tester,
+  ) async {
     await tester.pumpWidget(
       ProviderScope(
         overrides: <Override>[
+          authCredentialsStoreProvider.overrideWithValue(
+            MemoryAuthCredentialsStore(),
+          ),
+          tradingRepositoryProvider.overrideWithValue(FakeTradingRepository()),
+        ],
+        child: const TradingApp(),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byType(LoginScreen), findsOneWidget);
+    expect(find.text('Secure Trading Access'), findsOneWidget);
+    expect(
+      tester
+          .widget<GradientActionButton>(
+            find.byType(GradientActionButton),
+          )
+          .label,
+      'Unlock Trading Workspace',
+    );
+    expect(find.text('AI Trading Dashboard'), findsNothing);
+  });
+
+  testWidgets('authenticated users enter the app shell', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: <Override>[
+          authCredentialsStoreProvider.overrideWithValue(
+            MemoryAuthCredentialsStore(
+              initialSession: const AuthSession(accessToken: 'test-token'),
+            ),
+          ),
           tradingRepositoryProvider.overrideWithValue(FakeTradingRepository()),
         ],
         child: const TradingApp(),
@@ -220,10 +388,14 @@ void main() {
     );
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.byType(TradingApp), findsOneWidget);
-    expect(find.text('AI Crypto Pulse'), findsOneWidget);
-    expect(find.text('Mode'), findsOneWidget);
-    expect(find.text('Trust'), findsOneWidget);
+    expect(find.text('AI Trading Dashboard'), findsOneWidget);
+    expect(find.text('Dashboard'), findsWidgets);
+    expect(find.text('Portfolio'), findsWidgets);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
   });
 }
