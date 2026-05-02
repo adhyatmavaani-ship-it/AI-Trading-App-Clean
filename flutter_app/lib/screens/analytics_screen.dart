@@ -47,6 +47,8 @@ class AnalyticsScreen extends ConsumerWidget {
               children: <Widget>[
                 BlockedVsExecutedCard(analytics: analytics),
                 const SizedBox(height: 20),
+                LearningSnapshotCard(analytics: analytics),
+                const SizedBox(height: 20),
                 StrategyPerformanceCard(analytics: analytics),
                 const SizedBox(height: 20),
                 ConfidenceDistributionCard(

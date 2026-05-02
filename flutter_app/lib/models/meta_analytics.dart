@@ -3,12 +3,14 @@ class MetaAnalyticsModel {
     required this.blockedTrades,
     required this.strategyPerformance,
     required this.confidenceDistribution,
+    required this.learning,
     this.updatedAt,
   });
 
   final MetaBlockedTradesModel blockedTrades;
   final Map<String, MetaStrategyPerformanceModel> strategyPerformance;
   final Map<String, int> confidenceDistribution;
+  final MetaLearningModel learning;
   final String? updatedAt;
 
   int get totalExecutedTrades => strategyPerformance.values.fold(
@@ -44,6 +46,81 @@ class MetaAnalyticsModel {
           (value as num?)?.toInt() ?? 0,
         ),
       ),
+      learning: MetaLearningModel.fromJson(
+        Map<String, dynamic>.from(
+          json['learning'] as Map? ?? const <String, dynamic>{},
+        ),
+      ),
+      updatedAt: json['updated_at'] as String?,
+    );
+  }
+}
+
+class MetaLearningModel {
+  const MetaLearningModel({
+    required this.enabled,
+    required this.blacklistTotal,
+    required this.whitelistTotal,
+    required this.regimes,
+    this.updatedAt,
+  });
+
+  final bool enabled;
+  final int blacklistTotal;
+  final int whitelistTotal;
+  final Map<String, MetaLearningRegimeModel> regimes;
+  final String? updatedAt;
+
+  int get trackedPatterns =>
+      regimes.values.fold(0, (sum, item) => sum + item.trackedPatterns);
+
+  factory MetaLearningModel.fromJson(Map<String, dynamic> json) {
+    final rawRegimes = json['regimes'] as Map? ?? const <String, dynamic>{};
+    return MetaLearningModel(
+      enabled: json['enabled'] as bool? ?? false,
+      blacklistTotal: (json['blacklist_total'] as num?)?.toInt() ?? 0,
+      whitelistTotal: (json['whitelist_total'] as num?)?.toInt() ?? 0,
+      regimes: rawRegimes.map(
+        (key, value) => MapEntry(
+          key.toString(),
+          MetaLearningRegimeModel.fromJson(
+            Map<String, dynamic>.from(value as Map? ?? const <String, dynamic>{}),
+          ),
+        ),
+      ),
+      updatedAt: json['updated_at'] as String?,
+    );
+  }
+}
+
+class MetaLearningRegimeModel {
+  const MetaLearningRegimeModel({
+    required this.trackedPatterns,
+    required this.blacklistPatterns,
+    required this.whitelistPatterns,
+    required this.preferredMinAtrPct,
+    required this.preferredMinTrendGap,
+    this.updatedAt,
+  });
+
+  final int trackedPatterns;
+  final List<String> blacklistPatterns;
+  final List<String> whitelistPatterns;
+  final double preferredMinAtrPct;
+  final double preferredMinTrendGap;
+  final String? updatedAt;
+
+  factory MetaLearningRegimeModel.fromJson(Map<String, dynamic> json) {
+    final rawBlacklist = json['blacklist_patterns'] as List? ?? const <dynamic>[];
+    final rawWhitelist = json['whitelist_patterns'] as List? ?? const <dynamic>[];
+    return MetaLearningRegimeModel(
+      trackedPatterns: (json['tracked_patterns'] as num?)?.toInt() ?? 0,
+      blacklistPatterns: rawBlacklist.map((item) => item.toString()).toList(),
+      whitelistPatterns: rawWhitelist.map((item) => item.toString()).toList(),
+      preferredMinAtrPct:
+          (json['preferred_min_atr_pct'] as num?)?.toDouble() ?? 0.0,
+      preferredMinTrendGap:
+          (json['preferred_min_trend_gap'] as num?)?.toDouble() ?? 0.0,
       updatedAt: json['updated_at'] as String?,
     );
   }

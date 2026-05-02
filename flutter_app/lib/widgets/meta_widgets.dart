@@ -235,6 +235,11 @@ class MetaPulseSummaryCard extends StatelessWidget {
                 value: topStrategy?.key ?? 'Waiting',
                 icon: Icons.insights_outlined,
               ),
+              _SummaryMetric(
+                label: 'Learned Patterns',
+                value: analytics.learning.trackedPatterns.toString(),
+                icon: Icons.auto_graph_rounded,
+              ),
             ],
           ),
           if (topConflict != null) ...<Widget>[
@@ -249,6 +254,117 @@ class MetaPulseSummaryCard extends StatelessWidget {
               style: Theme.of(context).textTheme.bodyMedium,
             ),
           ],
+        ],
+      ),
+    );
+  }
+}
+
+class LearningSnapshotCard extends StatelessWidget {
+  const LearningSnapshotCard({
+    super.key,
+    required this.analytics,
+  });
+
+  final MetaAnalyticsModel analytics;
+
+  @override
+  Widget build(BuildContext context) {
+    final regimes = analytics.learning.regimes.entries.toList()
+      ..sort((a, b) => b.value.trackedPatterns.compareTo(a.value.trackedPatterns));
+    return SectionCard(
+      title: 'Adaptive Learning',
+      trailing: _StatusBadge(
+        label: analytics.learning.enabled ? 'LIVE' : 'OFF',
+        color: analytics.learning.enabled
+            ? const Color(0xFF68E3C4)
+            : const Color(0xFFFF8E72),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: <Widget>[
+              _SummaryMetric(
+                label: 'Tracked',
+                value: analytics.learning.trackedPatterns.toString(),
+                icon: Icons.hub_outlined,
+              ),
+              _SummaryMetric(
+                label: 'Blacklist',
+                value: analytics.learning.blacklistTotal.toString(),
+                icon: Icons.block_outlined,
+              ),
+              _SummaryMetric(
+                label: 'Whitelist',
+                value: analytics.learning.whitelistTotal.toString(),
+                icon: Icons.verified_outlined,
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          if (regimes.isEmpty)
+            const Text('No learning regimes reported yet.')
+          else
+            Column(
+              children: regimes.map((entry) {
+                final regime = entry.value;
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(14),
+                      color: const Color(0xFF0A171C),
+                      border: Border.all(color: const Color(0xFF1B3741)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Row(
+                          children: <Widget>[
+                            Expanded(
+                              child: Text(
+                                entry.key,
+                                style: Theme.of(context).textTheme.titleSmall,
+                              ),
+                            ),
+                            Text(
+                              '${regime.trackedPatterns} patterns',
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'ATR floor ${regime.preferredMinAtrPct.toStringAsFixed(4)}  |  Gap floor ${regime.preferredMinTrendGap.toStringAsFixed(4)}',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                        if (regime.blacklistPatterns.isNotEmpty) ...<Widget>[
+                          const SizedBox(height: 10),
+                          _PatternWrap(
+                            label: 'Blacklisted',
+                            patterns: regime.blacklistPatterns,
+                            color: const Color(0xFFFF9A77),
+                          ),
+                        ],
+                        if (regime.whitelistPatterns.isNotEmpty) ...<Widget>[
+                          const SizedBox(height: 10),
+                          _PatternWrap(
+                            label: 'Whitelisted',
+                            patterns: regime.whitelistPatterns,
+                            color: const Color(0xFF68E3C4),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
         ],
       ),
     );
@@ -514,6 +630,53 @@ class _InfoChip extends StatelessWidget {
           Text('$label: $value'),
         ],
       ),
+    );
+  }
+}
+
+class _PatternWrap extends StatelessWidget {
+  const _PatternWrap({
+    required this.label,
+    required this.patterns,
+    required this.color,
+  });
+
+  final String label;
+  final List<String> patterns;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Text(
+          label,
+          style: Theme.of(context).textTheme.labelLarge,
+        ),
+        const SizedBox(height: 6),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: patterns
+              .map(
+                (pattern) => Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: color.withOpacity(0.10),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: color.withOpacity(0.35)),
+                  ),
+                  child: Text(
+                    pattern,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+              )
+              .toList(),
+        ),
+      ],
     );
   }
 }
