@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     coinbase_api_passphrase: str = ""
 
     firestore_project_id: str = ""
+    google_credentials_json: str = ""
     google_application_credentials: str = ""
     secret_manager_project_id: str = ""
     pinecone_api_key: str = ""
@@ -410,9 +411,42 @@ class Settings(BaseSettings):
             return True
         return not self.is_production
 
+    @staticmethod
+    def _validate_google_credentials_json(raw_json: str) -> None:
+        normalized = str(raw_json or "").strip()
+        if not normalized:
+            raise ValueError("GOOGLE_CREDENTIALS_JSON is required when FIRESTORE_PROJECT_ID is configured")
+        try:
+            parsed = json.loads(normalized)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"GOOGLE_CREDENTIALS_JSON must be valid JSON: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError("GOOGLE_CREDENTIALS_JSON must be a JSON object")
+        required_fields = (
+            "type",
+            "project_id",
+            "private_key_id",
+            "private_key",
+            "client_email",
+            "client_id",
+            "token_uri",
+        )
+        missing_fields = [field for field in required_fields if not str(parsed.get(field) or "").strip()]
+        if missing_fields:
+            raise ValueError(
+                "GOOGLE_CREDENTIALS_JSON is missing required fields: "
+                + ", ".join(missing_fields)
+            )
+
     def validate_runtime_safety(self) -> None:
         errors: list[str] = []
         warnings: list[str] = []
+
+        if self.firestore_project_id:
+            try:
+                self._validate_google_credentials_json(self.google_credentials_json)
+            except ValueError as exc:
+                errors.append(str(exc))
 
         if self.is_production:
             if "*" in self.cors_allowed_origins:

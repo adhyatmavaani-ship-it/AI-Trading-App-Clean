@@ -2,7 +2,9 @@
 
 import hashlib
 import json
+import logging
 import secrets
+import time
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -11,11 +13,15 @@ from typing import Any
 
 try:
     from google.cloud import firestore
+    from google.oauth2 import service_account
 except ModuleNotFoundError:  # pragma: no cover - exercised in lightweight local environments
     firestore = None
+    service_account = None
 
 from app.core.config import Settings, get_settings
 from app.core.exceptions import ConfigurationError
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -42,6 +48,9 @@ class _CacheEntry:
 
 
 class ApiKeyAuthService:
+    _firestore_connect_attempts = 3
+    _firestore_connect_retry_seconds = 1.0
+
     def __init__(self, settings: Settings):
         self.settings = settings
         self._cache_ttl_seconds = max(int(settings.auth_cache_ttl_seconds), 1)
@@ -54,7 +63,15 @@ class ApiKeyAuthService:
                     "google-cloud-firestore is required when firestore_project_id is configured",
                     error_code="INVALID_AUTH_CONFIG",
                 )
-            self._firestore_client = firestore.Client(project=settings.firestore_project_id)
+            if service_account is None:
+                raise ConfigurationError(
+                    "google-auth service account support is required when firestore_project_id is configured",
+                    error_code="INVALID_AUTH_CONFIG",
+                )
+            self._firestore_client = self._build_firestore_client(
+                project_id=settings.firestore_project_id,
+                raw_credentials_json=settings.google_credentials_json,
+            )
         else:
             self._firestore_client = None
 
@@ -259,6 +276,152 @@ class ApiKeyAuthService:
                 "can_execute_for_users": self._can_execute_for_users(entry),
             }
         return records
+
+    @staticmethod
+    def _load_google_credentials_json(
+        raw_json: str,
+        *,
+        expected_project_id: str,
+    ) -> dict[str, Any]:
+        normalized = str(raw_json or "").strip()
+        if not normalized:
+            logger.error(
+                "firestore_credentials_missing",
+                extra={"context": {"firestore_project_id": expected_project_id}},
+            )
+            raise ConfigurationError(
+                "GOOGLE_CREDENTIALS_JSON is required when FIRESTORE_PROJECT_ID is configured",
+                error_code="INVALID_AUTH_CONFIG",
+                details={"firestore_project_id": expected_project_id},
+            )
+        try:
+            parsed = json.loads(normalized)
+        except json.JSONDecodeError as exc:
+            logger.error(
+                "firestore_credentials_invalid_json",
+                extra={
+                    "context": {
+                        "firestore_project_id": expected_project_id,
+                        "error": str(exc),
+                    }
+                },
+            )
+            raise ConfigurationError(
+                "GOOGLE_CREDENTIALS_JSON must be valid JSON",
+                error_code="INVALID_AUTH_CONFIG",
+                details={"error": str(exc)},
+            ) from exc
+        if not isinstance(parsed, dict):
+            logger.error(
+                "firestore_credentials_invalid_type",
+                extra={
+                    "context": {
+                        "firestore_project_id": expected_project_id,
+                        "value_type": type(parsed).__name__,
+                    }
+                },
+            )
+            raise ConfigurationError(
+                "GOOGLE_CREDENTIALS_JSON must be a JSON object",
+                error_code="INVALID_AUTH_CONFIG",
+            )
+        project_id = str(parsed.get("project_id") or "").strip()
+        if project_id and expected_project_id and project_id != expected_project_id:
+            logger.error(
+                "firestore_credentials_project_mismatch",
+                extra={
+                    "context": {
+                        "credentials_project_id": project_id,
+                        "firestore_project_id": expected_project_id,
+                    }
+                },
+            )
+            raise ConfigurationError(
+                "GOOGLE_CREDENTIALS_JSON project_id must match FIRESTORE_PROJECT_ID",
+                error_code="INVALID_AUTH_CONFIG",
+                details={
+                    "credentials_project_id": project_id,
+                    "firestore_project_id": expected_project_id,
+                },
+            )
+        return parsed
+
+    @classmethod
+    def _build_firestore_client(
+        cls,
+        *,
+        project_id: str,
+        raw_credentials_json: str,
+    ):
+        credentials_info = cls._load_google_credentials_json(
+            raw_credentials_json,
+            expected_project_id=project_id,
+        )
+        last_error: Exception | None = None
+        for attempt in range(1, cls._firestore_connect_attempts + 1):
+            try:
+                credentials = service_account.Credentials.from_service_account_info(
+                    credentials_info
+                )
+                client = firestore.Client(
+                    project=project_id,
+                    credentials=credentials,
+                )
+                cls._probe_firestore_connection(client)
+                if attempt > 1:
+                    logger.info(
+                        "firestore_connection_recovered",
+                        extra={
+                            "context": {
+                                "firestore_project_id": project_id,
+                                "attempt": attempt,
+                            }
+                        },
+                    )
+                return client
+            except ConfigurationError:
+                raise
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "firestore_connection_attempt_failed",
+                    extra={
+                        "context": {
+                            "firestore_project_id": project_id,
+                            "attempt": attempt,
+                            "max_attempts": cls._firestore_connect_attempts,
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                        }
+                    },
+                )
+                if attempt < cls._firestore_connect_attempts:
+                    time.sleep(cls._firestore_connect_retry_seconds)
+
+        logger.error(
+            "firestore_connection_failed",
+            extra={
+                "context": {
+                    "firestore_project_id": project_id,
+                    "attempts": cls._firestore_connect_attempts,
+                    "error_type": type(last_error).__name__ if last_error else None,
+                    "error": str(last_error) if last_error else None,
+                }
+            },
+        )
+        raise ConfigurationError(
+            "Failed to connect to Firestore using GOOGLE_CREDENTIALS_JSON",
+            error_code="INVALID_AUTH_CONFIG",
+            details={
+                "firestore_project_id": project_id,
+                "attempts": cls._firestore_connect_attempts,
+                "error": str(last_error) if last_error else "unknown_firestore_error",
+            },
+        ) from last_error
+
+    @staticmethod
+    def _probe_firestore_connection(client) -> None:
+        next(iter(client.collections()), None)
 
     @staticmethod
     def _hash_api_key(api_key: str) -> str:

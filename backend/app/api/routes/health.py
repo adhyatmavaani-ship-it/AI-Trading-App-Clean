@@ -1,6 +1,7 @@
 """Health check endpoints for system monitoring and Kubernetes integration."""
 
 from datetime import datetime, timezone
+import logging
 import os
 from typing import Any
 
@@ -11,6 +12,7 @@ from app.core.config import get_settings
 from app.services.container import ServiceContainer, get_container
 
 router = APIRouter(tags=["health"])
+logger = logging.getLogger(__name__)
 
 
 def _render_commit() -> str:
@@ -18,10 +20,25 @@ def _render_commit() -> str:
 
 
 @router.get("/health")
-async def healthcheck() -> dict[str, str]:
-    """Minimal healthcheck for load balancers."""
+async def healthcheck(container: ServiceContainer = Depends(get_container)) -> JSONResponse:
+    """Deployment verification healthcheck with readiness and Firestore status."""
     settings = get_settings()
-    return {"status": "ok", "version": settings.app_version_short, "commit": _render_commit()}
+    checks, all_ready = _run_readiness_checks(container)
+    status_code = 200 if all_ready else 503
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "status": "ok" if all_ready else "error",
+            "version": settings.app_version_short,
+            "commit": _render_commit(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "firestore": checks.get("firestore", "unknown"),
+            "readiness": {
+                "ready": all_ready,
+                "checks": checks,
+            },
+        },
+    )
 
 
 @router.get("/health/ping")
@@ -48,41 +65,7 @@ async def readiness_check(container: ServiceContainer = Depends(get_container)) 
     Kubernetes readiness probe - can the service handle traffic?
     Checks all critical dependencies.
     """
-    checks: dict[str, str] = {}
-    all_ready = True
-
-    try:
-        using_fallback = bool(getattr(container.cache, "using_fallback", False))
-        if using_fallback:
-            checks["redis"] = "degraded_in_memory"
-        elif container.cache.client.ping():
-            checks["redis"] = "ready"
-        else:
-            checks["redis"] = "unhealthy"
-            all_ready = False
-    except Exception as exc:
-        checks["redis"] = f"error: {str(exc)[:50]}"
-        all_ready = False
-
-    try:
-        if container.firestore is None or getattr(container.firestore, "client", None) is None:
-            checks["firestore"] = "disabled"
-        else:
-            collection = container.firestore._collection("health")
-            checks["firestore"] = "ready" if collection is not None else "unhealthy"
-    except Exception as exc:
-        checks["firestore"] = f"error: {str(exc)[:50]}"
-        all_ready = False
-
-    try:
-        if hasattr(container.market_data, "latest_stream_price") and hasattr(container.market_data, "fetch_latest_price"):
-            checks["market_data"] = "ready"
-        else:
-            checks["market_data"] = "unavailable"
-            all_ready = False
-    except Exception as exc:
-        checks["market_data"] = f"error: {str(exc)[:50]}"
-        all_ready = False
+    checks, all_ready = _run_readiness_checks(container)
 
     status = "ready" if all_ready else "not_ready"
     status_code = 200 if all_ready else 503
@@ -99,6 +82,57 @@ async def readiness_check(container: ServiceContainer = Depends(get_container)) 
             "all_ready": all_ready,
         },
     )
+
+
+def _run_readiness_checks(container: ServiceContainer) -> tuple[dict[str, str], bool]:
+    checks: dict[str, str] = {}
+    all_ready = True
+
+    try:
+        using_fallback = bool(getattr(container.cache, "using_fallback", False))
+        if using_fallback:
+            checks["redis"] = "degraded_in_memory"
+        elif container.cache.client.ping():
+            checks["redis"] = "ready"
+        else:
+            checks["redis"] = "unhealthy"
+            all_ready = False
+    except Exception as exc:
+        checks["redis"] = f"error: {str(exc)[:50]}"
+        all_ready = False
+
+    firestore_status, firestore_ready = _check_firestore_connection(container)
+    checks["firestore"] = firestore_status
+    all_ready = all_ready and firestore_ready
+
+    try:
+        if hasattr(container.market_data, "latest_stream_price") and hasattr(container.market_data, "fetch_latest_price"):
+            checks["market_data"] = "ready"
+        else:
+            checks["market_data"] = "unavailable"
+            all_ready = False
+    except Exception as exc:
+        checks["market_data"] = f"error: {str(exc)[:50]}"
+        all_ready = False
+
+    return checks, all_ready
+
+
+def _check_firestore_connection(container: ServiceContainer) -> tuple[str, bool]:
+    try:
+        firestore_repo = getattr(container, "firestore", None)
+        client = getattr(firestore_repo, "client", None)
+        if firestore_repo is None or client is None:
+            return "disabled", True
+
+        next(iter(client.collections()), None)
+        return "ready", True
+    except Exception as exc:
+        logger.warning(
+            "health_firestore_check_failed",
+            extra={"context": {"error": str(exc)}},
+        )
+        return f"error: {str(exc)[:50]}", False
 
 
 @router.get("/health/detailed")

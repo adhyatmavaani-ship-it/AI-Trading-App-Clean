@@ -49,12 +49,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: Callable):
         path = request.url.path.rstrip("/") or "/"
-        api_key = request.headers.get("X-API-Key") or request.headers.get("Authorization", "")
-        auth_scheme = "X-API-Key"
-        if api_key.startswith("Bearer "):
-            api_key = api_key[7:]
-            auth_scheme = "Bearer"
-        api_key = api_key.strip()
+        api_key, auth_scheme, auth_error = self._extract_api_key(request)
 
         # Skip required auth for health checks and documentation, but preserve identity when a valid credential is provided.
         if path in self.EXCLUDED_PATHS or path.startswith(self.EXCLUDED_PREFIXES):
@@ -63,6 +58,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 if principal is not None:
                     self._set_request_context(request, principal, api_key)
             return await call_next(request)
+
+        if auth_error is not None:
+            self._log_failure(request, reason=auth_error["reason"], auth_scheme=auth_scheme)
+            return JSONResponse(status_code=401, content=auth_error["payload"])
 
         if not api_key:
             self._log_failure(request, reason="missing_credentials", auth_scheme=auth_scheme)
@@ -90,6 +89,40 @@ class AuthMiddleware(BaseHTTPMiddleware):
         self._set_request_context(request, principal, api_key)
         response = await call_next(request)
         return response
+
+    def _extract_api_key(self, request: Request) -> tuple[str, str, dict | None]:
+        x_api_key = (request.headers.get("X-API-Key") or "").strip()
+        if x_api_key:
+            return x_api_key, "X-API-Key", None
+
+        authorization = (request.headers.get("Authorization") or "").strip()
+        if not authorization:
+            return "", "X-API-Key", None
+
+        scheme, _, credentials = authorization.partition(" ")
+        normalized_scheme = scheme.strip() or "Authorization"
+        if normalized_scheme.lower() != "bearer":
+            return "", normalized_scheme, {
+                "reason": "unsupported_auth_scheme",
+                "payload": {
+                    "error_code": "INVALID_AUTH_SCHEME",
+                    "message": "Authorization header must use Bearer token",
+                    "details": {"scheme": normalized_scheme},
+                },
+            }
+
+        token = credentials.strip()
+        if not token:
+            return "", "Bearer", {
+                "reason": "missing_bearer_token",
+                "payload": {
+                    "error_code": "MISSING_API_KEY",
+                    "message": "Missing bearer token in Authorization header",
+                    "details": {},
+                },
+            }
+
+        return token, "Bearer", None
 
     def _set_request_context(self, request: Request, principal, api_key: str) -> None:
         request.state.user_id = principal.user_id

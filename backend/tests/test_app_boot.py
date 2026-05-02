@@ -93,6 +93,12 @@ class AppBootTest(unittest.TestCase):
                 self.assertEqual(root_response.status_code, 200)
                 self.assertEqual(root_response.json()["status"], "running")
 
+                health_response = client.get("/health")
+                self.assertEqual(health_response.status_code, 200)
+                self.assertEqual(health_response.json()["status"], "ok")
+                self.assertTrue(health_response.json()["readiness"]["ready"])
+                self.assertEqual(health_response.json()["firestore"], "disabled")
+
                 live_response = client.get("/health/live")
                 self.assertEqual(live_response.status_code, 200)
                 self.assertEqual(live_response.json()["status"], "alive")
