@@ -37,4 +37,5 @@ class MetaAnalyticsResponse(BaseModel):
     strategy_performance: dict[str, MetaStrategyPerformanceItem] = Field(default_factory=dict)
     confidence_distribution: dict[str, int] = Field(default_factory=dict)
     signal_pipeline: dict[str, Any] = Field(default_factory=dict)
+    learning: dict[str, Any] = Field(default_factory=dict)
     updated_at: str | None = None

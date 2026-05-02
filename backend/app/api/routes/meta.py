@@ -62,6 +62,11 @@ async def get_meta_analytics(
             "low_confidence": sum(1 for item in diagnostics if item.get("low_confidence")),
             "latest": diagnostics,
         }
+        snapshot["learning"] = (
+            container.adaptive_learning_service.snapshot()
+            if getattr(container, "adaptive_learning_service", None) is not None
+            else {}
+        )
         return MetaAnalyticsResponse(**snapshot)
     except AuthenticationError as exc:
         raise HTTPException(status_code=403, detail=exc.to_dict()) from exc

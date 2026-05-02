@@ -34,8 +34,10 @@ from app.services.redis_cache import RedisCache
 from app.services.rollout_manager import RolloutManager
 from app.services.system_monitor import SystemMonitorService
 from app.trading.exits import initial_exit_plan
+from app.trading.strategies.base import StrategyDecision
 
 if TYPE_CHECKING:
+    from app.services.adaptive_learning import AdaptiveLearningService
     from app.services.ai_engine import AIEngine
     from app.services.execution_engine import ExecutionEngine
     from app.services.execution_queue_manager import ExecutionQueueManager
@@ -111,6 +113,7 @@ class TradingOrchestrator:
     portfolio_manager: PortfolioManager | None = None
     user_experience_engine: UserExperienceEngine | None = None
     risk_controller: RiskController | None = None
+    adaptive_learning_service: AdaptiveLearningService | None = None
 
     def __post_init__(self) -> None:
         self.trade_safety_engine = LiquiditySlippageEngine(
@@ -432,6 +435,13 @@ class TradingOrchestrator:
             effective_inference = self._merge_strategy_signal(inference, strategy_decision)
         else:
             effective_inference = inference
+        strategy_decision, effective_inference, learning_feedback = self._apply_learning_feedback(
+            symbol=symbol,
+            snapshot=snapshot,
+            strategy_decision=strategy_decision,
+            inference=effective_inference,
+        )
+        diagnostics["learning"] = learning_feedback
         diagnostics["effective_inference"] = {
             "decision": effective_inference.decision,
             "confidence": round(float(effective_inference.confidence_score), 6),
@@ -445,15 +455,19 @@ class TradingOrchestrator:
             regime=snapshot.regime,
             volatility=snapshot.volatility,
         )
+        adjusted_strict_score = float(strict_gate["score"]) + float(learning_feedback.get("score_delta", 0.0) or 0.0)
+        strict_allowed = bool(strict_gate["allow_trade"]) and adjusted_strict_score >= float(self.settings.strict_trade_score_threshold)
         snapshot.features.update(
             {
-                "strict_trade_score": float(strict_gate["score"]),
-                "strict_trade_allowed": 1.0 if strict_gate["allow_trade"] else 0.0,
+                "strict_trade_score": float(adjusted_strict_score),
+                "strict_trade_allowed": 1.0 if strict_allowed else 0.0,
                 "strict_trade_confidence": float(effective_inference.confidence_score),
-                "strict_trade_reason": str(strict_gate["reason"]),
+                "strict_trade_reason": f"{strict_gate['reason']} | learning:{learning_feedback.get('reason', 'none')}",
                 "strict_trade_components": dict(strict_gate.get("components", {}) or {}),
             }
         )
+        strict_gate["score"] = adjusted_strict_score
+        strict_gate["allow_trade"] = strict_allowed
         diagnostics["strict_gate"] = strict_gate
         strategy = self.strategy_engine.select(snapshot, effective_inference, frame=frames)
         rollout = self.rollout_manager.status()
@@ -550,6 +564,9 @@ class TradingOrchestrator:
         if not strict_gate["allow_trade"]:
             strategy = "NO_TRADE"
             diagnostics["rejection_reasons"].append(f"strict_gate:{strict_gate['reason_code']}")
+        if learning_feedback.get("block_trade"):
+            strategy = "NO_TRADE"
+            diagnostics["rejection_reasons"].append("learning:blacklist_pattern")
         meta_decision = None
         if self.meta_controller is not None:
             meta_decision = self.meta_controller.govern_signal(
@@ -794,6 +811,75 @@ class TradingOrchestrator:
                 "reason": f"{inference.reason} | strategy:{strategy_decision.strategy}",
             }
         )
+
+    def _apply_learning_feedback(
+        self,
+        *,
+        symbol: str,
+        snapshot: FeatureSnapshot,
+        strategy_decision: StrategyDecision,
+        inference: AIInference,
+    ) -> tuple[StrategyDecision, AIInference, dict[str, object]]:
+        if self.adaptive_learning_service is None:
+            return strategy_decision, inference, {"enabled": False}
+        if inference.decision not in {"BUY", "SELL"}:
+            return strategy_decision, inference, {"enabled": True, "applied": False, "reason": "hold_signal"}
+
+        feedback = self.adaptive_learning_service.evaluate_signal(
+            symbol=symbol,
+            side=inference.decision,
+            strategy=strategy_decision.strategy,
+            feature_snapshot=snapshot.features,
+        )
+        snapshot.features.update(feedback.feature_payload())
+        adjusted_confidence = max(
+            float(strategy_decision.metadata.get("adjusted_confidence", strategy_decision.confidence) or 0.0),
+            float(inference.confidence_score),
+        )
+        adjusted_probability = float(
+            strategy_decision.metadata.get(
+                "trade_success_probability",
+                strategy_decision.metadata.get("adjusted_confidence", strategy_decision.confidence),
+            )
+            or 0.0
+        )
+        adjusted_confidence = max(0.0, min(1.0, adjusted_confidence * feedback.confidence_multiplier))
+        adjusted_probability = max(0.0, min(1.0, adjusted_probability * feedback.confidence_multiplier))
+        snapshot.features["trade_success_probability"] = round(adjusted_probability, 6)
+        updated_metadata = {
+            **strategy_decision.metadata,
+            "adjusted_confidence": round(adjusted_confidence, 6),
+            "trade_success_probability": round(adjusted_probability, 6),
+            "learning_pattern_key": feedback.pattern_key,
+            "learning_regime": feedback.regime,
+            "learning_reason": feedback.reason,
+            "learning_score_delta": feedback.score_delta,
+        }
+        updated_decision = StrategyDecision(
+            strategy=strategy_decision.strategy,
+            signal=strategy_decision.signal,
+            confidence=adjusted_confidence,
+            metadata=updated_metadata,
+        )
+        updated_inference = inference.model_copy(
+            update={
+                "confidence_score": round(max(0.0, min(1.0, float(inference.confidence_score) * feedback.confidence_multiplier)), 6),
+                "trade_probability": round(max(0.0, min(1.0, float(inference.trade_probability) * feedback.confidence_multiplier)), 6),
+                "reason": f"{inference.reason} | learning:{feedback.reason}",
+            }
+        )
+        return updated_decision, updated_inference, {
+            "enabled": True,
+            "applied": True,
+            "pattern_key": feedback.pattern_key,
+            "regime": feedback.regime,
+            "confidence_multiplier": feedback.confidence_multiplier,
+            "score_delta": feedback.score_delta,
+            "block_trade": feedback.block_trade,
+            "trades": feedback.trades,
+            "win_rate": feedback.win_rate,
+            "reason": feedback.reason,
+        }
 
     def _trade_intelligence_metrics(self, metadata: dict | None) -> dict[str, float]:
         details = metadata or {}
@@ -1482,6 +1568,24 @@ class TradingOrchestrator:
                     "self_healing_reward_adjustment": self_healing_report["reward_adjustment"],
                 },
             )
+        if self.adaptive_learning_service is not None:
+            learning_report = self.adaptive_learning_service.record_trade_outcome(
+                trade_id=trade_id,
+                active_trade=active_trade,
+                pnl=pnl,
+            )
+            if learning_report:
+                self.firestore.update_trade(
+                    trade_id,
+                    {
+                        "learning_pattern_key": learning_report["pattern_key"],
+                        "learning_regime": learning_report["regime"],
+                        "learning_pattern_trades": learning_report["trades"],
+                        "learning_pattern_win_rate": learning_report["win_rate"],
+                        "learning_blacklisted": learning_report["blacklisted"],
+                        "learning_whitelisted": learning_report["whitelisted"],
+                    },
+                )
 
     def close_trade_position(
         self,
@@ -1662,6 +1766,24 @@ class TradingOrchestrator:
                             "self_healing_reward_adjustment": self_healing_report["reward_adjustment"],
                         },
                     )
+                if self.adaptive_learning_service is not None:
+                    learning_report = self.adaptive_learning_service.record_trade_outcome(
+                        trade_id=trade_id,
+                        active_trade=active_trade,
+                        pnl=close_payload["realized_pnl"],
+                    )
+                    if learning_report:
+                        self.firestore.update_trade(
+                            trade_id,
+                            {
+                                "learning_pattern_key": learning_report["pattern_key"],
+                                "learning_regime": learning_report["regime"],
+                                "learning_pattern_trades": learning_report["trades"],
+                                "learning_pattern_win_rate": learning_report["win_rate"],
+                                "learning_blacklisted": learning_report["blacklisted"],
+                                "learning_whitelisted": learning_report["whitelisted"],
+                            },
+                        )
                 self._mark_trade_closed(trade_id, close_payload)
             else:
                 refreshed_trade = self.redis_state_manager.load_active_trade(trade_id) or {}

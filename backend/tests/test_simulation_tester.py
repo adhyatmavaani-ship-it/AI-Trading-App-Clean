@@ -61,6 +61,12 @@ class InMemoryCache:
     def delete(self, key):
         self.store.pop(key, None)
 
+    def delete_if_value_matches(self, key, expected_value):
+        if self.store.get(key) == expected_value:
+            self.store.pop(key, None)
+            return 1
+        return 0
+
     def publish(self, channel, message):
         self.store[f"pub:{channel}"] = message
         return 1
@@ -121,6 +127,12 @@ class StubFirestore:
     def save_performance_snapshot(self, user_id, payload):
         return None
 
+    def save_micro_performance(self, payload):
+        return payload.get("trade_id", "micro")
+
+    def publish_trade_to_public_log(self, trade):
+        return trade.get("trade_id", "public")
+
 
 class StubRolloutManager:
     def status(self):
@@ -131,6 +143,22 @@ class StubRolloutManager:
 
 
 class StubModelStability:
+    def load_status(self):
+        return ModelStabilityStatus(
+            active_model_version="v1",
+            fallback_model_version=None,
+            live_win_rate=0.55,
+            training_win_rate=0.60,
+            drift_score=0.0,
+            calibration_error=0.0,
+            feature_drift_score=0.0,
+            concept_drift_score=0.0,
+            concentration_drift_score=0.0,
+            retraining_triggered=False,
+            trading_frequency_multiplier=1.0,
+            degraded=False,
+        )
+
     def record_live_outcome(self, won: bool):
         return ModelStabilityStatus(
             active_model_version="v1",
@@ -190,6 +218,7 @@ class SimulationTesterTest(unittest.TestCase):
             signal_broadcaster=signal_broadcaster,
             latency_monitor=LatencyMonitor(settings, cache),
         )
+        orchestrator._validate_trade_safety = lambda **kwargs: None
         tester = SimulationTester(
             settings=settings,
             orchestrator=orchestrator,

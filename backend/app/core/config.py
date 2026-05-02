@@ -290,6 +290,15 @@ class Settings(BaseSettings):
     strict_trade_volume_spike_threshold: float = 1.50
     strict_trade_structure_adx_floor: float = 22.0
     max_active_trades: int = 2
+    learning_enabled: bool = True
+    learning_min_pattern_samples: int = 4
+    learning_blacklist_win_rate_threshold: float = 0.35
+    learning_whitelist_win_rate_threshold: float = 0.65
+    learning_confidence_penalty: float = 0.18
+    learning_confidence_boost: float = 0.10
+    learning_score_penalty: float = 18.0
+    learning_score_boost: float = 8.0
+    learning_memory_ttl_seconds: int = 2_592_000
     strict_trade_partial_take_profit_rr: float = 1.0
     strict_trade_min_take_profit_rr: float = 1.5
     strict_trade_partial_take_profit_fraction: float = 0.4

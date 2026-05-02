@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 
 from app.core.config import get_settings
+from app.services.adaptive_learning import AdaptiveLearningService
 from app.services.ai_engine import AIEngine
 from app.services.alpha_engine import AlphaEngine
 from app.services.analytics_service import AnalyticsService
@@ -96,6 +97,7 @@ class ServiceContainer:
         liquidity_monitor = LiquidityMonitor()
         sentiment_engine = SentimentEngine()
         self_healing_service = SelfHealingPPOService(settings=settings, cache=cache, firestore=firestore)
+        adaptive_learning_service = AdaptiveLearningService(settings=settings, cache=cache, firestore=firestore)
         security_scanner = SecurityScanner()
         multi_chain_router = MultiChainRouter(settings)
         multi_agent_consensus = MultiAgentConsensusEngine.create_default()
@@ -225,6 +227,7 @@ class ServiceContainer:
             strategy_controller=strategy_controller,
             user_experience_engine=user_experience_engine,
             risk_controller=risk_controller,
+            adaptive_learning_service=adaptive_learning_service,
         )
         active_trade_monitor = ActiveTradeMonitorWorker(
             settings=settings,
@@ -268,6 +271,7 @@ class ServiceContainer:
         self.liquidity_monitor = liquidity_monitor
         self.sentiment_engine = sentiment_engine
         self.self_healing_service = self_healing_service
+        self.adaptive_learning_service = adaptive_learning_service
         self.security_scanner = security_scanner
         self.multi_chain_router = multi_chain_router
         self.multi_agent_consensus = multi_agent_consensus
