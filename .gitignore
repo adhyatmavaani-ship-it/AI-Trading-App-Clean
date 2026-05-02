@@ -19,3 +19,4 @@ artifacts/
 backend/backtest_data/
 trades.db
 *.sqlite3
+Learning Engine/
