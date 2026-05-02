@@ -8,17 +8,17 @@ from typing import Any
 import yaml
 from fastapi import FastAPI
 
-from backend.api.routes.monitor import create_monitor_router
-from backend.api.routes.state import create_state_router
-from backend.api.signal import SignalRouterContext, create_signal_router
-from backend.db.database import SQLiteTradeDatabase
-from backend.engine.execution_engine import ExecutionEngine
-from backend.engine.meta_engine import MetaEngine
-from backend.engine.monitor_engine import MarketPriceStore, MonitorEngine, TradeLifecycleLoop
-from backend.engine.risk_engine import RiskEngine
-from backend.engine.sync_engine import BrokerSyncLoop, SyncEngine
-from backend.services import BrokerAdapter, PriceService, create_broker_adapter
-from backend.utils.logger import get_logger
+from api.routes.monitor import create_monitor_router
+from api.routes.state import create_state_router
+from api.signal import SignalRouterContext, create_signal_router
+from db.database import SQLiteTradeDatabase
+from engine.execution_engine import ExecutionEngine
+from engine.meta_engine import MetaEngine
+from engine.monitor_engine import MarketPriceStore, MonitorEngine, TradeLifecycleLoop
+from engine.risk_engine import RiskEngine
+from engine.sync_engine import BrokerSyncLoop, SyncEngine
+from services import BrokerAdapter, PriceService, create_broker_adapter
+from utils.logger import get_logger
 
 
 logger = get_logger("trading-system")

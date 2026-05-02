@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from backend.db.database import SQLiteTradeDatabase
-from backend.engine.meta_engine import MetaEngine
+from db.database import SQLiteTradeDatabase
+from engine.meta_engine import MetaEngine
 
 
 def create_state_router(

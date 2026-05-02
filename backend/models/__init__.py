@@ -1,4 +1,4 @@
-from backend.models.trade import (
+from models.trade import (
     ExecutionResult,
     MetaDecision,
     RiskDecision,

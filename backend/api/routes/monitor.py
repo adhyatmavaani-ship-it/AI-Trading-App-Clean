@@ -3,8 +3,8 @@ from __future__ import annotations
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from backend.engine.monitor_engine import MarketPriceStore, TradeLifecycleLoop
-from backend.engine.sync_engine import SyncEngine
+from engine.monitor_engine import MarketPriceStore, TradeLifecycleLoop
+from engine.sync_engine import SyncEngine
 
 
 class PriceTickPayload(BaseModel):

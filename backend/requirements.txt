@@ -13,6 +13,7 @@ httpx
 python-binance
 ccxt
 google-cloud-firestore
+google-auth
 google-cloud-secret-manager
 tenacity
 websockets

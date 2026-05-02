@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from backend.db.database import SQLiteTradeDatabase
-from backend.models.trade import RiskDecision, SignalPayload
+from db.database import SQLiteTradeDatabase
+from models.trade import RiskDecision, SignalPayload
 
 
 class RiskEngine:

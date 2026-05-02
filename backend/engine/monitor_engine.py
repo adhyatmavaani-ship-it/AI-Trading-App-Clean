@@ -3,10 +3,10 @@ from __future__ import annotations
 import asyncio
 import math
 
-from backend.db.database import SQLiteTradeDatabase
-from backend.models.trade import TradeRecord
-from backend.services.price_service import PriceService
-from backend.utils.logger import get_logger
+from db.database import SQLiteTradeDatabase
+from models.trade import TradeRecord
+from services.price_service import PriceService
+from utils.logger import get_logger
 
 
 class MarketPriceStore:

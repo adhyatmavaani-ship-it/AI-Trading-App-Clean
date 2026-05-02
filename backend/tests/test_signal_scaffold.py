@@ -7,9 +7,9 @@ import unittest
 
 from fastapi.testclient import TestClient
 
-from backend.main import create_app
-from backend.models.trade import TradeRecord
-from backend.services.broker_adapter import BrokerAdapter
+from main import create_app
+from models.trade import TradeRecord
+from services.broker_adapter import BrokerAdapter
 
 
 class SignalScaffoldTest(unittest.TestCase):

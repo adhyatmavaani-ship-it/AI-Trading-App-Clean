@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from backend.db.database import SQLiteTradeDatabase
-from backend.models.trade import ExecutionResult, MetaDecision, RiskDecision, SignalPayload, TradeRecord
-from backend.services.broker_adapter import BrokerAdapter
+from db.database import SQLiteTradeDatabase
+from models.trade import ExecutionResult, MetaDecision, RiskDecision, SignalPayload, TradeRecord
+from services.broker_adapter import BrokerAdapter
 
 
 class BrokerRejectedError(RuntimeError):

@@ -4,11 +4,11 @@ from dataclasses import dataclass
 
 from fastapi import APIRouter
 
-from backend.engine.execution_engine import BrokerRejectedError, ExecutionEngine
-from backend.engine.meta_engine import MetaEngine
-from backend.engine.risk_engine import RiskEngine
-from backend.models.trade import SignalPayload, SignalResponse
-from backend.utils.logger import get_logger
+from engine.execution_engine import BrokerRejectedError, ExecutionEngine
+from engine.meta_engine import MetaEngine
+from engine.risk_engine import RiskEngine
+from models.trade import SignalPayload, SignalResponse
+from utils.logger import get_logger
 
 
 @dataclass

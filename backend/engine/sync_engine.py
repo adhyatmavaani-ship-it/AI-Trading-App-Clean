@@ -3,10 +3,10 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from backend.db.database import SQLiteTradeDatabase
-from backend.models.trade import TradeRecord
-from backend.services.broker_adapter import BrokerAdapter
-from backend.utils.logger import get_logger
+from db.database import SQLiteTradeDatabase
+from models.trade import TradeRecord
+from services.broker_adapter import BrokerAdapter
+from utils.logger import get_logger
 
 
 class SyncEngine:
