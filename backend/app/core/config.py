@@ -47,7 +47,7 @@ class Settings(BaseSettings):
 
     binance_api_key: str = ""
     binance_api_secret: str = ""
-    binance_testnet: bool = True
+    binance_testnet: bool = False
     primary_exchange: str = "binance"
     backup_exchanges: list[str] = Field(default_factory=lambda: ["kraken", "coinbase"])
     market_data_mode: Literal["auto", "exchange", "simulated"] = "auto"
@@ -552,9 +552,7 @@ class Settings(BaseSettings):
             if not self.auth_api_keys_json and not self.firestore_project_id:
                 errors.append("prod requires AUTH_API_KEYS_JSON or FIRESTORE_PROJECT_ID for authenticated access")
             if self.binance_testnet:
-                warnings.append(
-                    "BINANCE_TESTNET=true in prod; market-data startup will skip Binance testnet and prefer non-testnet exchanges"
-                )
+                errors.append("BINANCE_TESTNET must be false in prod")
             if self.training_buffer_path.strip().lower().endswith(".sqlite3"):
                 warnings.append(
                     "TRAINING_BUFFER_PATH points to a local sqlite file in prod; use managed persistence or a mounted persistent disk for authoritative training data"

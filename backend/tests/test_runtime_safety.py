@@ -32,6 +32,7 @@ class RuntimeSafetyTest(unittest.TestCase):
             "FIRESTORE_PROJECT_ID",
             "GOOGLE_CREDENTIALS_JSON",
             "TRADING_MODE",
+            "BINANCE_TESTNET",
             "BINANCE_API_KEY",
             "BINANCE_API_SECRET",
             "TRAINING_BUFFER_PATH",
@@ -158,6 +159,16 @@ class RuntimeSafetyTest(unittest.TestCase):
         get_settings.cache_clear()
 
         with self.assertRaisesRegex(ValueError, "TRADING_MODE=live requires"):
+            get_settings()
+
+    def test_prod_rejects_binance_testnet(self) -> None:
+        os.environ["ENVIRONMENT"] = "prod"
+        os.environ["CORS_ALLOWED_ORIGINS"] = '["https://app.example.com"]'
+        os.environ["AUTH_API_KEYS_JSON"] = '[{"api_key":"token","user_id":"alice","key_id":"k1"}]'
+        os.environ["BINANCE_TESTNET"] = "true"
+        get_settings.cache_clear()
+
+        with self.assertRaisesRegex(ValueError, "BINANCE_TESTNET must be false in prod"):
             get_settings()
 
     def test_prod_local_training_buffer_emits_warning(self) -> None:
