@@ -15,8 +15,6 @@ import 'package:ai_trading_app/models/trade_timeline.dart';
 import 'package:ai_trading_app/models/user_pnl.dart';
 import 'package:ai_trading_app/providers/app_providers.dart';
 import 'package:ai_trading_app/repositories/trading_repository.dart';
-import 'package:ai_trading_app/screens/login_screen.dart';
-import 'package:ai_trading_app/widgets/gradient_action_button.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -148,6 +146,20 @@ class FakeTradingRepository extends TradingRepository {
         '65_79': 3,
         '80_100': 5,
       },
+      learning: MetaLearningModel(
+        enabled: true,
+        blacklistTotal: 1,
+        whitelistTotal: 2,
+        regimes: <String, MetaLearningRegimeModel>{
+          'TRENDING': MetaLearningRegimeModel(
+            trackedPatterns: 3,
+            blacklistPatterns: <String>['late_breakout'],
+            whitelistPatterns: <String>['trend_continuation'],
+            preferredMinAtrPct: 0.5,
+            preferredMinTrendGap: 1.2,
+          ),
+        },
+      ),
       updatedAt: '2026-01-01T00:00:00Z',
     );
   }
@@ -341,7 +353,7 @@ class FakeTradingRepository extends TradingRepository {
 }
 
 void main() {
-  testWidgets('unauthenticated users see the login screen', (
+  testWidgets('default production API key enters the app shell', (
     WidgetTester tester,
   ) async {
     await tester.pumpWidget(
@@ -356,18 +368,13 @@ void main() {
       ),
     );
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump(const Duration(milliseconds: 300));
 
-    expect(find.byType(LoginScreen), findsOneWidget);
-    expect(find.text('Secure Trading Access'), findsOneWidget);
-    expect(
-      tester
-          .widget<GradientActionButton>(
-            find.byType(GradientActionButton),
-          )
-          .label,
-      'Unlock Trading Workspace',
-    );
-    expect(find.text('AI Trading Dashboard'), findsNothing);
+    expect(find.byType(TradingApp), findsOneWidget);
+    expect(find.text('AI Trading Dashboard'), findsOneWidget);
+    expect(find.text('Dashboard'), findsWidgets);
+    expect(find.text('Portfolio'), findsWidgets);
   });
 
   testWidgets('authenticated users enter the app shell', (

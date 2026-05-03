@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'core/api_exception.dart';
 import 'core/auth_credentials_store.dart';
 import 'core/constants.dart';
 import 'providers/app_providers.dart';
@@ -13,15 +14,23 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await _bootstrapLocalAuth();
   final container = ProviderContainer();
-  unawaited(Future<void>.microtask(() {
-    container.read(apiClientProvider).warmUpServer();
-  }));
+  await _primeBackend(container);
   runApp(
     UncontrolledProviderScope(
       container: container,
       child: const TradingApp(),
     ),
   );
+}
+
+Future<void> _primeBackend(ProviderContainer container) async {
+  try {
+    await container.read(apiClientProvider).getHealthStatus();
+  } on ApiException {
+    // Allow the app to open even if the first Render warmup request fails.
+  } catch (_) {
+    // Keep startup resilient; normal in-app retry handling still applies.
+  }
 }
 
 Future<void> _bootstrapLocalAuth() async {

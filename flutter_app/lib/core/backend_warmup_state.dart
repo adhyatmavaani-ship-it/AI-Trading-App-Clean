@@ -4,6 +4,7 @@ enum BackendWarmupState {
   idle,
   connecting,
   waking,
+  retrying,
   slow,
   ready,
 }
@@ -21,6 +22,10 @@ void markBackendConnecting() {
 
 void markBackendSlow() {
   backendWarmupState.value = BackendWarmupState.slow;
+}
+
+void markBackendRetrying() {
+  backendWarmupState.value = BackendWarmupState.retrying;
 }
 
 void markBackendReady() {

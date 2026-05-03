@@ -158,7 +158,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           SectionCard(
             title: 'E2E Diagnostics',
             subtitle:
-                'Run a phone-to-Render connectivity test covering REST health, authenticated root, websocket, and latency.',
+                'Run a production connectivity test covering /v1/health, /v1/public/performance, /v1/signals/live, websocket, and latency.',
             trailing: const StatusBadge(label: 'CHECK'),
             glowColor: TradingPalette.electricBlue,
             child: Column(
@@ -266,7 +266,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     });
     try {
       final health = await apiClient.getHealthStatus();
-      final root = await apiClient.getRootStatus();
+      final performance = await apiClient.getPublicPerformance();
+      final signals = await apiClient.getSignals(limit: 1);
       final websocket = await webSocketService.probeSignals();
       if (!context.mounted) {
         return;
@@ -274,11 +275,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       setState(() {
         _connectivitySnapshot = <String, dynamic>{
           'rest_health': health['status'] == 'ok',
-          'auth_status': root['status'] == 'running',
+          'public_performance': performance.totalTrades >= 0,
+          'signals_count': signals.length,
           'websocket_status': websocket['type'] == 'pong',
           'latency_ms': DateTime.now().difference(startedAt).inMilliseconds,
           'backend_version': health['version'],
-          'environment': root['environment'],
+          'api_base_url': apiClient.baseUrl,
         };
       });
       ScaffoldMessenger.of(context).showSnackBar(
@@ -330,12 +332,16 @@ class _ConnectivitySnapshotCard extends StatelessWidget {
             ok: snapshot['rest_health'] == true,
           ),
           _DiagnosticStatusTile(
-            label: 'Auth status',
-            ok: snapshot['auth_status'] == true,
+            label: 'Public route',
+            ok: snapshot['public_performance'] == true,
           ),
           _DiagnosticStatusTile(
-            label: 'WebSocket status',
-            ok: snapshot['websocket_status'] == true,
+            label: 'Signals route',
+            ok: (snapshot['signals_count'] as int? ?? -1) >= 0,
+          ),
+          _DiagnosticTextTile(
+            label: 'WebSocket',
+            value: snapshot['websocket_status'] == true ? 'OK' : 'FAILED',
           ),
           _DiagnosticTextTile(
             label: 'Latency',
@@ -346,8 +352,8 @@ class _ConnectivitySnapshotCard extends StatelessWidget {
             value: (snapshot['backend_version'] ?? '-').toString(),
           ),
           _DiagnosticTextTile(
-            label: 'Environment',
-            value: (snapshot['environment'] ?? '-').toString(),
+            label: 'API base',
+            value: (snapshot['api_base_url'] ?? '-').toString(),
           ),
         ],
       ),

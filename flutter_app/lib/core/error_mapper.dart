@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
 import 'api_exception.dart';
 
@@ -41,24 +41,11 @@ class ErrorMapper {
       return _typeFromApiException(error);
     }
 
-    if (error is DioException) {
-      final nested = error.error;
-      if (nested != null && !identical(nested, error)) {
-        return typeOf(nested);
-      }
-
-      if (error.type == DioExceptionType.connectionTimeout ||
-          error.type == DioExceptionType.receiveTimeout ||
-          error.type == DioExceptionType.sendTimeout) {
-        return AppErrorType.timeout;
-      }
-
-      if (error.type == DioExceptionType.connectionError) {
-        return AppErrorType.network;
-      }
+    if (error is SocketException) {
+      return AppErrorType.network;
     }
 
-    if (error is SocketException) {
+    if (error is http.ClientException) {
       return AppErrorType.network;
     }
 
@@ -179,7 +166,7 @@ String userFacingMsg(String msg, String id) => '$msg (ref: $id)';
 void logError(
   dynamic error, {
   StackTrace? stackTrace,
-  }) {
+}) {
   logErrorWithId(error, stackTrace: stackTrace);
 }
 

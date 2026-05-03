@@ -44,11 +44,12 @@ class LoadingState extends StatelessWidget {
       valueListenable: backendWarmupState,
       builder: (context, warmupState, _) {
         final resolvedLabel = switch (warmupState) {
-          BackendWarmupState.waking => 'Server waking up... retrying',
+          BackendWarmupState.waking => 'Server waking up...',
+          BackendWarmupState.retrying => 'Retrying connection...',
           BackendWarmupState.connecting ||
           BackendWarmupState.idle =>
-            'Connecting to trading engine...',
-          BackendWarmupState.slow => 'Server waking up... retrying',
+            'Server waking up...',
+          BackendWarmupState.slow => 'Retrying connection...',
           BackendWarmupState.ready => label,
         };
         return Center(
@@ -98,17 +99,20 @@ class ErrorState extends StatelessWidget {
       valueListenable: backendWarmupState,
       builder: (context, warmupState, _) {
         final waking = warmupState == BackendWarmupState.waking;
+        final retrying = warmupState == BackendWarmupState.retrying;
         final errorType = ErrorMapper.typeOf(message);
         final resolvedMessage = waking
-            ? 'Server waking up... retrying'
-            : switch (errorType) {
-                AppErrorType.auth => 'Authentication Required',
-                AppErrorType.server => 'Server Issue Detected',
-                AppErrorType.timeout => 'Request Timed Out',
-                AppErrorType.network => 'Connection Issue Detected',
-                AppErrorType.unknown => 'Something Went Wrong',
-              };
-        final resolvedIcon = waking
+            ? 'Server waking up...'
+            : retrying
+                ? 'Retrying connection...'
+                : switch (errorType) {
+                    AppErrorType.auth => 'Authentication Required',
+                    AppErrorType.server => 'Server Issue Detected',
+                    AppErrorType.timeout => 'Request Timed Out',
+                    AppErrorType.network => 'Connection Issue Detected',
+                    AppErrorType.unknown => 'Something Went Wrong',
+                  };
+        final resolvedIcon = waking || retrying
             ? Icons.hourglass_top_rounded
             : ErrorMapper.iconFor(message);
         return Center(
@@ -133,7 +137,9 @@ class ErrorState extends StatelessWidget {
                             fontWeight: FontWeight.w800,
                           ),
                     ),
-                    if (!waking && message.trim().isNotEmpty) ...<Widget>[
+                    if (!waking &&
+                        !retrying &&
+                        message.trim().isNotEmpty) ...<Widget>[
                       const SizedBox(height: 10),
                       Text(
                         message,

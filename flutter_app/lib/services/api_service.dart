@@ -19,6 +19,14 @@ class ApiService {
     return _apiClient.getSignals(limit: limit);
   }
 
+  Future<SignalModel?> getLatestSignal() async {
+    final signals = await _apiClient.getSignals(limit: 1);
+    if (signals.isEmpty) {
+      return null;
+    }
+    return signals.first;
+  }
+
   Future<List<BatchModel>> getBatches({int limit = 25}) {
     return _apiClient.getBatches(limit: limit);
   }
