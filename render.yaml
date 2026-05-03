@@ -11,6 +11,8 @@ services:
         value: staging
       - key: TRADING_MODE
         value: paper
+      - key: PUBLIC_BASE_URL
+        value: https://ai-trading-app-clean.onrender.com
       - key: CORS_ALLOWED_ORIGINS
         sync: false
       - key: REDIS_URL

@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 import os
 import gc
+from unittest.mock import patch
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
@@ -52,6 +53,25 @@ class FirestoreTrainingBufferTest(unittest.TestCase):
             gc.collect()
             if os.path.exists(sqlite_path):
                 os.remove(sqlite_path)
+
+    @patch("app.services.firestore_repo.firestore.Client")
+    @patch("app.services.firestore_repo.service_account.Credentials.from_service_account_info")
+    def test_firestore_client_uses_explicit_credentials_json(self, credentials_factory, firestore_client):
+        credentials_factory.return_value = object()
+
+        repo = FirestoreRepository(
+            "demo-project",
+            raw_credentials_json='{"type":"service_account","project_id":"demo-project"}',
+        )
+
+        self.assertIs(repo.client, firestore_client.return_value)
+        credentials_factory.assert_called_once_with(
+            {"type": "service_account", "project_id": "demo-project"}
+        )
+        firestore_client.assert_called_once_with(
+            project="demo-project",
+            credentials=credentials_factory.return_value,
+        )
 
 
 if __name__ == "__main__":

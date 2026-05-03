@@ -10,13 +10,35 @@ from uuid import uuid4
 
 from google.api_core.exceptions import AlreadyExists
 from google.cloud import firestore
+from google.oauth2 import service_account
 
 
 class FirestoreRepository:
-    def __init__(self, project_id: str, local_training_buffer_path: str | None = None):
-        self.client = firestore.Client(project=project_id) if project_id else None
+    def __init__(
+        self,
+        project_id: str,
+        raw_credentials_json: str = "",
+        local_training_buffer_path: str | None = None,
+    ):
+        self.client = self._build_client(
+            project_id=project_id,
+            raw_credentials_json=raw_credentials_json,
+        )
         self.local_training_buffer_path = Path(local_training_buffer_path or "artifacts/training_buffer.sqlite3")
         self._ensure_local_training_buffer()
+
+    @staticmethod
+    def _build_client(project_id: str, raw_credentials_json: str):
+        normalized_project_id = str(project_id or "").strip()
+        if not normalized_project_id:
+            return None
+
+        credentials_info = json.loads(str(raw_credentials_json or "").strip())
+        credentials = service_account.Credentials.from_service_account_info(credentials_info)
+        return firestore.Client(
+            project=normalized_project_id,
+            credentials=credentials,
+        )
 
     def _writes_disabled(self) -> bool:
         return self.client is None

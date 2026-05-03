@@ -2,6 +2,7 @@ import json
 import os
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import urlparse
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -31,8 +32,18 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     trading_mode: Literal["paper", "live"] = "paper"
     json_logs: bool = True
-    cors_allowed_origins: list[str] = Field(default_factory=lambda: ["*"])
+    # CORS_ALLOWED_ORIGINS accepts either:
+    # - JSON: ["https://myapp.onrender.com", "http://localhost:3000"]
+    # - CSV:  https://myapp.onrender.com,http://localhost:3000
+    #
+    # Wildcard origins are intentionally blocked in production because they
+    # disable origin-level access control for browser clients.
+    cors_allowed_origins: list[str] = Field(default_factory=list)
     cors_allow_credentials: bool = False
+    cors_allow_wildcard_non_prod: bool = False
+    # PUBLIC_BASE_URL should be the canonical frontend/backend public origin,
+    # for example: https://ai-trading-app-clean.onrender.com
+    public_base_url: str = ""
 
     binance_api_key: str = ""
     binance_api_secret: str = ""
@@ -384,13 +395,13 @@ class Settings(BaseSettings):
     @classmethod
     def _parse_cors_allowed_origins(cls, value):
         if value is None or value == "":
-            return ["*"]
+            return []
         if isinstance(value, list):
-            return value
+            return [str(item).strip() for item in value if str(item).strip()]
         if isinstance(value, str):
             normalized = value.strip()
             if not normalized:
-                return ["*"]
+                return []
             if normalized.startswith("["):
                 try:
                     parsed = json.loads(normalized)
@@ -402,6 +413,10 @@ class Settings(BaseSettings):
         return value
 
     @property
+    def render_external_url(self) -> str:
+        return str(os.environ.get("RENDER_EXTERNAL_URL", "") or "").strip()
+
+    @property
     def is_production(self) -> bool:
         return str(self.environment).lower() == "prod"
 
@@ -410,6 +425,64 @@ class Settings(BaseSettings):
         if self.debug_routes_enabled:
             return True
         return not self.is_production
+
+    def _default_public_origin(self) -> str:
+        for candidate in (self.public_base_url, self.render_external_url):
+            normalized = str(candidate or "").strip().rstrip("/")
+            if normalized:
+                return normalized
+        return ""
+
+    @staticmethod
+    def _is_valid_cors_origin(origin: str) -> bool:
+        parsed = urlparse(str(origin or "").strip())
+        return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+    def _resolve_cors_allowed_origins(self, warnings: list[str], errors: list[str]) -> list[str]:
+        origins = [str(origin).strip().rstrip("/") for origin in self.cors_allowed_origins if str(origin).strip()]
+        default_origin = self._default_public_origin()
+
+        if not origins:
+            if default_origin:
+                warnings.append(
+                    "CORS_ALLOWED_ORIGINS was not set; defaulting to PUBLIC_BASE_URL/RENDER_EXTERNAL_URL"
+                )
+                return [default_origin]
+            if not self.is_production and self.cors_allow_wildcard_non_prod:
+                warnings.append(
+                    "CORS_ALLOWED_ORIGINS was not set; falling back to '*' because CORS_ALLOW_WILDCARD_NON_PROD=true"
+                )
+                return ["*"]
+            if self.is_production:
+                errors.append(
+                    "CORS_ALLOWED_ORIGINS is required in prod when PUBLIC_BASE_URL or RENDER_EXTERNAL_URL is unavailable. "
+                    'Example: CORS_ALLOWED_ORIGINS=["https://myapp.onrender.com","http://localhost:3000"]'
+                )
+            return []
+
+        if "*" in origins:
+            if self.is_production:
+                errors.append(
+                    "CORS_ALLOWED_ORIGINS cannot contain '*' in prod. "
+                    'Set explicit origins instead, for example: CORS_ALLOWED_ORIGINS=["https://myapp.onrender.com","http://localhost:3000"]'
+                )
+                return origins
+            if not self.cors_allow_wildcard_non_prod:
+                errors.append(
+                    "CORS_ALLOWED_ORIGINS cannot contain '*' unless CORS_ALLOW_WILDCARD_NON_PROD=true in local/dev/staging."
+                )
+                return origins
+            warnings.append("CORS_ALLOWED_ORIGINS includes '*' for non-production use")
+            return ["*"]
+
+        invalid_origins = [origin for origin in origins if not self._is_valid_cors_origin(origin)]
+        if invalid_origins:
+            errors.append(
+                "CORS_ALLOWED_ORIGINS contains invalid origin values: "
+                + ", ".join(invalid_origins)
+                + '. Example: ["https://myapp.onrender.com","http://localhost:3000"]'
+            )
+        return origins
 
     @staticmethod
     def _validate_google_credentials_json(raw_json: str) -> None:
@@ -441,6 +514,7 @@ class Settings(BaseSettings):
     def validate_runtime_safety(self) -> None:
         errors: list[str] = []
         warnings: list[str] = []
+        self.cors_allowed_origins = self._resolve_cors_allowed_origins(warnings, errors)
 
         if self.firestore_project_id:
             try:
@@ -449,8 +523,6 @@ class Settings(BaseSettings):
                 errors.append(str(exc))
 
         if self.is_production:
-            if "*" in self.cors_allowed_origins:
-                errors.append("CORS_ALLOWED_ORIGINS cannot contain '*' in prod")
             if self.force_execution_override_enabled:
                 errors.append("FORCE_EXECUTION_OVERRIDE_ENABLED must be false in prod")
             if not self.auth_api_keys_json and not self.firestore_project_id:

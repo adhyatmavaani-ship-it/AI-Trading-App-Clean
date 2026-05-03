@@ -27,6 +27,17 @@ settings = get_settings()
 configure_logging(settings.log_level, settings.json_logs)
 for warning in settings.runtime_warnings:
     logger.warning("runtime_safety_warning", extra={"event": "runtime_safety_warning", "context": {"warning": warning}})
+logger.info(
+    "cors_configuration",
+    extra={
+        "event": "cors_configuration",
+        "context": {
+            "environment": settings.environment,
+            "allow_credentials": settings.cors_allow_credentials,
+            "allowed_origins": settings.cors_allowed_origins,
+        },
+    },
+)
 
 
 _shutdown_event = asyncio.Event()

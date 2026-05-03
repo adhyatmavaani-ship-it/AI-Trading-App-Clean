@@ -24,6 +24,9 @@ class RuntimeSafetyTest(unittest.TestCase):
         for key in (
             "ENVIRONMENT",
             "CORS_ALLOWED_ORIGINS",
+            "CORS_ALLOW_WILDCARD_NON_PROD",
+            "PUBLIC_BASE_URL",
+            "RENDER_EXTERNAL_URL",
             "FORCE_EXECUTION_OVERRIDE_ENABLED",
             "AUTH_API_KEYS_JSON",
             "FIRESTORE_PROJECT_ID",
@@ -42,8 +45,62 @@ class RuntimeSafetyTest(unittest.TestCase):
         os.environ["AUTH_API_KEYS_JSON"] = '[{"api_key":"token","user_id":"alice","key_id":"k1"}]'
         get_settings.cache_clear()
 
-        with self.assertRaisesRegex(ValueError, "CORS_ALLOWED_ORIGINS"):
+        with self.assertRaisesRegex(ValueError, "cannot contain '\\*' in prod"):
             get_settings()
+
+    def test_prod_defaults_cors_to_public_base_url_when_missing(self) -> None:
+        os.environ["ENVIRONMENT"] = "prod"
+        os.environ["PUBLIC_BASE_URL"] = "https://ai-trading-app-clean.onrender.com"
+        os.environ["AUTH_API_KEYS_JSON"] = '[{"api_key":"token","user_id":"alice","key_id":"k1"}]'
+        get_settings.cache_clear()
+
+        settings = get_settings()
+        self.assertEqual(settings.cors_allowed_origins, ["https://ai-trading-app-clean.onrender.com"])
+        self.assertTrue(any("defaulting to PUBLIC_BASE_URL/RENDER_EXTERNAL_URL" in warning for warning in settings.runtime_warnings))
+
+    def test_prod_defaults_cors_to_render_external_url_when_available(self) -> None:
+        os.environ["ENVIRONMENT"] = "prod"
+        os.environ["RENDER_EXTERNAL_URL"] = "https://ai-trading-app-clean.onrender.com"
+        os.environ["AUTH_API_KEYS_JSON"] = '[{"api_key":"token","user_id":"alice","key_id":"k1"}]'
+        get_settings.cache_clear()
+
+        settings = get_settings()
+        self.assertEqual(settings.cors_allowed_origins, ["https://ai-trading-app-clean.onrender.com"])
+
+    def test_prod_requires_cors_origin_when_no_safe_default_exists(self) -> None:
+        os.environ["ENVIRONMENT"] = "prod"
+        os.environ["AUTH_API_KEYS_JSON"] = '[{"api_key":"token","user_id":"alice","key_id":"k1"}]'
+        get_settings.cache_clear()
+
+        with self.assertRaisesRegex(ValueError, "CORS_ALLOWED_ORIGINS is required in prod"):
+            get_settings()
+
+    def test_non_prod_rejects_wildcard_without_explicit_enable(self) -> None:
+        os.environ["ENVIRONMENT"] = "staging"
+        os.environ["CORS_ALLOWED_ORIGINS"] = '["*"]'
+        get_settings.cache_clear()
+
+        with self.assertRaisesRegex(ValueError, "CORS_ALLOW_WILDCARD_NON_PROD=true"):
+            get_settings()
+
+    def test_non_prod_allows_wildcard_when_explicitly_enabled(self) -> None:
+        os.environ["ENVIRONMENT"] = "dev"
+        os.environ["CORS_ALLOW_WILDCARD_NON_PROD"] = "true"
+        get_settings.cache_clear()
+
+        settings = get_settings()
+        self.assertEqual(settings.cors_allowed_origins, ["*"])
+
+    def test_cors_allowed_origins_accepts_json_string(self) -> None:
+        os.environ["ENVIRONMENT"] = "staging"
+        os.environ["CORS_ALLOWED_ORIGINS"] = '["https://myapp.onrender.com", "http://localhost:3000"]'
+        get_settings.cache_clear()
+
+        settings = get_settings()
+        self.assertEqual(
+            settings.cors_allowed_origins,
+            ["https://myapp.onrender.com", "http://localhost:3000"],
+        )
 
     def test_prod_requires_auth_configuration(self) -> None:
         os.environ["ENVIRONMENT"] = "prod"

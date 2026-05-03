@@ -70,6 +70,7 @@ class ServiceContainer:
         cache = RedisCache(settings.redis_url)
         firestore = FirestoreRepository(
             settings.firestore_project_id,
+            raw_credentials_json=settings.google_credentials_json,
             local_training_buffer_path=settings.training_buffer_path,
         )
         registry = ModelRegistry(settings)
