@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import logging
 
 from fastapi import APIRouter, Depends, Query
 
@@ -14,6 +15,7 @@ from app.schemas.public_api import (
 from app.services.container import ServiceContainer, get_container
 
 router = APIRouter(prefix="/public", tags=["Public"])
+logger = logging.getLogger(__name__)
 
 PUBLIC_CACHE_TTL_SECONDS = 30
 
@@ -28,19 +30,18 @@ async def get_public_performance(
     container: ServiceContainer = Depends(get_container),
 ) -> PublicPerformanceResponse:
     cache_key = "public:performance:v1"
-    cached = container.cache.get_json(cache_key)
-    if cached:
-        return PublicPerformanceResponse(**cached)
+    try:
+        cached = container.cache.get_json(cache_key)
+        if cached:
+            return _build_public_performance_response(cached)
 
-    summary = container.firestore.load_public_performance_summary()
-    response = PublicPerformanceResponse(
-        win_rate=float(summary.get("win_rate", 0.0) or 0.0),
-        total_pnl_pct=float(summary.get("total_pnl_pct", 0.0) or 0.0),
-        total_trades=int(summary.get("total_trades", 0) or 0),
-        last_updated=_normalize_datetime(summary.get("last_updated")),
-    )
-    container.cache.set_json(cache_key, response.model_dump(mode="json"), ttl=PUBLIC_CACHE_TTL_SECONDS)
-    return response
+        summary = container.firestore.load_public_performance_summary()
+        response = _build_public_performance_response(summary)
+        container.cache.set_json(cache_key, response.model_dump(mode="json"), ttl=PUBLIC_CACHE_TTL_SECONDS)
+        return response
+    except Exception:
+        logger.exception("public_performance_endpoint_failed")
+        return _default_public_performance_response()
 
 
 @router.get(
@@ -107,9 +108,54 @@ def _normalize_datetime(value) -> datetime:
     if isinstance(value, datetime):
         return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
     if isinstance(value, str) and value:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return datetime.now(timezone.utc)
         return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
     return datetime.now(timezone.utc)
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value, default: int = 0) -> int:
+    try:
+        if value is None:
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _default_public_performance_response() -> PublicPerformanceResponse:
+    return PublicPerformanceResponse(
+        win_rate=0.0,
+        total_pnl_pct=0.0,
+        total_trades=0,
+        last_updated=datetime.now(timezone.utc),
+    )
+
+
+def _build_public_performance_response(summary: dict | None) -> PublicPerformanceResponse:
+    payload = dict(summary or {})
+    total_trades = max(_safe_int(payload.get("total_trades", 0), default=0), 0)
+    win_rate = _safe_float(payload.get("win_rate", 0.0), default=0.0)
+    if total_trades <= 0:
+        win_rate = 0.0
+    win_rate = min(max(win_rate, 0.0), 1.0)
+    return PublicPerformanceResponse(
+        win_rate=win_rate,
+        total_pnl_pct=_safe_float(payload.get("total_pnl_pct", 0.0), default=0.0),
+        total_trades=total_trades,
+        last_updated=_normalize_datetime(payload.get("last_updated")),
+    )
 
 
 def _trade_pnl_pct(payload: dict) -> float:

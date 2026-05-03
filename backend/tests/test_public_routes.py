@@ -2,6 +2,7 @@ import sys
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
@@ -34,15 +35,19 @@ class StubFirestore:
         self.performance_calls = 0
         self.trade_calls = 0
         self.daily_calls = 0
-
-    def load_public_performance_summary(self, trade_limit=1000):
-        self.performance_calls += 1
-        return {
+        self.raise_on_performance = False
+        self.performance_payload = {
             "win_rate": 0.63,
             "total_pnl_pct": 18.4,
             "total_trades": 142,
             "last_updated": datetime(2026, 4, 26, tzinfo=timezone.utc),
         }
+
+    def load_public_performance_summary(self, trade_limit=1000):
+        self.performance_calls += 1
+        if self.raise_on_performance:
+            raise RuntimeError("firestore unavailable")
+        return self.performance_payload
 
     def list_closed_trades(self, limit=20):
         self.trade_calls += 1
@@ -101,6 +106,30 @@ class PublicRoutesTest(unittest.TestCase):
         self.assertEqual(second.status_code, 200)
         self.assertEqual(first.json()["win_rate"], 0.63)
         self.assertEqual(self.container.firestore.performance_calls, 1)
+
+    def test_public_performance_returns_zero_defaults_when_summary_is_empty(self):
+        self.container.firestore.performance_payload = {}
+
+        response = self.client.get("/v1/public/performance")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["win_rate"], 0.0)
+        self.assertEqual(payload["total_pnl_pct"], 0.0)
+        self.assertEqual(payload["total_trades"], 0)
+
+    def test_public_performance_returns_safe_fallback_when_summary_raises(self):
+        self.container.firestore.raise_on_performance = True
+
+        with patch("app.api.routes.public.logger.exception") as logger_exception:
+            response = self.client.get("/v1/public/performance")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["win_rate"], 0.0)
+        self.assertEqual(payload["total_pnl_pct"], 0.0)
+        self.assertEqual(payload["total_trades"], 0)
+        logger_exception.assert_called_once_with("public_performance_endpoint_failed")
 
     def test_public_trades_are_anonymized(self):
         response = self.client.get("/v1/public/trades?limit=2")
