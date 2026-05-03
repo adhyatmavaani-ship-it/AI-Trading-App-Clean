@@ -43,6 +43,19 @@ class StubExchangeClient:
 
 
 class MarketDataServiceTest(unittest.TestCase):
+    def test_prod_skips_binance_testnet_from_market_data_exchange_order(self):
+        cache = InMemoryCache()
+        settings = Settings(
+            environment="prod",
+            primary_exchange="binance",
+            backup_exchanges=["kraken", "coinbase"],
+            binance_testnet=True,
+        )
+
+        service = MarketDataService(settings, cache)
+
+        self.assertEqual(service._configured_exchanges(), ["kraken", "coinbase"])
+
     def test_fetch_order_book_prefers_stream_cache(self):
         cache = InMemoryCache()
         cache.set_json(

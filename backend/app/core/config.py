@@ -438,6 +438,12 @@ class Settings(BaseSettings):
         parsed = urlparse(str(origin or "").strip())
         return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
+    @staticmethod
+    def _is_loopback_origin(origin: str) -> bool:
+        parsed = urlparse(str(origin or "").strip())
+        host = str(parsed.hostname or "").strip().lower()
+        return host in {"localhost", "127.0.0.1", "0.0.0.0"}
+
     def _resolve_cors_allowed_origins(self, warnings: list[str], errors: list[str]) -> list[str]:
         origins = [str(origin).strip().rstrip("/") for origin in self.cors_allowed_origins if str(origin).strip()]
         default_origin = self._default_public_origin()
@@ -482,6 +488,24 @@ class Settings(BaseSettings):
                 + ", ".join(invalid_origins)
                 + '. Example: ["https://myapp.onrender.com","http://localhost:3000"]'
             )
+        if self.is_production:
+            loopback_origins = [origin for origin in origins if self._is_loopback_origin(origin)]
+            if loopback_origins:
+                warnings.append(
+                    "CORS_ALLOWED_ORIGINS contained loopback origins in prod and they were removed: "
+                    + ", ".join(loopback_origins)
+                )
+                origins = [origin for origin in origins if origin not in loopback_origins]
+                if not origins:
+                    if default_origin:
+                        warnings.append(
+                            "All configured prod CORS origins were loopback-only; defaulting to PUBLIC_BASE_URL/RENDER_EXTERNAL_URL"
+                        )
+                        return [default_origin]
+                    errors.append(
+                        "CORS_ALLOWED_ORIGINS cannot be loopback-only in prod. "
+                        'Set explicit public origins, for example: CORS_ALLOWED_ORIGINS=["https://myapp.onrender.com"]'
+                    )
         return origins
 
     @staticmethod
@@ -527,9 +551,13 @@ class Settings(BaseSettings):
                 errors.append("FORCE_EXECUTION_OVERRIDE_ENABLED must be false in prod")
             if not self.auth_api_keys_json and not self.firestore_project_id:
                 errors.append("prod requires AUTH_API_KEYS_JSON or FIRESTORE_PROJECT_ID for authenticated access")
+            if self.binance_testnet:
+                warnings.append(
+                    "BINANCE_TESTNET=true in prod; market-data startup will skip Binance testnet and prefer non-testnet exchanges"
+                )
             if self.training_buffer_path.strip().lower().endswith(".sqlite3"):
                 warnings.append(
-                    "TRAINING_BUFFER_PATH points to a local sqlite file; use managed persistence for authoritative production data"
+                    "TRAINING_BUFFER_PATH points to a local sqlite file in prod; use managed persistence or a mounted persistent disk for authoritative training data"
                 )
 
         if self.trading_mode == "live":

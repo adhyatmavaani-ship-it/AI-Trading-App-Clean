@@ -102,6 +102,17 @@ class RuntimeSafetyTest(unittest.TestCase):
             ["https://myapp.onrender.com", "http://localhost:3000"],
         )
 
+    def test_prod_removes_loopback_origins_from_cors(self) -> None:
+        os.environ["ENVIRONMENT"] = "prod"
+        os.environ["PUBLIC_BASE_URL"] = "https://ai-trading-app-clean.onrender.com"
+        os.environ["CORS_ALLOWED_ORIGINS"] = '["https://ai-trading-app-clean.onrender.com", "http://localhost:3000"]'
+        os.environ["AUTH_API_KEYS_JSON"] = '[{"api_key":"token","user_id":"alice","key_id":"k1"}]'
+        get_settings.cache_clear()
+
+        settings = get_settings()
+        self.assertEqual(settings.cors_allowed_origins, ["https://ai-trading-app-clean.onrender.com"])
+        self.assertTrue(any("loopback origins" in warning for warning in settings.runtime_warnings))
+
     def test_prod_requires_auth_configuration(self) -> None:
         os.environ["ENVIRONMENT"] = "prod"
         os.environ["CORS_ALLOWED_ORIGINS"] = '["https://app.example.com"]'

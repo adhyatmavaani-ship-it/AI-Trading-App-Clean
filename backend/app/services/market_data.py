@@ -441,6 +441,10 @@ class MarketDataService:
             normalized = str(exchange_id).strip().lower()
             if normalized and normalized not in unique:
                 unique.append(normalized)
+        if self.settings.is_production and self.settings.binance_testnet:
+            filtered = [exchange_id for exchange_id in unique if exchange_id != "binance"]
+            if filtered != unique:
+                unique = filtered
         return unique
 
     def _ensure_exchange_clients(self, *, force: bool = False) -> None:
