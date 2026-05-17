@@ -1,6 +1,18 @@
 import 'package:flutter/foundation.dart';
 
 class AppConstants {
+  static const String _configuredApiBaseUrl = String.fromEnvironment(
+    'API_BASE_URL',
+    defaultValue: '',
+  );
+  static const String _configuredSignalsWebSocketUrl = String.fromEnvironment(
+    'SIGNALS_WS_URL',
+    defaultValue: '',
+  );
+  static const String _configuredMarketWebSocketUrl = String.fromEnvironment(
+    'MARKET_WS_URL',
+    defaultValue: '',
+  );
   static const String productionApiBaseUrl = 'http://69.62.74.7';
   static const String productionSignalsWebSocketUrl =
       'ws://69.62.74.7/ws/signals';
@@ -12,7 +24,11 @@ class AppConstants {
   );
   static const String productionUserId = 'admin';
 
-  static const String defaultApiBaseUrl = productionApiBaseUrl;
+  static String get defaultApiBaseUrl {
+    final configured = _configuredApiBaseUrl.trim();
+    return configured.isNotEmpty ? configured : productionApiBaseUrl;
+  }
+
   static String get productionApiKey {
     final configured = _configuredProductionApiKey.trim();
     if (configured.isNotEmpty) {
@@ -38,9 +54,15 @@ class AppConstants {
     return configured.isNotEmpty ? configured : 'admin';
   }
 
-  static const String defaultSignalsWebSocketUrl =
-      productionSignalsWebSocketUrl;
-  static const String defaultMarketWebSocketUrl = productionMarketWebSocketUrl;
+  static String get defaultSignalsWebSocketUrl {
+    final configured = _configuredSignalsWebSocketUrl.trim();
+    return configured.isNotEmpty ? configured : productionSignalsWebSocketUrl;
+  }
+
+  static String get defaultMarketWebSocketUrl {
+    final configured = _configuredMarketWebSocketUrl.trim();
+    return configured.isNotEmpty ? configured : productionMarketWebSocketUrl;
+  }
 
   static const int maxSignalCacheSize = 100;
   static const Duration pollingInterval = Duration(seconds: 15);
