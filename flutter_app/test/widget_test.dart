@@ -203,6 +203,61 @@ class FakeTradingRepository extends TradingRepository {
   }
 
   @override
+  Future<MarketChartModel> fetchMarketCandles({
+    required String symbol,
+    String interval = '5m',
+    int limit = 96,
+    String? userId,
+  }) async {
+    return MarketChartModel(
+      symbol: symbol,
+      interval: interval,
+      latestPrice: 100000,
+      changePct: 1.2,
+      candles: <MarketCandleModel>[
+        MarketCandleModel(
+          timestampMs:
+              DateTime.parse('2026-01-01T00:00:00Z').millisecondsSinceEpoch,
+          open: 99500,
+          high: 100500,
+          low: 99000,
+          close: 100000,
+          volume: 1200,
+        ),
+      ],
+      markers: const <TradeMarkerModel>[],
+      confidenceIntervals: const <ConfidenceIntervalModel>[],
+      confidenceHistory: const <ConfidenceHistoryPointModel>[],
+      executionGuide: const ChartExecutionGuideModel(
+        side: 'BUY',
+        entryLow: 99800,
+        entryHigh: 100000,
+        stopLoss: 98500,
+        tp1: 102000,
+        tp2: 104000,
+        riskReward: 2.4,
+        riskPct: 1.5,
+        rewardPct: 3.6,
+      ),
+    );
+  }
+
+  @override
+  Future<void> prefetchMarketContext({
+    required String symbol,
+    required String interval,
+    String? userId,
+  }) async {}
+
+  @override
+  Stream<ChartRealtimeSnapshotModel> watchChartSnapshots({String? symbol}) =>
+      const Stream<ChartRealtimeSnapshotModel>.empty();
+
+  @override
+  Stream<Map<String, dynamic>> watchRecoveryRequests() =>
+      const Stream<Map<String, dynamic>>.empty();
+
+  @override
   Stream<SignalModel> watchSignals() => const Stream<SignalModel>.empty();
 
   @override
@@ -723,8 +778,9 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.byType(TradingApp), findsOneWidget);
-    expect(find.text('AI Trading Dashboard'), findsOneWidget);
-    expect(find.text('Dashboard'), findsWidgets);
+    expect(find.text('AI Trade Center'), findsOneWidget);
+    expect(find.text('AI Trade'), findsWidgets);
+    expect(find.text('BEST AI TRADE NOW'), findsOneWidget);
     expect(find.text('Portfolio'), findsWidgets);
   });
 
@@ -746,8 +802,9 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.byType(TradingApp), findsOneWidget);
-    expect(find.text('AI Trading Dashboard'), findsOneWidget);
-    expect(find.text('Dashboard'), findsWidgets);
+    expect(find.text('AI Trade Center'), findsOneWidget);
+    expect(find.text('AI Trade'), findsWidgets);
+    expect(find.text('BEST AI TRADE NOW'), findsOneWidget);
     expect(find.text('Portfolio'), findsWidgets);
 
     await tester.pumpWidget(const SizedBox.shrink());

@@ -7,14 +7,13 @@ import '../features/retention/providers/retention_providers.dart';
 import '../features/trade/providers/trade_providers.dart';
 import '../models/signal.dart';
 import '../widgets/live_pulse_indicator.dart';
-import 'ai_signal_screen.dart';
-import 'dashboard_screen.dart';
+import 'ai_copilot_screen.dart';
+import 'ai_trade_center_screen.dart';
 import 'onboarding_screen.dart';
 import 'portfolio_screen.dart';
-import 'settings_screen.dart';
 import 'trade_screen.dart';
 
-enum AppDestination { dashboard, signals, trade, portfolio, settings }
+enum AppDestination { tradeCenter, chart, portfolio, copilot }
 
 class AppShell extends ConsumerStatefulWidget {
   const AppShell({super.key});
@@ -24,7 +23,7 @@ class AppShell extends ConsumerStatefulWidget {
 }
 
 class _AppShellState extends ConsumerState<AppShell> {
-  AppDestination _destination = AppDestination.dashboard;
+  AppDestination _destination = AppDestination.tradeCenter;
 
   @override
   Widget build(BuildContext context) {
@@ -124,19 +123,14 @@ class _AppShellState extends ConsumerState<AppShell> {
                 _selectDestination(AppDestination.values[index]),
             destinations: const <NavigationDestination>[
               NavigationDestination(
-                icon: Icon(Icons.dashboard_outlined),
-                selectedIcon: Icon(Icons.dashboard_rounded),
-                label: 'Dashboard',
-              ),
-              NavigationDestination(
                 icon: Icon(Icons.auto_awesome_outlined),
                 selectedIcon: Icon(Icons.auto_awesome),
-                label: 'Signals',
+                label: 'AI Trade',
               ),
               NavigationDestination(
                 icon: Icon(Icons.candlestick_chart_outlined),
                 selectedIcon: Icon(Icons.candlestick_chart),
-                label: 'Trade',
+                label: 'Chart',
               ),
               NavigationDestination(
                 icon: Icon(Icons.account_balance_wallet_outlined),
@@ -144,9 +138,9 @@ class _AppShellState extends ConsumerState<AppShell> {
                 label: 'Portfolio',
               ),
               NavigationDestination(
-                icon: Icon(Icons.settings_outlined),
-                selectedIcon: Icon(Icons.settings),
-                label: 'Settings',
+                icon: Icon(Icons.psychology_alt_outlined),
+                selectedIcon: Icon(Icons.psychology_alt),
+                label: 'Copilot',
               ),
             ],
           ),
@@ -157,28 +151,18 @@ class _AppShellState extends ConsumerState<AppShell> {
 
   Widget _buildScreen() {
     switch (_destination) {
-      case AppDestination.dashboard:
-        return DashboardScreen(
-          onOpenSignals: () => _selectDestination(AppDestination.signals),
-          onOpenTrade: _openTrade,
+      case AppDestination.tradeCenter:
+        return AiTradeCenterScreen(
+          onOpenChart: () => _selectDestination(AppDestination.chart),
           onOpenTradeSignal: _openTradeWithSignal,
         );
-      case AppDestination.signals:
-        return AiSignalScreen(onExecuteSignal: _openTradeWithSignal);
-      case AppDestination.trade:
+      case AppDestination.chart:
         return const TradeScreen();
       case AppDestination.portfolio:
         return const PortfolioScreen();
-      case AppDestination.settings:
-        return const SettingsScreen();
+      case AppDestination.copilot:
+        return const AiCopilotScreen();
     }
-  }
-
-  void _openTrade(String symbol) {
-    ref.read(selectedMarketSymbolProvider.notifier).state = symbol;
-    ref.read(selectedTradeIntentProvider.notifier).state = null;
-    ref.read(localAiMemoryProvider.notifier).recordAsset(symbol);
-    _selectDestination(AppDestination.trade);
   }
 
   void _openTradeWithSignal(SignalModel signal) {
@@ -187,7 +171,7 @@ class _AppShellState extends ConsumerState<AppShell> {
         TradeIntent.fromSignal(signal);
     ref.read(localAiMemoryProvider.notifier).recordAsset(signal.symbol);
     ref.read(localAiMemoryProvider.notifier).recordMode(signal.strategy);
-    _selectDestination(AppDestination.trade);
+    _selectDestination(AppDestination.chart);
   }
 
   void _selectDestination(AppDestination destination) {
@@ -198,26 +182,23 @@ class _AppShellState extends ConsumerState<AppShell> {
 
   String _titleFor(AppDestination destination) {
     return switch (destination) {
-      AppDestination.dashboard => 'AI Trading Dashboard',
-      AppDestination.signals => 'AI Signals',
-      AppDestination.trade => 'Trade Execution',
+      AppDestination.tradeCenter => 'AI Trade Center',
+      AppDestination.chart => 'Advanced Chart',
       AppDestination.portfolio => 'Portfolio',
-      AppDestination.settings => 'Settings',
+      AppDestination.copilot => 'AI Copilot',
     };
   }
 
   String _subtitleFor(AppDestination destination) {
     return switch (destination) {
-      AppDestination.dashboard =>
-        'Realtime market intelligence, balance, and execution overview.',
-      AppDestination.signals =>
-        'Live websocket stream of premium AI trade opportunities.',
-      AppDestination.trade =>
-        'Review market structure, adjust risk, and execute with confidence.',
+      AppDestination.tradeCenter =>
+        'Best verified setup, entry plan, risk, and AI reasoning in one view.',
+      AppDestination.chart =>
+        'Live candles, execution guide, market structure, and orderflow context.',
       AppDestination.portfolio =>
-        'Exposure, allocation, and performance distribution in one place.',
-      AppDestination.settings =>
-        'Connectivity, credentials, diagnostics, and runtime controls.',
+        'Equity, PnL, drawdown, exposure, positions, and trade discipline.',
+      AppDestination.copilot =>
+        'Ask market and risk questions in plain language.',
     };
   }
 }
@@ -235,26 +216,25 @@ class _DesktopSidebar extends StatelessWidget {
   Widget build(BuildContext context) {
     final items = <({AppDestination value, IconData icon, String label})>[
       (
-        value: AppDestination.dashboard,
-        icon: Icons.dashboard_rounded,
-        label: 'Dashboard'
-      ),
-      (
-        value: AppDestination.signals,
+        value: AppDestination.tradeCenter,
         icon: Icons.auto_awesome,
-        label: 'AI Signals'
+        label: 'AI Trade Center'
       ),
       (
-        value: AppDestination.trade,
+        value: AppDestination.chart,
         icon: Icons.candlestick_chart,
-        label: 'Trade'
+        label: 'Advanced Chart'
       ),
       (
         value: AppDestination.portfolio,
         icon: Icons.account_balance_wallet,
         label: 'Portfolio'
       ),
-      (value: AppDestination.settings, icon: Icons.settings, label: 'Settings'),
+      (
+        value: AppDestination.copilot,
+        icon: Icons.psychology_alt,
+        label: 'AI Copilot'
+      ),
     ];
 
     return Container(
@@ -299,14 +279,14 @@ class _DesktopSidebar extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
                 Text(
-                  'AI Desk',
+                  'Decision Desk',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
                         fontWeight: FontWeight.w800,
                       ),
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  'VPS-connected mobile + desktop trading cockpit with live signals and diagnostics.',
+                  'Verified trade ideas only. No execution without backend risk approval.',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ],
@@ -354,7 +334,7 @@ class _ShellHeader extends StatelessWidget {
             ),
           ),
           const LivePulseIndicator(
-            label: 'VPS LIVE',
+            label: 'LIVE',
             color: TradingPalette.electricBlue,
           ),
         ],
