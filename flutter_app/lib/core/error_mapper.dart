@@ -17,6 +17,9 @@ enum AppErrorType {
 class ErrorMapper {
   const ErrorMapper._();
 
+  static const String backendReconnectingMessage =
+      'Backend is reconnecting. Paper trading and AI advisory mode remain available.';
+
   static String map(
     dynamic error, {
     String fallback = 'Something went wrong. Please try again.',
@@ -30,9 +33,9 @@ class ErrorMapper {
     final type = typeOf(error);
     switch (type) {
       case AppErrorType.network:
-        return 'Network issue. Check your internet connection.';
+        return backendReconnectingMessage;
       case AppErrorType.timeout:
-        return 'Server is taking too long. Please try again.';
+        return backendReconnectingMessage;
       case AppErrorType.auth:
         return _authMessage(error);
       case AppErrorType.server:
@@ -71,10 +74,28 @@ class ErrorMapper {
       case AppErrorType.auth:
         return Icons.lock_outline_rounded;
       case AppErrorType.server:
-        return Icons.warning_amber_rounded;
+        return Icons.cloud_off_rounded;
       case AppErrorType.unknown:
         return Icons.error_outline_rounded;
     }
+  }
+
+  static bool isRecoverableBackend(dynamic error) {
+    if (error is ApiException && _isBusinessExecutionCode(error.code)) {
+      return false;
+    }
+    final type = typeOf(error);
+    return type == AppErrorType.network ||
+        type == AppErrorType.timeout ||
+        type == AppErrorType.server;
+  }
+
+  static bool isRecoverableBackendMessage(String message) {
+    final text = message.toLowerCase();
+    return text.contains('backend is reconnecting') ||
+        text.contains('paper trading and ai advisory mode remain available') ||
+        text.contains('offline mode') ||
+        text.contains('showing last known');
   }
 
   static AppErrorType _typeFromApiException(ApiException error) {
@@ -147,17 +168,17 @@ class ErrorMapper {
     }
     final text = error?.toString().toLowerCase() ?? '';
     if (text.contains('invalid') || text.contains('json')) {
-      return 'Unexpected response from server.';
+      return backendReconnectingMessage;
     }
-    return 'Server error. Try again shortly.';
+    return backendReconnectingMessage;
   }
 
   static String _matchText(String text, String fallback) {
     if (text.contains('socket') || text.contains('network')) {
-      return 'Network issue. Check your internet connection.';
+      return backendReconnectingMessage;
     }
     if (text.contains('timeout')) {
-      return 'Server is taking too long. Please try again.';
+      return backendReconnectingMessage;
     }
     if (text.contains('401') || text.contains('unauthorized')) {
       return 'Realtime connection is reconnecting. Paper trading and charts remain available.';
@@ -166,10 +187,10 @@ class ErrorMapper {
       return 'Live execution is temporarily locked. Paper trading and AI advisory mode are still available.';
     }
     if (text.contains('500')) {
-      return 'Server error. Try again shortly.';
+      return backendReconnectingMessage;
     }
     if (text.contains('invalid') || text.contains('json')) {
-      return 'Unexpected response from server.';
+      return backendReconnectingMessage;
     }
     return fallback;
   }

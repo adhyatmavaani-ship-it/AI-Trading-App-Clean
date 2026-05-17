@@ -1,8 +1,10 @@
 import 'dart:async';
 
 import 'package:ai_trading_app/core/api_client.dart';
+import 'package:ai_trading_app/core/api_exception.dart';
 import 'package:ai_trading_app/core/auth_credentials_store.dart';
 import 'package:ai_trading_app/core/constants.dart';
+import 'package:ai_trading_app/core/error_mapper.dart';
 import 'package:ai_trading_app/core/websocket_service.dart';
 import 'package:ai_trading_app/features/market/providers/market_providers.dart';
 import 'package:ai_trading_app/features/retention/providers/retention_providers.dart';
@@ -642,6 +644,45 @@ List<Override> _commonOverrides({
 }
 
 void main() {
+  test('backend connectivity errors map to non-blocking degraded mode copy',
+      () {
+    final serverMessage = ErrorMapper.map(
+      const ApiException(
+        'Internal Server Error',
+        statusCode: 500,
+        code: 'server_error',
+      ),
+    );
+    final timeoutMessage = ErrorMapper.map(
+      const ApiException('timeout', code: 'timeout'),
+    );
+    final invalidResponseMessage = ErrorMapper.map(
+      const ApiException('invalid json', code: 'invalid_response'),
+    );
+    final riskMessage = ErrorMapper.map(
+      const ApiException(
+        'blocked',
+        code: 'DAILY_LOSS_LIMIT_REACHED',
+      ),
+    );
+
+    expect(serverMessage, contains('Backend is reconnecting'));
+    expect(timeoutMessage, contains('Backend is reconnecting'));
+    expect(invalidResponseMessage, contains('Backend is reconnecting'));
+    expect(serverMessage.toLowerCase(), isNot(contains('server error')));
+    expect(
+        ErrorMapper.isRecoverableBackend(
+          const ApiException('Internal Server Error', statusCode: 500),
+        ),
+        isTrue);
+    expect(
+        ErrorMapper.isRecoverableBackend(
+          const ApiException('blocked', code: 'DAILY_LOSS_LIMIT_REACHED'),
+        ),
+        isFalse);
+    expect(riskMessage, contains('Daily loss protection'));
+  });
+
   test('onboarding completion does not block on secure storage failures',
       () async {
     final previousOnError = FlutterError.onError;

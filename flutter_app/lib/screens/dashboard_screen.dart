@@ -1074,10 +1074,10 @@ class DashboardScreen extends ConsumerWidget {
                 Padding(
                   padding: const EdgeInsets.only(bottom: 16),
                   child: _InlineWarningBanner(
-                    message: ErrorMapper.typeOf(signalFeed.lastError) ==
-                            AppErrorType.network
-                        ? 'Offline mode. Showing last known signals.'
-                        : userMessageForError(signalFeed.lastError),
+                    message:
+                        ErrorMapper.isRecoverableBackend(signalFeed.lastError)
+                            ? 'Offline mode. Showing last known signals.'
+                            : userMessageForError(signalFeed.lastError),
                   ),
                 ),
               if (latestDashboardSummary != null || latestTradeUpdate != null)

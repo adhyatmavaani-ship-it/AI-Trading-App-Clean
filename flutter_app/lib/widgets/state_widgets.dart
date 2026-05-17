@@ -101,17 +101,21 @@ class ErrorState extends StatelessWidget {
         final waking = warmupState == BackendWarmupState.waking;
         final retrying = warmupState == BackendWarmupState.retrying;
         final errorType = ErrorMapper.typeOf(message);
+        final recoverableBackend =
+            ErrorMapper.isRecoverableBackendMessage(message);
         final resolvedMessage = waking
             ? 'Server waking up...'
             : retrying
                 ? 'Retrying connection...'
-                : switch (errorType) {
-                    AppErrorType.auth => 'Authentication Required',
-                    AppErrorType.server => 'Server Issue Detected',
-                    AppErrorType.timeout => 'Request Timed Out',
-                    AppErrorType.network => 'Connection Issue Detected',
-                    AppErrorType.unknown => 'Something Went Wrong',
-                  };
+                : recoverableBackend
+                    ? 'Backend Reconnecting'
+                    : switch (errorType) {
+                        AppErrorType.auth => 'Authentication Required',
+                        AppErrorType.server => 'Backend Reconnecting',
+                        AppErrorType.timeout => 'Backend Reconnecting',
+                        AppErrorType.network => 'Backend Reconnecting',
+                        AppErrorType.unknown => 'Something Went Wrong',
+                      };
         final resolvedIcon = waking || retrying
             ? Icons.hourglass_top_rounded
             : ErrorMapper.iconFor(message);

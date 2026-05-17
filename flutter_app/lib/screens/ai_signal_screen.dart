@@ -113,8 +113,7 @@ class AiSignalScreen extends ConsumerWidget {
               child: GlassPanel(
                 glowColor: TradingPalette.amber,
                 child: Text(
-                  ErrorMapper.typeOf(signalFeed.lastError) ==
-                          AppErrorType.network
+                  ErrorMapper.isRecoverableBackend(signalFeed.lastError)
                       ? 'Offline mode. Showing last known signals.'
                       : userMessageForError(signalFeed.lastError),
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
