@@ -1,4 +1,5 @@
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -27,11 +28,22 @@ class StubFirestore:
         self.snapshots.append((user_id, payload))
 
 
+class FailingCache(InMemoryCache):
+    def set_json(self, key, value, ttl):
+        raise RuntimeError("cache unavailable")
+
+
+class FailingFirestore(StubFirestore):
+    def save_performance_snapshot(self, user_id, payload):
+        raise RuntimeError("firestore unavailable")
+
+
 class AdaptiveLearningServiceTest(unittest.TestCase):
     def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
         self.cache = InMemoryCache()
         self.firestore = StubFirestore()
-        self.settings = Settings(redis_url="redis://unused")
+        self.settings = Settings(redis_url="redis://unused", model_dir=self.tmpdir.name)
         self.service = AdaptiveLearningService(
             settings=self.settings,
             cache=self.cache,
@@ -44,6 +56,9 @@ class AdaptiveLearningServiceTest(unittest.TestCase):
             "5m_rsi": 62.0,
             "15m_ema_spread": 0.004,
         }
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
 
     def test_losing_pattern_is_blacklisted_after_repeated_losses(self):
         active_trade = {
@@ -98,6 +113,39 @@ class AdaptiveLearningServiceTest(unittest.TestCase):
         snapshot = self.service.snapshot()
         self.assertIn("RANGING", snapshot["regimes"])
         self.assertGreaterEqual(snapshot["whitelist_total"], 1)
+
+    def test_corrupt_cached_state_falls_back_to_default_memory(self):
+        self.cache.store[self.service.cache_key] = ["not", "a", "state"]
+
+        feedback = self.service.evaluate_signal(
+            symbol="BTCUSDT",
+            side="BUY",
+            strategy="HYBRID_TREND_PULLBACK",
+            feature_snapshot=dict(self.feature_snapshot),
+        )
+
+        self.assertFalse(feedback.block_trade)
+        self.assertEqual(feedback.trades, 0)
+        self.assertEqual(feedback.regime, "TRENDING")
+
+    def test_persistence_failures_do_not_block_outcome_learning_report(self):
+        service = AdaptiveLearningService(
+            settings=self.settings,
+            cache=FailingCache(),
+            firestore=FailingFirestore(),
+        )
+
+        report = service.record_trade_outcome(
+            trade_id="safe-close-1",
+            active_trade={
+                "side": "BUY",
+                "feature_snapshot": dict(self.feature_snapshot),
+            },
+            pnl=-5.0,
+        )
+
+        self.assertEqual(report["trades"], 1)
+        self.assertFalse(report["blacklisted"])
 
 
 if __name__ == "__main__":

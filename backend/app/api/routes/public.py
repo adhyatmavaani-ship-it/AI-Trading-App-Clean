@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 import logging
+import time
 
 from fastapi import APIRouter, Depends, Query
 
@@ -17,7 +19,7 @@ from app.services.container import ServiceContainer, get_container
 router = APIRouter(prefix="/public", tags=["Public"])
 logger = logging.getLogger(__name__)
 
-PUBLIC_CACHE_TTL_SECONDS = 30
+PUBLIC_CACHE_TTL_SECONDS = 60
 
 
 @router.get(
@@ -30,18 +32,46 @@ async def get_public_performance(
     container: ServiceContainer = Depends(get_container),
 ) -> PublicPerformanceResponse:
     cache_key = "public:performance:v1"
+    started = time.perf_counter()
+    settings = getattr(container, "settings", None)
+    timeout_seconds = max(float(getattr(settings, "public_endpoint_timeout_seconds", 2.5)), 0.1)
+    slow_threshold = max(float(getattr(settings, "slow_operation_threshold_seconds", 1.0)), 0.1)
+    cache_hit = False
     try:
         cached = container.cache.get_json(cache_key)
         if cached:
+            cache_hit = True
             return _build_public_performance_response(cached)
 
-        summary = container.firestore.load_public_performance_summary()
+        if _firestore_disabled(container):
+            response = _default_public_performance_response()
+            container.cache.set_json(cache_key, response.model_dump(mode="json"), ttl=PUBLIC_CACHE_TTL_SECONDS)
+            return response
+
+        async with asyncio.timeout(timeout_seconds):
+            summary = await asyncio.to_thread(container.firestore.load_public_performance_summary)
         response = _build_public_performance_response(summary)
         container.cache.set_json(cache_key, response.model_dump(mode="json"), ttl=PUBLIC_CACHE_TTL_SECONDS)
         return response
+    except TimeoutError:
+        logger.warning(
+            "public_performance_endpoint_timed_out",
+            extra={
+                "event": "public_performance_endpoint_timed_out",
+                "context": {"timeout_seconds": timeout_seconds},
+            },
+        )
+        return _default_public_performance_response()
     except Exception:
         logger.exception("public_performance_endpoint_failed")
         return _default_public_performance_response()
+    finally:
+        _log_endpoint_timing(
+            path="/v1/public/performance",
+            started=started,
+            slow_threshold=slow_threshold,
+            context={"cache_hit": cache_hit},
+        )
 
 
 @router.get(
@@ -58,6 +88,11 @@ async def get_public_trades(
     cached = container.cache.get_json(cache_key)
     if cached:
         return PublicTradesResponse(**cached)
+
+    if _firestore_disabled(container):
+        response = PublicTradesResponse(count=0, items=[])
+        container.cache.set_json(cache_key, response.model_dump(mode="json"), ttl=PUBLIC_CACHE_TTL_SECONDS)
+        return response
 
     trades = []
     for payload in container.firestore.list_closed_trades(limit=limit):
@@ -91,6 +126,11 @@ async def get_public_daily(
     cached = container.cache.get_json(cache_key)
     if cached:
         return PublicDailyResponse(**cached)
+
+    if _firestore_disabled(container):
+        response = PublicDailyResponse(count=0, items=[])
+        container.cache.set_json(cache_key, response.model_dump(mode="json"), ttl=PUBLIC_CACHE_TTL_SECONDS)
+        return response
 
     rows = [
         PublicDailyItem(
@@ -143,6 +183,13 @@ def _default_public_performance_response() -> PublicPerformanceResponse:
     )
 
 
+def _firestore_disabled(container: ServiceContainer) -> bool:
+    firestore = getattr(container, "firestore", None)
+    if firestore is None:
+        return True
+    return hasattr(firestore, "client") and getattr(firestore, "client", None) is None
+
+
 def _build_public_performance_response(summary: dict | None) -> PublicPerformanceResponse:
     payload = dict(summary or {})
     total_trades = max(_safe_int(payload.get("total_trades", 0), default=0), 0)
@@ -178,3 +225,27 @@ def _trade_pnl_pct(payload: dict) -> float:
     if executed_notional > 0:
         return round((realized_pnl / executed_notional) * 100, 4)
     return 0.0
+
+
+def _log_endpoint_timing(*, path: str, started: float, slow_threshold: float, context: dict | None = None) -> None:
+    duration_ms = round((time.perf_counter() - started) * 1000, 2)
+    logger.info(
+        "endpoint_execution_timing",
+        extra={
+            "event": "endpoint_execution_timing",
+            "context": {
+                "path": path,
+                "duration_ms": duration_ms,
+                "slow": duration_ms >= slow_threshold * 1000,
+                **(context or {}),
+            },
+        },
+    )
+    if duration_ms >= slow_threshold * 1000:
+        logger.warning(
+            "endpoint_execution_slow",
+            extra={
+                "event": "endpoint_execution_slow",
+                "context": {"path": path, "duration_ms": duration_ms},
+            },
+        )

@@ -3,16 +3,20 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/error_presenter.dart';
+import '../core/trading_operating_system_engine.dart';
 import '../core/trading_palette.dart';
 import '../features/monitoring/providers/monitoring_providers.dart';
 import '../features/pnl/providers/pnl_providers.dart';
 import '../models/active_trade.dart';
 import '../models/portfolio_concentration.dart';
+import '../models/realtime_event.dart';
 import '../models/user_pnl.dart';
+import '../features/realtime/providers/realtime_providers.dart';
 import '../widgets/glass_panel.dart';
 import '../widgets/section_card.dart';
 import '../widgets/state_widgets.dart';
 import '../widgets/status_badge.dart';
+import '../widgets/trading_os_widgets.dart';
 
 class PortfolioScreen extends ConsumerWidget {
   const PortfolioScreen({super.key});
@@ -23,6 +27,22 @@ class PortfolioScreen extends ConsumerWidget {
     final pnlAsync = ref.watch(userPnLProvider(userId));
     final activeTradesAsync = ref.watch(activeTradesProvider(userId));
     final concentrationAsync = ref.watch(concentrationHistoryProvider);
+    final latestPortfolioUpdate =
+        ref.watch(latestPortfolioUpdateProvider(userId));
+    final latestTradeUpdate = ref.watch(latestTradeUpdateProvider(userId));
+    const operatingSystem = TradingOperatingSystemEngine();
+    final pnl = pnlAsync.valueOrNull;
+    final activeTrades =
+        activeTradesAsync.valueOrNull ?? const <ActiveTradeModel>[];
+    final portfolioRead = operatingSystem.portfolioIntelligence(
+      pnl: pnl,
+      trades: activeTrades,
+    );
+    final journalRead = operatingSystem.professionalJournal(
+      trades: activeTrades,
+      decisions: const [],
+      tradeUpdate: latestTradeUpdate,
+    );
 
     return RefreshIndicator(
       onRefresh: () async {
@@ -36,12 +56,46 @@ class PortfolioScreen extends ConsumerWidget {
           return ListView(
             padding: const EdgeInsets.fromLTRB(20, 6, 20, 32),
             children: <Widget>[
+              if (latestPortfolioUpdate != null || latestTradeUpdate != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 18),
+                  child: _PortfolioRealtimeStrip(
+                    portfolioUpdate: latestPortfolioUpdate,
+                    tradeUpdate: latestTradeUpdate,
+                  ),
+                ),
               pnlAsync.when(
-                data: (pnl) => _PortfolioHero(pnl: pnl),
+                data: (pnl) => _PortfolioHero(
+                  pnl: pnl,
+                  portfolioUpdate: latestPortfolioUpdate,
+                ),
                 loading: () => const LoadingState(label: 'Loading portfolio'),
                 error: (error, _) =>
                     ErrorState(message: userMessageForError(error)),
               ),
+              const SizedBox(height: 18),
+              desktop
+                  ? Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Expanded(
+                          child: PortfolioIntelligencePanel(
+                            read: portfolioRead,
+                          ),
+                        ),
+                        const SizedBox(width: 18),
+                        Expanded(
+                          child: ProfessionalJournalPanel(read: journalRead),
+                        ),
+                      ],
+                    )
+                  : Column(
+                      children: <Widget>[
+                        PortfolioIntelligencePanel(read: portfolioRead),
+                        const SizedBox(height: 18),
+                        ProfessionalJournalPanel(read: journalRead),
+                      ],
+                    ),
               const SizedBox(height: 18),
               desktop
                   ? Row(
@@ -72,7 +126,8 @@ class PortfolioScreen extends ConsumerWidget {
     );
   }
 
-  Widget _buildAllocationPanel(AsyncValue<List<ActiveTradeModel>> activeTradesAsync) {
+  Widget _buildAllocationPanel(
+      AsyncValue<List<ActiveTradeModel>> activeTradesAsync) {
     return SectionCard(
       title: 'Allocation',
       subtitle: 'Live holding mix across open positions.',
@@ -83,7 +138,8 @@ class PortfolioScreen extends ConsumerWidget {
           if (trades.isEmpty) {
             return const EmptyState(
               title: 'No holdings',
-              subtitle: 'Open positions will appear here with live allocation share.',
+              subtitle:
+                  'Open positions will appear here with live allocation share.',
             );
           }
           final total = trades.fold<double>(
@@ -175,7 +231,8 @@ class PortfolioScreen extends ConsumerWidget {
             children: <Widget>[
               _RiskBreakdownChip(
                 label: 'Gross Drift',
-                value: '${(latest.grossExposureDrift * 100).toStringAsFixed(1)}%',
+                value:
+                    '${(latest.grossExposureDrift * 100).toStringAsFixed(1)}%',
               ),
               _RiskBreakdownChip(
                 label: 'Cluster Drift',
@@ -200,7 +257,8 @@ class PortfolioScreen extends ConsumerWidget {
     );
   }
 
-  Widget _buildHoldingsPanel(AsyncValue<List<ActiveTradeModel>> activeTradesAsync) {
+  Widget _buildHoldingsPanel(
+      AsyncValue<List<ActiveTradeModel>> activeTradesAsync) {
     return SectionCard(
       title: 'Holdings',
       subtitle: 'Position-by-position exposure with execution context.',
@@ -211,7 +269,8 @@ class PortfolioScreen extends ConsumerWidget {
           if (trades.isEmpty) {
             return const EmptyState(
               title: 'No open positions',
-              subtitle: 'Portfolio holdings will populate here once trades execute.',
+              subtitle:
+                  'Portfolio holdings will populate here once trades execute.',
             );
           }
           return Column(
@@ -231,14 +290,14 @@ class PortfolioScreen extends ConsumerWidget {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: <Widget>[
                                 Text(
-                                  '${trade.symbol} • ${trade.side}',
+                                  '${trade.symbol} | ${trade.side}',
                                   style: const TextStyle(
                                     fontWeight: FontWeight.w800,
                                   ),
                                 ),
                                 const SizedBox(height: 6),
                                 Text(
-                                  'Qty ${trade.executedQuantity.toStringAsFixed(6)}  •  Entry ${trade.entry.toStringAsFixed(4)}',
+                                  'Qty ${trade.executedQuantity.toStringAsFixed(6)} | Entry ${trade.entry.toStringAsFixed(4)}',
                                   style: const TextStyle(
                                     color: TradingPalette.textMuted,
                                   ),
@@ -290,13 +349,18 @@ class PortfolioScreen extends ConsumerWidget {
 }
 
 class _PortfolioHero extends StatelessWidget {
-  const _PortfolioHero({required this.pnl});
+  const _PortfolioHero({
+    required this.pnl,
+    this.portfolioUpdate,
+  });
 
   final UserPnLModel pnl;
+  final RealtimePortfolioUpdateModel? portfolioUpdate;
 
   @override
   Widget build(BuildContext context) {
     final positive = pnl.absolutePnl >= 0;
+    final summary = portfolioUpdate?.summary;
     return GlassPanel(
       glowColor: positive ? TradingPalette.neonGreen : TradingPalette.neonRed,
       child: Column(
@@ -327,11 +391,127 @@ class _PortfolioHero extends StatelessWidget {
             spacing: 12,
             runSpacing: 12,
             children: <Widget>[
-              _PortfolioMetric(label: 'Current Equity', value: '\$${pnl.currentEquity.toStringAsFixed(2)}'),
-              _PortfolioMetric(label: 'Absolute PnL', value: '\$${pnl.absolutePnl.toStringAsFixed(2)}'),
-              _PortfolioMetric(label: 'Drawdown', value: '${(pnl.rollingDrawdown * 100).toStringAsFixed(2)}%'),
-              _PortfolioMetric(label: 'Protection', value: pnl.protectionState),
+              _PortfolioMetric(
+                label: 'Current Equity',
+                value: '\$${pnl.currentEquity.toStringAsFixed(2)}',
+              ),
+              _PortfolioMetric(
+                label: 'Absolute PnL',
+                value: '\$${pnl.absolutePnl.toStringAsFixed(2)}',
+              ),
+              _PortfolioMetric(
+                label: 'Drawdown',
+                value: '${(pnl.rollingDrawdown * 100).toStringAsFixed(2)}%',
+              ),
+              _PortfolioMetric(
+                label: 'Protection',
+                value: summary?.protectionState ?? pnl.protectionState,
+              ),
+              _PortfolioMetric(
+                label: 'Realized',
+                value: '\$${pnl.realizedPnl.toStringAsFixed(2)}',
+              ),
+              _PortfolioMetric(
+                label: 'Unrealized',
+                value: '\$${pnl.unrealizedPnl.toStringAsFixed(2)}',
+              ),
+              _PortfolioMetric(
+                label: 'Gross Exposure',
+                value:
+                    '\$${(summary?.grossExposure ?? pnl.grossExposure).toStringAsFixed(2)}',
+              ),
+              _PortfolioMetric(
+                label: 'Open Notional',
+                value:
+                    '\$${(summary?.openNotional ?? pnl.openNotional).toStringAsFixed(2)}',
+              ),
             ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PortfolioRealtimeStrip extends StatelessWidget {
+  const _PortfolioRealtimeStrip({
+    required this.portfolioUpdate,
+    required this.tradeUpdate,
+  });
+
+  final RealtimePortfolioUpdateModel? portfolioUpdate;
+  final RealtimeTradeUpdateModel? tradeUpdate;
+
+  @override
+  Widget build(BuildContext context) {
+    final summary = portfolioUpdate?.summary;
+    final statusColor = _tradeUpdateColor(tradeUpdate);
+    final statusLabel = tradeUpdate == null
+        ? 'Listening for portfolio events'
+        : '${tradeUpdate!.status.toUpperCase()} ${tradeUpdate!.symbol}';
+    final reason = tradeUpdate == null
+        ? 'Holdings and equity now refresh from websocket events, with polling only as fallback recovery.'
+        : _portfolioTradeReason(tradeUpdate!);
+
+    return GlassPanel(
+      glowColor: statusColor,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              Expanded(
+                child: Text(
+                  'Realtime Portfolio Sync',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                ),
+              ),
+              StatusBadge(
+                label: tradeUpdate == null
+                    ? 'LIVE'
+                    : tradeUpdate!.status.toUpperCase(),
+                color: statusColor,
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: <Widget>[
+              if (summary != null)
+                _PortfolioMetric(
+                  label: 'Active Trades',
+                  value: summary.activeTrades.toString(),
+                ),
+              if (summary != null)
+                _PortfolioMetric(
+                  label: 'Gross Exposure',
+                  value:
+                      '${(summary.grossExposurePct * 100).toStringAsFixed(1)}%',
+                ),
+              if (summary != null)
+                _PortfolioMetric(
+                  label: 'Realtime Equity',
+                  value: '\$${summary.currentEquity.toStringAsFixed(2)}',
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            statusLabel,
+            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w800,
+                ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            reason,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: TradingPalette.textMuted,
+                ),
           ),
         ],
       ),
@@ -402,4 +582,30 @@ class _RiskBreakdownChip extends StatelessWidget {
       ),
     );
   }
+}
+
+Color _tradeUpdateColor(RealtimeTradeUpdateModel? tradeUpdate) {
+  if (tradeUpdate == null) {
+    return TradingPalette.electricBlue;
+  }
+  final status = tradeUpdate.status.toLowerCase();
+  if (status.contains('reject') || status.contains('fail')) {
+    return TradingPalette.neonRed;
+  }
+  if (status.contains('close')) {
+    return TradingPalette.amber;
+  }
+  return TradingPalette.neonGreen;
+}
+
+String _portfolioTradeReason(RealtimeTradeUpdateModel tradeUpdate) {
+  final reason = tradeUpdate.reason.trim();
+  if (reason.isNotEmpty) {
+    return reason;
+  }
+  final code = tradeUpdate.errorCode?.trim();
+  if (code != null && code.isNotEmpty) {
+    return code.replaceAll('_', ' ').toLowerCase();
+  }
+  return 'Portfolio sync received a ${tradeUpdate.status.toLowerCase()} event.';
 }

@@ -22,6 +22,12 @@ class LiveSignalItem(BaseModel):
     min_balance: float = Field(description="Minimum portfolio balance required to receive the signal.", examples=[25.0])
     rejection_reason: str | None = Field(default=None, description="Why the signal was not fully accepted for execution, if applicable.", examples=["meta_model_low_final_score"])
     low_confidence: bool = Field(default=False, description="Whether the signal is being surfaced as a watchlist/debug candidate rather than a fully accepted execution candidate.", examples=[True])
+    quality: str = Field(default="watchlist", description="High-level production quality state for this signal.", examples=["approved"])
+    quality_score: float = Field(default=0.0, description="Normalized quality/readiness score used for ranking and UI visibility.", examples=[84.2])
+    quality_reasons: list[str] = Field(default_factory=list, description="Machine-readable reasons that explain downgraded or blocked quality states.")
+    execution_allowed: bool = Field(default=False, description="Whether the backend currently considers this signal executable.", examples=[True])
+    market_data_stale: bool = Field(default=False, description="Whether the underlying market data snapshot was stale when the signal was generated.", examples=[False])
+    market_data_sources: dict[str, str] = Field(default_factory=dict, description="Summarized market-data sources used for price, order book, and candles.")
 
     model_config = {
         "json_schema_extra": {
@@ -42,6 +48,12 @@ class LiveSignalItem(BaseModel):
                 "min_balance": 25.0,
                 "rejection_reason": None,
                 "low_confidence": False,
+                "quality": "approved",
+                "quality_score": 84.2,
+                "quality_reasons": [],
+                "execution_allowed": True,
+                "market_data_stale": False,
+                "market_data_sources": {"price": "stream", "order_book": "exchange:binance", "ohlcv_15m": "cache"},
             }
         }
     }

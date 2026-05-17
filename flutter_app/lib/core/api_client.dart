@@ -12,6 +12,7 @@ import '../models/backtest_job.dart';
 import '../models/batch.dart';
 import '../models/market_chart.dart';
 import '../models/market_summary.dart';
+import '../models/infrastructure_snapshot.dart';
 import '../models/meta_analytics.dart';
 import '../models/meta_decision.dart';
 import '../models/portfolio_concentration.dart';
@@ -23,25 +24,21 @@ import '../models/trade_execution.dart';
 import '../models/trade_timeline.dart';
 import '../models/user_pnl.dart';
 import 'api_exception.dart';
-import 'auth_credentials_store.dart';
 import 'backend_warmup_state.dart';
 import 'constants.dart';
 import 'error_mapper.dart';
 
 class ApiClient {
   ApiClient({
-    required AuthCredentialsStore credentialsStore,
-    Future<AuthSession?> Function(AuthSession currentSession)? tokenRefresher,
     String? baseUrl,
     http.Client? httpClient,
-  })  : _credentialsStore = credentialsStore,
-        _tokenRefresher = tokenRefresher,
-        _httpClient = httpClient ?? http.Client(),
-        _baseUrl = _normalizeBaseUrl(baseUrl ?? AppConstants.defaultApiBaseUrl);
+  })  : _httpClient = httpClient ?? http.Client(),
+        _baseUrl =
+            _normalizeBaseUrl(baseUrl ?? AppConstants.defaultApiBaseUrl) {
+    debugPrint('[API BASE URL] $_baseUrl');
+    track('api_base_url_resolved', <String, dynamic>{'url': _baseUrl});
+  }
 
-  final AuthCredentialsStore _credentialsStore;
-  final Future<AuthSession?> Function(AuthSession currentSession)?
-      _tokenRefresher;
   final http.Client _httpClient;
   final String _baseUrl;
 
@@ -105,6 +102,11 @@ class ApiClient {
     return TradeExecutionResponseModel.fromJson(payload);
   }
 
+  Future<TradeEvaluationModel> getTradeEvaluation(String symbol) async {
+    final payload = await postJson('/v1/trading/evaluate/$symbol');
+    return TradeEvaluationModel.fromJson(payload);
+  }
+
   Future<List<SignalModel>> getSignals({int limit = 25}) async {
     final payload = await getJson(
       '/v1/signals/live',
@@ -163,7 +165,7 @@ class ApiClient {
     required String symbol,
     String interval = '5m',
     int limit = 96,
-    String userId = 'alice',
+    String? userId,
   }) async {
     final payload = await getJson(
       '/v1/market/candles',
@@ -171,7 +173,7 @@ class ApiClient {
         'symbol': symbol,
         'interval': interval,
         'limit': limit,
-        'user_id': userId,
+        'user_id': userId ?? AppConstants.requiredUserId,
       },
     );
     return MarketChartModel.fromJson(payload);
@@ -191,6 +193,19 @@ class ApiClient {
       data: <String, dynamic>{'limit': limit},
     );
     return MarketSummaryModel.fromJson(payload);
+  }
+
+  Future<String> getAssistantMode() async {
+    final payload = await getJson('/v1/market/assistant-mode');
+    return payload['mode'] as String? ?? 'ASSISTED';
+  }
+
+  Future<String> setAssistantMode(String mode) async {
+    final payload = await postJson(
+      '/v1/market/assistant-mode',
+      data: <String, dynamic>{'mode': mode},
+    );
+    return payload['mode'] as String? ?? mode;
   }
 
   Future<RiskCoachOhlcResponse> getRiskCoachOhlc({
@@ -473,6 +488,11 @@ class ApiClient {
     return SystemHealthModel.fromJson(payload);
   }
 
+  Future<InfrastructureSnapshotModel> getInfrastructureSnapshot() async {
+    final payload = await getJson('/v1/monitoring/infrastructure/realtime');
+    return InfrastructureSnapshotModel.fromJson(payload);
+  }
+
   Future<PortfolioConcentrationHistoryModel> getConcentrationHistory({
     String window = '24h',
     int limit = 24,
@@ -609,7 +629,6 @@ class ApiClient {
     String path, {
     Map<String, dynamic>? queryParameters,
     Object? data,
-    bool allowAuthRefresh = true,
   }) async {
     markBackendConnecting();
     ApiException? lastError;
@@ -626,7 +645,6 @@ class ApiClient {
           path,
           queryParameters: queryParameters,
           data: data,
-          allowAuthRefresh: allowAuthRefresh,
         );
         _throwForStatus(response, method: method);
         markBackendReady();
@@ -669,11 +687,11 @@ class ApiClient {
     String path, {
     Map<String, dynamic>? queryParameters,
     Object? data,
-    required bool allowAuthRefresh,
   }) async {
     final uri = _buildUri(path, queryParameters: queryParameters);
     final headers = await _buildHeaders();
     final body = data == null ? null : jsonEncode(data);
+    final requestStartedAt = DateTime.now();
     _logRequest(method, uri, headers);
     http.Response response;
     try {
@@ -684,26 +702,27 @@ class ApiClient {
         body: body,
       ).timeout(AppConstants.requestTimeout);
     } on TimeoutException {
+      _logFailure(method, uri, 'timeout', requestStartedAt);
       throw ApiException(
-        'Request timed out while contacting the trading backend.',
+        'Request timed out while contacting the nginx proxy or trading backend.',
         code: 'timeout',
         method: method,
         uri: uri.toString(),
         retryable: true,
       );
     } on SocketException {
-      _logFailure(method, uri, headers, 'socket_error');
+      _logFailure(method, uri, 'socket_error', requestStartedAt);
       throw ApiException(
-        'No internet connection or the server is unreachable right now.',
+        'No internet connection or the nginx endpoint is unreachable right now.',
         code: 'socket_error',
         method: method,
         uri: uri.toString(),
         retryable: true,
       );
     } on http.ClientException catch (error) {
-      _logFailure(method, uri, headers, 'network_error');
+      _logFailure(method, uri, 'network_error', requestStartedAt);
       throw ApiException(
-        'Unable to reach the trading backend. Check mobile internet and try again.',
+        'Unable to reach the nginx proxy in front of the trading backend. Check mobile internet and try again.',
         code: 'network_error',
         method: method,
         uri: uri.toString(),
@@ -718,20 +737,7 @@ class ApiClient {
       body: response.body,
       headers: response.headers,
     );
-    _logResponse(method, uri, headers, raw.statusCode);
-
-    if (raw.statusCode == 401 && allowAuthRefresh) {
-      final refreshed = await _refreshSession();
-      if (refreshed != null) {
-        return _dispatch(
-          method,
-          path,
-          queryParameters: queryParameters,
-          data: data,
-          allowAuthRefresh: false,
-        );
-      }
-    }
+    _logResponse(method, uri, raw.statusCode, requestStartedAt);
     return raw;
   }
 
@@ -778,23 +784,20 @@ class ApiClient {
   }
 
   Future<Map<String, String>> _buildHeaders() async {
+    final apiKey = AppConstants.requiredApiKey.trim();
     final headers = <String, String>{
       'Accept': 'application/json',
       'Content-Type': 'application/json',
-      'X-API-Key': AppConstants.requiredApiKey,
       'X-Client-Platform': 'flutter',
       'X-App-Environment': const String.fromEnvironment(
         'APP_ENV',
         defaultValue: 'mobile',
       ),
     };
-
-    final session = await _credentialsStore.loadSession();
-    if (session != null && session.accessToken.trim().isNotEmpty) {
-      if (session.scheme == AuthScheme.bearer) {
-        headers['Authorization'] = 'Bearer ${session.accessToken.trim()}';
-      }
+    if (apiKey.isNotEmpty) {
+      headers['X-API-Key'] = apiKey;
     }
+    debugPrint('[API AUTH] required_api_key');
     return headers;
   }
 
@@ -802,35 +805,38 @@ class ApiClient {
     return error.retryable || error.isTimeout || error.isSocketError;
   }
 
-  void _logRequest(
-    String method,
-    Uri uri,
-    Map<String, String> headers,
-  ) {
+  void _logRequest(String method, Uri uri, Map<String, String> headers) {
     debugPrint('[API REQUEST] $method $uri');
-    debugPrint('[API HEADERS] $headers');
+    final hasApiKey = (headers['X-API-Key'] ?? '').trim().isNotEmpty;
+    debugPrint(
+      '[API AUTH HEADER] X-API-Key=${hasApiKey ? 'present' : 'missing'}',
+    );
   }
 
   void _logResponse(
     String method,
     Uri uri,
-    Map<String, String> headers,
     int statusCode,
+    DateTime startedAt,
   ) {
     debugPrint('[API RESPONSE] $method $uri');
-    debugPrint('[API HEADERS] $headers');
     debugPrint('[API STATUS] $statusCode');
+    debugPrint(
+      '[API LATENCY_MS] ${DateTime.now().difference(startedAt).inMilliseconds}',
+    );
   }
 
   void _logFailure(
     String method,
     Uri uri,
-    Map<String, String> headers,
     String status,
+    DateTime startedAt,
   ) {
     debugPrint('[API RESPONSE] $method $uri');
-    debugPrint('[API HEADERS] $headers');
     debugPrint('[API STATUS] $status');
+    debugPrint(
+      '[API LATENCY_MS] ${DateTime.now().difference(startedAt).inMilliseconds}',
+    );
   }
 
   void _throwForStatus(
@@ -841,22 +847,31 @@ class ApiClient {
     if (statusCode >= 200 && statusCode < 300) {
       return;
     }
+    final backendError = _extractBackendError(response.body);
     if (statusCode == 401) {
+      debugPrint('[API AUTH RESPONSE] ${response.body}');
       throw ApiException(
-        'Authentication failed. Check the production API key configured in the app.',
+        backendError?.message ??
+            'Realtime connection is reconnecting. Paper trading and charts remain available.',
         statusCode: statusCode,
-        code: 'unauthorized',
+        code: backendError?.code ?? 'unauthorized',
         method: method,
         uri: response.uri.toString(),
+        details:
+            backendError?.details ?? <String, dynamic>{'body': response.body},
       );
     }
     if (statusCode == 403) {
+      debugPrint('[API AUTH RESPONSE] ${response.body}');
       throw ApiException(
-        'Access denied by the trading backend. Check API credentials or account permissions.',
+        backendError?.message ??
+            'Live execution is temporarily locked. Paper trading and AI advisory mode are still available.',
         statusCode: statusCode,
-        code: 'forbidden',
+        code: backendError?.code ?? 'forbidden',
         method: method,
         uri: response.uri.toString(),
+        details:
+            backendError?.details ?? <String, dynamic>{'body': response.body},
       );
     }
     if (statusCode == 451) {
@@ -868,46 +883,74 @@ class ApiClient {
         uri: response.uri.toString(),
       );
     }
-    if (statusCode >= 500) {
+    if (statusCode == 502 || statusCode == 503 || statusCode == 504) {
       throw ApiException(
-        'Trading backend is temporarily unavailable. Please retry in a moment.',
+        'Nginx could not reach the trading backend right now. Please retry in a moment.',
         statusCode: statusCode,
-        code: 'server_error',
+        code: 'server_unavailable',
         method: method,
         uri: response.uri.toString(),
         retryable: true,
         details: <String, dynamic>{'body': response.body},
       );
     }
+    if (statusCode >= 500) {
+      throw ApiException(
+        backendError?.message ??
+            'Trading backend is temporarily unavailable. Please retry in a moment.',
+        statusCode: statusCode,
+        code: backendError?.code ?? 'server_error',
+        method: method,
+        uri: response.uri.toString(),
+        retryable: true,
+        details:
+            backendError?.details ?? <String, dynamic>{'body': response.body},
+      );
+    }
     throw ApiException(
-      statusCode >= 400 && statusCode < 500
-          ? 'The request could not be completed. Please review your input and try again.'
-          : 'The request failed. Please try again.',
+      backendError?.message ??
+          (statusCode >= 400 && statusCode < 500
+              ? 'The request could not be completed. Please review your input and try again.'
+              : 'The request failed. Please try again.'),
       statusCode: statusCode,
-      code: 'http_error',
+      code: backendError?.code ?? 'http_error',
       method: method,
       uri: response.uri.toString(),
-      details: <String, dynamic>{'body': response.body},
+      details:
+          backendError?.details ?? <String, dynamic>{'body': response.body},
     );
   }
 
-  Future<AuthSession?> _refreshSession() async {
-    final tokenRefresher = _tokenRefresher;
-    if (tokenRefresher == null) {
+  _BackendError? _extractBackendError(String body) {
+    if (body.trim().isEmpty) {
       return null;
     }
-    final currentSession = await _credentialsStore.loadSession();
-    if (currentSession == null || !currentSession.hasRefreshToken) {
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is! Map) {
+        return null;
+      }
+      final root = Map<String, dynamic>.from(decoded);
+      final detail = root['detail'];
+      if (detail is Map) {
+        final detailMap = Map<String, dynamic>.from(detail);
+        return _BackendError(
+          code: detailMap['error_code']?.toString(),
+          message: detailMap['message']?.toString(),
+          details: detailMap,
+        );
+      }
+      if (root['message'] != null) {
+        return _BackendError(
+          code: root['error_code']?.toString(),
+          message: root['message']?.toString(),
+          details: root,
+        );
+      }
+    } catch (_) {
       return null;
     }
-    final refreshedSession = await tokenRefresher(currentSession);
-    if (refreshedSession == null ||
-        refreshedSession.accessToken.trim().isEmpty) {
-      await _credentialsStore.clear();
-      return null;
-    }
-    await _credentialsStore.saveSession(refreshedSession);
-    return refreshedSession;
+    return null;
   }
 
   Map<String, dynamic> _requireMap(
@@ -958,4 +1001,16 @@ class _ApiRawResponse {
   final int statusCode;
   final String body;
   final Map<String, String> headers;
+}
+
+class _BackendError {
+  const _BackendError({
+    required this.code,
+    required this.message,
+    required this.details,
+  });
+
+  final String? code;
+  final String? message;
+  final Map<String, dynamic>? details;
 }

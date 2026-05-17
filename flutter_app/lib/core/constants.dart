@@ -1,23 +1,27 @@
+import 'package:flutter/foundation.dart';
+
 class AppConstants {
-  static const String productionApiBaseUrl =
-      'https://ai-trading-app-clean.onrender.com';
-  static const String productionWsBaseUrl =
-      'wss://ai-trading-app-clean.onrender.com/ws';
-
-  static const String productionApiKey = String.fromEnvironment(
-    'PRODUCTION_API_KEY',
-    defaultValue: 'my-secret-key-123',
+  static const String productionApiBaseUrl = 'http://69.62.74.7';
+  static const String productionSignalsWebSocketUrl =
+      'ws://69.62.74.7/ws/signals';
+  static const String productionMarketWebSocketUrl =
+      'ws://69.62.74.7/ws/market';
+  static const String _configuredProductionApiKey = String.fromEnvironment(
+    'TRADING_API_KEY',
+    defaultValue: '',
   );
+  static const String productionUserId = 'admin';
 
-  static const String defaultApiBaseUrl = String.fromEnvironment(
-    'API_BASE_URL',
-    defaultValue: productionApiBaseUrl,
-  );
+  static const String defaultApiBaseUrl = productionApiBaseUrl;
+  static String get productionApiKey {
+    final configured = _configuredProductionApiKey.trim();
+    if (configured.isNotEmpty) {
+      return configured;
+    }
+    return kDebugMode ? 'local-dev-token' : '';
+  }
 
-  static const String defaultApiKey = String.fromEnvironment(
-    'API_KEY',
-    defaultValue: productionApiKey,
-  );
+  static String get defaultApiKey => productionApiKey;
 
   static String get requiredApiKey {
     final configured = defaultApiKey.trim();
@@ -27,32 +31,31 @@ class AppConstants {
     return productionApiKey;
   }
 
-  static const String localDemoApiKey = String.fromEnvironment(
-    'DEMO_API_KEY',
-    defaultValue: '',
-  );
+  static bool get hasEmbeddedProductionAuth => requiredApiKey.isNotEmpty;
 
-  static const String _configuredWsBaseUrl = String.fromEnvironment(
-    'WS_BASE_URL',
-    defaultValue: '',
-  );
-
-  static String get defaultWsBaseUrl {
-    if (_configuredWsBaseUrl.isNotEmpty) {
-      return _configuredWsBaseUrl;
-    }
-    if (defaultApiBaseUrl == productionApiBaseUrl) {
-      return productionWsBaseUrl;
-    }
-    final uri = Uri.parse(defaultApiBaseUrl);
-    final scheme = uri.scheme == 'https' ? 'wss' : 'ws';
-    return uri.replace(scheme: scheme, path: '/ws', query: null).toString();
+  static String get requiredUserId {
+    final configured = productionUserId.trim();
+    return configured.isNotEmpty ? configured : 'admin';
   }
+
+  static const String defaultSignalsWebSocketUrl =
+      productionSignalsWebSocketUrl;
+  static const String defaultMarketWebSocketUrl = productionMarketWebSocketUrl;
 
   static const int maxSignalCacheSize = 100;
   static const Duration pollingInterval = Duration(seconds: 15);
-  static const Duration requestTimeout = Duration(seconds: 30);
+  static const Duration realtimeFallbackPollingInterval = Duration(seconds: 60);
+  static const Duration tradeEvaluationPollingInterval = Duration(seconds: 30);
+  static const Duration chartRefreshInterval = Duration(seconds: 8);
+  static const Duration marketSurfaceRefreshInterval = Duration(seconds: 20);
+  static const Duration requestTimeout = Duration(seconds: 20);
   static const int requestRetryAttempts = 3;
-  static const Duration requestRetryDelay = Duration(seconds: 3);
-  static const Duration websocketReconnectDelay = Duration(seconds: 5);
+  static const Duration requestRetryDelay = Duration(seconds: 2);
+  static const Duration websocketConnectTimeout = Duration(seconds: 12);
+  static const Duration websocketProbeTimeout = Duration(seconds: 10);
+  static const Duration websocketPingInterval = Duration(seconds: 20);
+  static const Duration websocketReconnectBaseDelay = Duration(seconds: 2);
+  static const Duration websocketReconnectMaxDelay = Duration(seconds: 20);
+  static const Duration websocketStaleAfter = Duration(seconds: 45);
+  static const Duration websocketIntegrityCheckInterval = Duration(seconds: 10);
 }

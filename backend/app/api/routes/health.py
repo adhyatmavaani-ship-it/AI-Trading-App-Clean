@@ -2,7 +2,6 @@
 
 from datetime import datetime, timezone
 import logging
-import os
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -14,23 +13,27 @@ from app.services.container import ServiceContainer, get_container
 router = APIRouter(tags=["health"])
 logger = logging.getLogger(__name__)
 
-
-def _render_commit() -> str:
-    return os.environ.get("RENDER_GIT_COMMIT", "")
+def _metadata_payload() -> dict[str, str]:
+    settings = get_settings()
+    return {
+        "version": settings.app_version_short,
+        "commit": settings.app_version,
+        "build_timestamp": settings.app_build_timestamp,
+        "deployment_mode": f"{settings.environment}:{settings.trading_mode}",
+    }
 
 
 @router.get("/health")
 async def healthcheck(container: ServiceContainer = Depends(get_container)) -> JSONResponse:
     """Deployment verification healthcheck with readiness and Firestore status."""
-    settings = get_settings()
+    metadata = _metadata_payload()
     checks, all_ready = _run_readiness_checks(container)
     status_code = 200 if all_ready else 503
     return JSONResponse(
         status_code=status_code,
         content={
             "status": "ok" if all_ready else "error",
-            "version": settings.app_version_short,
-            "commit": _render_commit(),
+            **metadata,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "firestore": checks.get("firestore", "unknown"),
             "readiness": {
@@ -50,12 +53,10 @@ async def ping() -> dict[str, bool]:
 @router.get("/health/live")
 async def liveness_check() -> dict[str, Any]:
     """Kubernetes liveness probe - is the service running?"""
-    settings = get_settings()
     return {
         "status": "alive",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "version": settings.app_version_short,
-        "commit": _render_commit(),
+        **_metadata_payload(),
     }
 
 
@@ -69,14 +70,11 @@ async def readiness_check(container: ServiceContainer = Depends(get_container)) 
 
     status = "ready" if all_ready else "not_ready"
     status_code = 200 if all_ready else 503
-    settings = get_settings()
-
     return JSONResponse(
         status_code=status_code,
         content={
             "status": status,
-            "version": settings.app_version_short,
-            "commit": _render_commit(),
+            **_metadata_payload(),
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "checks": checks,
             "all_ready": all_ready,
@@ -139,12 +137,12 @@ def _check_firestore_connection(container: ServiceContainer) -> tuple[str, bool]
 async def detailed_health(container: ServiceContainer = Depends(get_container)) -> dict[str, Any]:
     """Detailed health report with metrics and diagnostics."""
     settings = get_settings()
+    metadata = _metadata_payload()
 
     details: dict[str, Any] = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "service": settings.service_name,
-        "version": settings.app_version_short,
-        "commit": _render_commit(),
+        **metadata,
         "environment": settings.environment,
         "trading_mode": settings.trading_mode,
         "dependencies": {},

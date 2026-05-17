@@ -1,5 +1,7 @@
+from datetime import datetime, timezone
 import json
 import os
+from pathlib import Path
 from functools import lru_cache
 from typing import Literal
 from urllib.parse import urlparse
@@ -11,7 +13,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 def _default_app_version() -> str:
     return (
         os.environ.get("APP_VERSION")
+        or os.environ.get("GIT_COMMIT")
         or os.environ.get("RENDER_GIT_COMMIT")
+        or _read_git_commit()
         or "unknown"
     )
 
@@ -23,10 +27,61 @@ def _short_app_version(value: str) -> str:
     return normalized or "unknown"
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+def _read_git_commit() -> str:
+    git_dir = _repo_root() / ".git"
+    head_path = git_dir / "HEAD"
+    try:
+        head_value = head_path.read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+    if not head_value:
+        return ""
+    if not head_value.startswith("ref:"):
+        return head_value
+    ref_name = head_value.split("ref:", 1)[1].strip()
+    if not ref_name:
+        return ""
+    ref_path = git_dir / ref_name
+    try:
+        return ref_path.read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
+def _default_build_timestamp() -> str:
+    candidate = (
+        os.environ.get("APP_BUILD_TIMESTAMP")
+        or os.environ.get("BUILD_TIMESTAMP")
+        or os.environ.get("RENDER_BUILD_TIMESTAMP")
+        or os.environ.get("RENDER_BUILD_TIME")
+    )
+    normalized = str(candidate or "").strip()
+    if normalized:
+        return normalized
+    git_dir = _repo_root() / ".git"
+    head_path = git_dir / "HEAD"
+    try:
+        head_value = head_path.read_text(encoding="utf-8").strip()
+        ref_path = head_path
+        if head_value.startswith("ref:"):
+            ref_name = head_value.split("ref:", 1)[1].strip()
+            if ref_name:
+                ref_path = git_dir / ref_name
+        stat_target = ref_path if ref_path.exists() else head_path
+        return datetime.fromtimestamp(stat_target.stat().st_mtime, tz=timezone.utc).isoformat()
+    except Exception:
+        return datetime.now(timezone.utc).isoformat()
+
+
 class Settings(BaseSettings):
     service_name: str = "ai-trading-backend"
     app_version: str = Field(default_factory=_default_app_version)
     app_version_short: str = Field(default_factory=lambda: _short_app_version(_default_app_version()))
+    app_build_timestamp: str = Field(default_factory=_default_build_timestamp)
     environment: Literal["local", "dev", "staging", "prod"] = "local"
     debug_routes_enabled: bool = False
     log_level: str = "INFO"
@@ -200,7 +255,14 @@ class Settings(BaseSettings):
     live_activity_channel: str = "live_activity"
     signal_version_ttl_seconds: int = 604_800
     websocket_listener_enabled: bool = True
-    websocket_redis_reconnect_seconds: float = 1.0
+    websocket_redis_reconnect_seconds: float = 3.0
+    websocket_send_timeout_seconds: float = 1.0
+    websocket_receive_timeout_seconds: float = 30.0
+    public_endpoint_timeout_seconds: float = 2.5
+    live_signals_route_timeout_seconds: float = 2.5
+    live_signals_response_cache_ttl_seconds: int = 3
+    slow_operation_threshold_seconds: float = 1.0
+    startup_task_timeout_seconds: float = 5.0
     execution_shard_count: int = 64
     execution_queue_batch_size: int = 250
     randomized_execution_delay_min_ms: int = 250
@@ -297,6 +359,12 @@ class Settings(BaseSettings):
     activity_near_miss_score_delta: float = 10.0
     strict_trade_score_threshold: float = 70.0
     strict_trade_confidence_floor: float = 0.70
+    paper_relaxed_execution_enabled: bool = True
+    paper_trade_confidence_floor: float = 0.55
+    paper_trade_probability_threshold: float = 0.45
+    paper_trade_score_threshold: float = 45.0
+    paper_trade_alpha_score_threshold: float = 30.0
+    paper_trade_max_risk_score: float = 0.80
     force_execution_override_enabled: bool = False
     force_execution_override_confidence_floor: float = 0.35
     strict_trade_volume_spike_threshold: float = 1.50

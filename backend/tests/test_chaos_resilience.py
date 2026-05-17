@@ -452,8 +452,10 @@ class ChaosResilienceTest(unittest.TestCase):
         asyncio.run(manager.connect(replacement, "alice"))
         asyncio.run(manager.broadcast({"type": "signal", "signal_version": 2}))
 
-        self.assertEqual(healthy.messages, [{"type": "signal", "signal_version": 1}, {"type": "signal", "signal_version": 2}])
-        self.assertEqual(replacement.messages, [{"type": "signal", "signal_version": 2}])
+        self.assertEqual([message["signal_version"] for message in healthy.messages], [1, 2])
+        self.assertEqual([message["signal_version"] for message in replacement.messages], [2])
+        self.assertTrue(all(message.get("event_id") for message in healthy.messages))
+        self.assertTrue(all(message.get("sequence_id", 0) > 0 for message in healthy.messages))
         self.assertEqual(dropped.messages, [])
 
         received = []
@@ -475,7 +477,10 @@ class ChaosResilienceTest(unittest.TestCase):
             manager._listen_for_signals()
 
         self.assertEqual(redis_factory.call_count, 2)
-        self.assertEqual(received, [{"type": "signal", "symbol": "BTCUSDT", "signal_version": 11}])
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0]["type"], "signal")
+        self.assertEqual(received[0]["symbol"], "BTCUSDT")
+        self.assertEqual(received[0]["signal_version"], 11)
 
 
 if __name__ == "__main__":

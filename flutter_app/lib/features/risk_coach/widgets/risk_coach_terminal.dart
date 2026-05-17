@@ -8,7 +8,6 @@ import '../controllers/execution_controller.dart';
 import '../models/risk_coach_models.dart';
 import '../providers/risk_coach_providers.dart';
 
-
 class RiskCoachTerminal extends StatefulWidget {
   const RiskCoachTerminal({
     super.key,
@@ -35,7 +34,6 @@ class RiskCoachTerminal extends StatefulWidget {
   State<RiskCoachTerminal> createState() => _RiskCoachTerminalState();
 }
 
-
 class _RiskCoachTerminalState extends State<RiskCoachTerminal> {
   double _panicSlider = 0;
 
@@ -59,7 +57,9 @@ class _RiskCoachTerminalState extends State<RiskCoachTerminal> {
       );
     }
     if (state.candles.isEmpty) {
-      return const _NoticeCard(message: 'Offline fallback active. Market feed unavailable right now.');
+      return const _NoticeCard(
+          message:
+              'Offline fallback active. Market feed unavailable right now.');
     }
     final latest = state.candles.last.close;
     return Column(
@@ -69,12 +69,14 @@ class _RiskCoachTerminalState extends State<RiskCoachTerminal> {
           spacing: 12,
           runSpacing: 12,
           children: <Widget>[
-            _MetricChip(label: 'Feed', value: state.connectionState.toUpperCase()),
+            _MetricChip(
+                label: 'Feed', value: state.connectionState.toUpperCase()),
             _MetricChip(label: 'Source', value: state.source),
             _MetricChip(label: 'Last', value: latest.toStringAsFixed(2)),
             _MetricChip(
               label: 'Heatmap',
-              value: '${((state.heatmap?.intensity ?? 0) * 100).toStringAsFixed(0)}%',
+              value:
+                  '${((state.heatmap?.intensity ?? 0) * 100).toStringAsFixed(0)}%',
               accent: _heatmapColor(state.heatmap?.state ?? 'neutral'),
             ),
           ],
@@ -92,12 +94,18 @@ class _RiskCoachTerminalState extends State<RiskCoachTerminal> {
             children: <Widget>[
               Text(
                 'Educational Risk Terminal',
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800),
+                style: Theme.of(context)
+                    .textTheme
+                    .headlineSmall
+                    ?.copyWith(fontWeight: FontWeight.w800),
               ),
               const SizedBox(height: 6),
               Text(
                 state.disclaimer,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: TradingPalette.textMuted),
+                style: Theme.of(context)
+                    .textTheme
+                    .bodySmall
+                    ?.copyWith(color: TradingPalette.textMuted),
               ),
               const SizedBox(height: 18),
               SizedBox(
@@ -139,11 +147,18 @@ class _RiskCoachTerminalState extends State<RiskCoachTerminal> {
           spacing: 12,
           runSpacing: 12,
           children: <Widget>[
-            _MetricChip(label: 'Position', value: (state.riskPlan?.positionSize ?? 0).toStringAsFixed(4)),
-            _MetricChip(label: 'RR', value: (state.riskPlan?.effectiveRr ?? 0).toStringAsFixed(2)),
-            _MetricChip(label: 'EV', value: (state.riskPlan?.expectedValue ?? 0).toStringAsFixed(2)),
+            _MetricChip(
+                label: 'Position',
+                value: (state.riskPlan?.positionSize ?? 0).toStringAsFixed(4)),
+            _MetricChip(
+                label: 'RR',
+                value: (state.riskPlan?.effectiveRr ?? 0).toStringAsFixed(2)),
+            _MetricChip(
+                label: 'EV',
+                value: (state.riskPlan?.expectedValue ?? 0).toStringAsFixed(2)),
             _MetricChip(label: 'Exec', value: widget.executionState.status),
-            if (trade != null) _MetricChip(label: 'Trade', value: trade.tradeId.substring(0, 6)),
+            if (trade != null)
+              _MetricChip(label: 'Trade', value: trade.tradeId.substring(0, 6)),
           ],
         ),
         const SizedBox(height: 16),
@@ -157,9 +172,14 @@ class _RiskCoachTerminalState extends State<RiskCoachTerminal> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
-              Text('Panic Switch', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+              Text('Panic Switch',
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleMedium
+                      ?.copyWith(fontWeight: FontWeight.w800)),
               const SizedBox(height: 8),
-              const Text('Slide to liquidate practice positions. This is a coaching control, not a live broker action.'),
+              const Text(
+                  'Slide to liquidate practice positions. This is a coaching control, not a live broker action.'),
               Slider(
                 value: _panicSlider,
                 onChanged: (value) async {
@@ -196,7 +216,6 @@ class _RiskCoachTerminalState extends State<RiskCoachTerminal> {
   }
 }
 
-
 class _DragChart extends StatefulWidget {
   const _DragChart({
     required this.candles,
@@ -220,7 +239,6 @@ class _DragChart extends StatefulWidget {
   State<_DragChart> createState() => _DragChartState();
 }
 
-
 class _DragChartState extends State<_DragChart> {
   String? _dragTarget;
   RiskCoachTrade? _previewTrade;
@@ -234,7 +252,10 @@ class _DragChartState extends State<_DragChart> {
           : (details) {
               final slY = _priceToY(trade.stopLoss);
               final tpY = _priceToY(trade.takeProfit);
-              _dragTarget = (details.localPosition.dy - slY).abs() < (details.localPosition.dy - tpY).abs() ? 'sl' : 'tp';
+              _dragTarget = (details.localPosition.dy - slY).abs() <
+                      (details.localPosition.dy - tpY).abs()
+                  ? 'sl'
+                  : 'tp';
             },
       onVerticalDragUpdate: trade == null
           ? null
@@ -294,7 +315,6 @@ class _DragChartState extends State<_DragChart> {
   }
 }
 
-
 class _RiskCoachPainter extends CustomPainter {
   _RiskCoachPainter({
     required this.candles,
@@ -348,10 +368,28 @@ class _RiskCoachPainter extends CustomPainter {
     if (heatmap != null) {
       final top = _mapY(heatmap!.endPrice, minPrice, span, size.height);
       final bottom = _mapY(heatmap!.startPrice, minPrice, span, size.height);
-      final rect = Rect.fromLTRB(0, math.min(top, bottom), size.width, math.max(top, bottom));
-      canvas.drawRect(
-        rect,
-        Paint()..color = _heatmapFill(heatmap!.state).withOpacity(heatmap!.intensity.clamp(0.08, 0.26)),
+      final zoneTop = math.max(8.0, math.min(top, bottom));
+      final zoneBottom = math.min(size.height - 8, math.max(top, bottom));
+      final rect = Rect.fromLTRB(8, zoneTop, size.width - 8, zoneBottom);
+      final fill = _heatmapFill(heatmap!.state);
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(rect, const Radius.circular(16)),
+        Paint()
+          ..shader = LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: <Color>[
+              fill.withOpacity(heatmap!.intensity.clamp(0.04, 0.10)),
+              fill.withOpacity(0.01),
+            ],
+          ).createShader(rect),
+      );
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(rect, const Radius.circular(16)),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1
+          ..color = fill.withOpacity(0.18),
       );
     }
 
@@ -364,7 +402,8 @@ class _RiskCoachPainter extends CustomPainter {
       final lowY = _mapY(candle.low, minPrice, span, size.height);
       final openY = _mapY(candle.open, minPrice, span, size.height);
       final closeY = _mapY(candle.close, minPrice, span, size.height);
-      canvas.drawLine(Offset(x, highY), Offset(x, lowY), paint..strokeWidth = 1.2);
+      canvas.drawLine(
+          Offset(x, highY), Offset(x, lowY), paint..strokeWidth = 1.2);
       canvas.drawRRect(
         RRect.fromRectAndRadius(
           Rect.fromLTRB(
@@ -380,16 +419,20 @@ class _RiskCoachPainter extends CustomPainter {
     }
 
     if (trade != null) {
-      _drawExecutionLine(canvas, size, minPrice, span, trade!.entry, 'Entry', TradingPalette.electricBlue);
-      _drawExecutionLine(canvas, size, minPrice, span, trade!.stopLoss, 'SL', TradingPalette.neonRed);
-      _drawExecutionLine(canvas, size, minPrice, span, trade!.takeProfit, 'TP', TradingPalette.neonGreen);
+      _drawExecutionLine(canvas, size, minPrice, span, trade!.entry, 'Entry',
+          TradingPalette.electricBlue);
+      _drawExecutionLine(canvas, size, minPrice, span, trade!.stopLoss, 'SL',
+          TradingPalette.neonRed);
+      _drawExecutionLine(canvas, size, minPrice, span, trade!.takeProfit, 'TP',
+          TradingPalette.neonGreen);
     }
 
     if (connectionState != 'connected') {
       final painter = TextPainter(
         text: const TextSpan(
           text: 'Offline fallback',
-          style: TextStyle(color: TradingPalette.amber, fontWeight: FontWeight.w700),
+          style: TextStyle(
+              color: TradingPalette.amber, fontWeight: FontWeight.w700),
         ),
         textDirection: TextDirection.ltr,
       )..layout();
@@ -397,7 +440,8 @@ class _RiskCoachPainter extends CustomPainter {
     }
   }
 
-  void _drawExecutionLine(Canvas canvas, Size size, double minPrice, double span, double price, String label, Color color) {
+  void _drawExecutionLine(Canvas canvas, Size size, double minPrice,
+      double span, double price, String label, Color color) {
     final y = _mapY(price, minPrice, span, size.height);
     canvas.drawLine(
       Offset(0, y),
@@ -409,16 +453,19 @@ class _RiskCoachPainter extends CustomPainter {
     final painter = TextPainter(
       text: TextSpan(
         text: '$label ${price.toStringAsFixed(2)}',
-        style: TextStyle(color: color, fontWeight: FontWeight.w700, fontSize: 11),
+        style:
+            TextStyle(color: color, fontWeight: FontWeight.w700, fontSize: 11),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
     final rect = RRect.fromRectAndRadius(
-      Rect.fromLTWH(size.width - painter.width - 22, y - 11, painter.width + 12, 22),
+      Rect.fromLTWH(
+          size.width - painter.width - 22, y - 11, painter.width + 12, 22),
       const Radius.circular(999),
     );
     canvas.drawRRect(rect, Paint()..color = const Color(0xE6111830));
-    painter.paint(canvas, Offset(size.width - painter.width - 16, y - (painter.height / 2)));
+    painter.paint(canvas,
+        Offset(size.width - painter.width - 16, y - (painter.height / 2)));
   }
 
   double _mapY(double price, double minPrice, double span, double height) {
@@ -445,7 +492,6 @@ class _RiskCoachPainter extends CustomPainter {
   }
 }
 
-
 class _PostMortemCard extends StatelessWidget {
   const _PostMortemCard({required this.report});
 
@@ -463,15 +509,23 @@ class _PostMortemCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          Text('Post-Mortem', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+          Text('Post-Mortem',
+              style: Theme.of(context)
+                  .textTheme
+                  .titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w800)),
           const SizedBox(height: 10),
           Wrap(
             spacing: 10,
             runSpacing: 10,
             children: <Widget>[
-              _MetricChip(label: 'MFE R', value: report.mfeR.toStringAsFixed(2)),
-              _MetricChip(label: 'MAE R', value: report.maeR.toStringAsFixed(2)),
-              _MetricChip(label: 'Realized R', value: report.realizedRr.toStringAsFixed(2)),
+              _MetricChip(
+                  label: 'MFE R', value: report.mfeR.toStringAsFixed(2)),
+              _MetricChip(
+                  label: 'MAE R', value: report.maeR.toStringAsFixed(2)),
+              _MetricChip(
+                  label: 'Realized R',
+                  value: report.realizedRr.toStringAsFixed(2)),
             ],
           ),
           const SizedBox(height: 12),
@@ -481,7 +535,8 @@ class _PostMortemCard extends StatelessWidget {
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
-                  const Icon(Icons.fiber_manual_record_rounded, size: 14, color: TradingPalette.electricBlue),
+                  const Icon(Icons.fiber_manual_record_rounded,
+                      size: 14, color: TradingPalette.electricBlue),
                   const SizedBox(width: 8),
                   Expanded(child: Text(insight.message)),
                 ],
@@ -493,7 +548,6 @@ class _PostMortemCard extends StatelessWidget {
     );
   }
 }
-
 
 class _MetricChip extends StatelessWidget {
   const _MetricChip({
@@ -521,13 +575,13 @@ class _MetricChip extends StatelessWidget {
         children: <Widget>[
           Text(label, style: Theme.of(context).textTheme.labelSmall),
           const SizedBox(height: 4),
-          Text(value, style: TextStyle(color: color, fontWeight: FontWeight.w800)),
+          Text(value,
+              style: TextStyle(color: color, fontWeight: FontWeight.w800)),
         ],
       ),
     );
   }
 }
-
 
 class _NoticeCard extends StatelessWidget {
   const _NoticeCard({required this.message});

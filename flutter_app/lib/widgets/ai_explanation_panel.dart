@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../core/ai_opportunity_engine.dart';
 import '../core/trading_palette.dart';
 import '../models/signal.dart';
 import 'ai_reason_chips.dart';
@@ -21,11 +22,8 @@ class AiExplanationPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final reasons = signal.decisionReason
-        .split(RegExp(r'[.;|]'))
-        .map((item) => item.trim())
-        .where((item) => item.isNotEmpty)
-        .toList();
+    final opportunity = SignalOpportunity.fromSignal(signal);
+    final reasons = signal.reasons;
     final riskLevel = _riskLevel(signal);
 
     return GlassPanel(
@@ -35,7 +33,7 @@ class AiExplanationPanel extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           Text(
-            'Why this trade?',
+            'Why this opportunity?',
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
                   fontWeight: FontWeight.w800,
                 ),
@@ -47,9 +45,19 @@ class AiExplanationPanel extends StatelessWidget {
             spacing: 10,
             runSpacing: 10,
             children: <Widget>[
-              _Metric(label: 'AI Confidence', value: '${(signal.confidence * 100).toStringAsFixed(0)}%'),
+              _Metric(
+                  label: 'AI Confidence', value: opportunity.confidenceLabel),
+              _Metric(
+                  label: 'Expected Move', value: opportunity.expectedMoveLabel),
               _Metric(label: 'Risk Level', value: riskLevel),
-              if (tradeQuality != null) _Metric(label: 'Trade Quality', value: tradeQuality!),
+              _Metric(
+                label: 'Plan',
+                value: opportunity.statusLabel,
+              ),
+              if (signal.marketDataStale)
+                const _Metric(label: 'Market Data', value: 'Stale'),
+              if (tradeQuality != null)
+                _Metric(label: 'Trade Quality', value: tradeQuality!),
               if (winProbability != null)
                 _Metric(
                   label: 'Win Probability',
@@ -68,8 +76,11 @@ class AiExplanationPanel extends StatelessWidget {
   }
 
   String _riskLevel(SignalModel signal) {
+    if (!signal.executionAllowed || signal.marketDataStale) {
+      return 'Guarded';
+    }
     if (signal.lowConfidence) {
-      return 'Medium';
+      return 'Watch';
     }
     if (signal.alphaScore >= 85 && signal.confidence >= 0.78) {
       return 'High';

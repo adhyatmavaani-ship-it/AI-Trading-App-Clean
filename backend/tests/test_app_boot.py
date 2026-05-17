@@ -110,11 +110,14 @@ class AppBootTest(unittest.TestCase):
 
         self.assertEqual(self.ws_manager.start_calls, 1)
         self.assertEqual(self.ws_manager.stop_calls, 1)
-        self.assertEqual(main_info_log.call_count, 3)
-        self.assertEqual(main_info_log.call_args_list[0].args[0], "Trading system startup complete")
-        self.assertIn("context", main_info_log.call_args_list[0].kwargs["extra"])
-        self.assertEqual(main_info_log.call_args_list[1].args[0], "Trading system shutdown - cleaning up resources...")
-        self.assertEqual(main_info_log.call_args_list[2].args[0], "Shutdown complete")
+        main_messages = [call.args[0] for call in main_info_log.call_args_list]
+        self.assertIn("Trading system startup complete", main_messages)
+        self.assertIn("Trading system shutdown - cleaning up resources...", main_messages)
+        self.assertIn("Shutdown complete", main_messages)
+        startup_call = next(
+            call for call in main_info_log.call_args_list if call.args[0] == "Trading system startup complete"
+        )
+        self.assertIn("context", startup_call.kwargs["extra"])
         request_info_log.assert_called_once()
         self.assertEqual(request_info_log.call_args.args[0], "request_completed")
         self.assertEqual(request_info_log.call_args.kwargs["extra"]["context"]["path"], "/")

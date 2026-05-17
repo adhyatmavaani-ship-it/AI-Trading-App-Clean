@@ -3,6 +3,7 @@ import logging
 import os
 import signal
 from contextlib import asynccontextmanager
+import time
 
 from fastapi import Depends, FastAPI
 from fastapi.exceptions import RequestValidationError
@@ -59,6 +60,9 @@ def _startup_status_summary(container) -> dict[str, object]:
     return {
         "environment": settings.environment,
         "trading_mode": settings.trading_mode,
+        "version": settings.app_version_short,
+        "commit": settings.app_version,
+        "build_timestamp": settings.app_build_timestamp,
         "port": get_bind_port(),
         "redis": "fallback_memory" if bool(getattr(container.cache, "_using_fallback", False)) else "connected",
         "firestore": "configured" if getattr(getattr(container, "firestore", None), "client", None) is not None else "disabled",
@@ -72,15 +76,55 @@ def _startup_status_summary(container) -> dict[str, object]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle - startup and shutdown."""
-    container = get_container()
-    await get_risk_coach_market_service().start()
-    await get_signal_websocket_manager().start()
-    await container.active_trade_monitor.start()
-    await container.strategy_optimizer.start()
-    await container.backtest_job_service.start()
+    started = time.perf_counter()
+    slow_threshold = max(float(settings.slow_operation_threshold_seconds), 0.1)
+    startup_timeout_seconds = max(float(settings.startup_task_timeout_seconds), 1.0)
+    container = await _run_startup_sync_step(
+        name="service_container_init",
+        fn=get_container,
+        slow_threshold=slow_threshold,
+    )
+    await asyncio.gather(
+        _run_startup_async_step(
+            name="risk_coach_market_service",
+            awaitable=get_risk_coach_market_service().start(),
+            slow_threshold=slow_threshold,
+            timeout_seconds=startup_timeout_seconds,
+        ),
+        _run_startup_async_step(
+            name="signal_websocket_manager",
+            awaitable=get_signal_websocket_manager().start(),
+            slow_threshold=slow_threshold,
+            timeout_seconds=startup_timeout_seconds,
+        ),
+        _run_startup_async_step(
+            name="active_trade_monitor",
+            awaitable=container.active_trade_monitor.start(),
+            slow_threshold=slow_threshold,
+            timeout_seconds=startup_timeout_seconds,
+        ),
+        _run_startup_async_step(
+            name="strategy_optimizer",
+            awaitable=container.strategy_optimizer.start(),
+            slow_threshold=slow_threshold,
+            timeout_seconds=startup_timeout_seconds,
+        ),
+        _run_startup_async_step(
+            name="backtest_job_service",
+            awaitable=container.backtest_job_service.start(),
+            slow_threshold=slow_threshold,
+            timeout_seconds=startup_timeout_seconds,
+        ),
+    )
     logger.info(
         "Trading system startup complete",
-        extra={"event": "startup_complete", "context": _startup_status_summary(container)},
+        extra={
+            "event": "startup_complete",
+            "context": {
+                **_startup_status_summary(container),
+                "startup_duration_ms": round((time.perf_counter() - started) * 1000, 2),
+            },
+        },
     )
     yield
     logger.info("Trading system shutdown - cleaning up resources...")
@@ -91,6 +135,61 @@ async def lifespan(app: FastAPI):
     await get_risk_coach_market_service().stop()
     await asyncio.sleep(0.1)
     logger.info("Shutdown complete")
+
+
+async def _run_startup_sync_step(*, name: str, fn, slow_threshold: float):
+    started = time.perf_counter()
+    result = await asyncio.to_thread(fn)
+    _log_startup_step(name=name, started=started, slow_threshold=slow_threshold)
+    return result
+
+
+async def _run_startup_async_step(*, name: str, awaitable, slow_threshold: float, timeout_seconds: float) -> None:
+    started = time.perf_counter()
+    try:
+        await asyncio.wait_for(awaitable, timeout=timeout_seconds)
+    except TimeoutError:
+        logger.warning(
+            "startup_step_timed_out",
+            extra={
+                "event": "startup_step_timed_out",
+                "context": {"step": name, "timeout_seconds": timeout_seconds},
+            },
+        )
+        raise
+    except Exception as exc:
+        logger.exception(
+            "startup_step_failed",
+            extra={
+                "event": "startup_step_failed",
+                "context": {"step": name, "error": str(exc)[:200]},
+            },
+        )
+        raise
+    _log_startup_step(name=name, started=started, slow_threshold=slow_threshold)
+
+
+def _log_startup_step(*, name: str, started: float, slow_threshold: float) -> None:
+    duration_ms = round((time.perf_counter() - started) * 1000, 2)
+    logger.info(
+        "startup_step_completed",
+        extra={
+            "event": "startup_step_completed",
+            "context": {
+                "step": name,
+                "duration_ms": duration_ms,
+                "slow": duration_ms >= slow_threshold * 1000,
+            },
+        },
+    )
+    if duration_ms >= slow_threshold * 1000:
+        logger.warning(
+            "startup_step_slow",
+            extra={
+                "event": "startup_step_slow",
+                "context": {"step": name, "duration_ms": duration_ms},
+            },
+        )
 
 
 app = FastAPI(
@@ -199,6 +298,9 @@ async def root() -> dict[str, str]:
         "service": settings.service_name,
         "status": "running",
         "version": settings.app_version_short,
+        "commit": settings.app_version,
+        "build_timestamp": settings.app_build_timestamp,
+        "deployment_mode": f"{settings.environment}:{settings.trading_mode}",
         "environment": settings.environment,
     }
 

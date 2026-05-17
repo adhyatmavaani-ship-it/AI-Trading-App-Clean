@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import dataclass
+import hashlib
 import logging
 import json
 import math
@@ -28,6 +29,8 @@ from app.schemas.trading import (
 )
 from app.core.config import Settings
 from app.services.liquidity_slippage import LiquiditySlippageEngine
+from app.services.chart_intelligence import build_chart_intelligence
+from app.services.distributed_event_bus import DistributedEventBus
 from app.services.drawdown_protection import DrawdownProtectionService
 from app.services.model_stability import ModelStabilityService
 from app.services.redis_cache import RedisCache
@@ -71,6 +74,26 @@ if TYPE_CHECKING:
     from app.services.whale_tracker import WhaleTracker
 
 logger = logging.getLogger(__name__)
+
+
+def _realtime_channel_group(event_type: str) -> str:
+    mapping = {
+        "chart_snapshot": "market_stream",
+        "ai_trade_feed": "ai_stream",
+        "trade_update": "execution_stream",
+        "portfolio_update": "analytics_stream",
+        "dashboard_summary": "analytics_stream",
+        "activity": "assistant_stream",
+    }
+    return mapping.get(str(event_type or "").strip(), "assistant_stream")
+
+
+def _stable_revision(payload: object) -> str:
+    try:
+        encoded = json.dumps(payload, sort_keys=True, default=str)
+    except TypeError:
+        encoded = str(payload)
+    return hashlib.sha1(encoded.encode("utf-8")).hexdigest()[:12]
 
 
 @dataclass
@@ -189,6 +212,199 @@ class TradingOrchestrator:
             extra=extra,
         )
 
+    def _publish_realtime_event(self, *, event_type: str, payload: dict) -> None:
+        channel_group = _realtime_channel_group(event_type)
+        envelope = {
+            "type": event_type,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "stream_group": channel_group,
+            "realtime": {
+                "channel_group": channel_group,
+                "partition_key": str(payload.get("symbol") or payload.get("user_id") or "system"),
+            },
+            **payload,
+        }
+        try:
+            self.cache.set_json(
+                f"realtime:last:{event_type}",
+                envelope,
+                ttl=self.settings.monitor_state_ttl_seconds,
+            )
+            DistributedEventBus(self.cache).publish(
+                channel=self.settings.live_activity_channel,
+                event_type=event_type,
+                payload=envelope,
+                partition_key=str(payload.get("symbol") or payload.get("user_id") or "system"),
+            )
+        except Exception as exc:
+            logger.warning(
+                "realtime_event_publish_failed",
+                extra={
+                    "event": "realtime_event_publish_failed",
+                    "context": {
+                        "event_type": event_type,
+                        "error": str(exc)[:200],
+                    },
+                },
+            )
+
+    def _portfolio_realtime_snapshot(self, *, user_id: str) -> dict:
+        ledger_summary = self.portfolio_ledger.portfolio_risk_summary(user_id) if self.portfolio_ledger is not None else {}
+        drawdown = self.drawdown_protection.load(user_id)
+        return {
+            "user_id": user_id,
+            "current_equity": round(float(drawdown.current_equity), 8),
+            "peak_equity": round(float(drawdown.peak_equity), 8),
+            "rolling_drawdown": round(float(drawdown.rolling_drawdown), 8),
+            "protection_state": str(drawdown.state),
+            "active_trades": int(ledger_summary.get("active_trades", 0) or 0),
+            "realized_pnl": round(float(ledger_summary.get("realized_pnl", 0.0) or 0.0), 8),
+            "unrealized_pnl": round(float(ledger_summary.get("unrealized_pnl", 0.0) or 0.0), 8),
+            "gross_exposure": round(float(ledger_summary.get("gross_exposure", 0.0) or 0.0), 8),
+            "gross_exposure_pct": round(float(ledger_summary.get("gross_exposure_pct", 0.0) or 0.0), 8),
+            "open_notional": round(float(ledger_summary.get("open_notional", 0.0) or 0.0), 8),
+        }
+
+    def _publish_portfolio_state(self, *, user_id: str, reason: str) -> None:
+        self._publish_realtime_event(
+            event_type="portfolio_update",
+            payload={
+                "reason": reason,
+                "summary": self._portfolio_realtime_snapshot(user_id=user_id),
+            },
+        )
+
+    def _publish_dashboard_state(self, *, user_id: str, reason: str, symbol: str | None = None) -> None:
+        snapshot = self._portfolio_realtime_snapshot(user_id=user_id)
+        self._publish_realtime_event(
+            event_type="dashboard_summary",
+            payload={
+                "reason": reason,
+                "symbol": str(symbol or "").upper() or None,
+                "summary": {
+                    "user_id": user_id,
+                    "symbol": str(symbol or "").upper() or None,
+                    "active_trades": snapshot["active_trades"],
+                    "current_equity": snapshot["current_equity"],
+                    "rolling_drawdown": snapshot["rolling_drawdown"],
+                    "protection_state": snapshot["protection_state"],
+                    "degraded_mode": bool(self._degraded_mode()),
+                    "execution_latency_ms": float(self.cache.get("monitor:execution_latency_ms") or 0.0),
+                    "execution_slippage_bps": float(self.cache.get("monitor:execution_slippage_bps") or 0.0),
+                },
+            },
+        )
+
+    def _publish_trade_state(
+        self,
+        *,
+        user_id: str,
+        symbol: str,
+        side: str,
+        status: str,
+        reason: str,
+        trade_id: str | None = None,
+        error_code: str | None = None,
+        details: dict | None = None,
+    ) -> None:
+        self._publish_realtime_event(
+            event_type="trade_update",
+            payload={
+                "user_id": user_id,
+                "trade_id": trade_id,
+                "symbol": str(symbol or "").upper(),
+                "side": str(side or "").upper(),
+                "status": str(status).upper(),
+                "reason": reason,
+                "error_code": error_code,
+                "details": details or {},
+            },
+        )
+
+    async def _publish_market_terminal_events(
+        self,
+        *,
+        symbol: str,
+        signal: SignalResponse,
+    ) -> None:
+        try:
+            frames = await self.market_data.fetch_multi_timeframe_ohlcv(
+                symbol,
+                intervals=("1m",),
+            )
+            frame = frames.get("1m")
+            intelligence = build_chart_intelligence(
+                symbol=symbol,
+                interval="1m",
+                frame=frame,
+                signal=signal,
+                analytics_summary=self.analytics_service.summary("system") if self.analytics_service is not None else None,
+                assistant_mode="ASSISTED",
+                learning_enabled=self.adaptive_learning_service is not None,
+            )
+            latest_candle = intelligence.get("latest_candle") or {
+                "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
+                "open": round(float(signal.snapshot.price), 8),
+                "high": round(float(signal.snapshot.price), 8),
+                "low": round(float(signal.snapshot.price), 8),
+                "close": round(float(signal.snapshot.price), 8),
+                "volume": 0.0,
+            }
+            chart_payload = {
+                "symbol": symbol,
+                "interval": "1m",
+                "transport_mode": "delta",
+                "delta": {
+                    "mode": "candle_upsert",
+                    "candle": latest_candle,
+                    "overlay_revision": _stable_revision(intelligence.get("overlays", [])),
+                    "marker_revision": _stable_revision(intelligence.get("synthetic_markers", [])),
+                },
+                "latest_price": round(float(latest_candle.get("close", signal.snapshot.price) or signal.snapshot.price), 8),
+                "change_pct": round(float(signal.inference.expected_return or 0.0) * 100.0, 4),
+                "assistant_modes": intelligence.get("assistant_modes", []),
+                "active_assistant_mode": intelligence.get("active_assistant_mode", "ASSISTED"),
+                "opportunity": intelligence.get("opportunity", {}),
+                "market_regime": intelligence.get("market_regime", {}),
+                "execution_guide": intelligence.get("execution_guide", {}),
+                "strategy_state": intelligence.get("strategy_state", {}),
+                "ai_feed": intelligence.get("ai_feed", []),
+                "overlays": intelligence.get("overlays", []),
+                "markers": intelligence.get("synthetic_markers", []),
+                "trailing_stop": intelligence.get("trailing_stop", {}),
+                "latest_candle": latest_candle,
+                "chart_engine": intelligence.get("chart_engine", "custom_canvas_pro"),
+                "render_hints": intelligence.get("render_hints", {}),
+            }
+            self._publish_realtime_event(
+                event_type="chart_snapshot",
+                payload=chart_payload,
+            )
+            for item in list(intelligence.get("ai_feed", []))[:3]:
+                self._publish_realtime_event(
+                    event_type="ai_trade_feed",
+                    payload={
+                        "symbol": symbol,
+                        "interval": "1m",
+                        "title": str(item.get("title", "") or ""),
+                        "detail": str(item.get("detail", "") or ""),
+                        "severity": str(item.get("severity", "low") or "low"),
+                        "market_regime": intelligence.get("market_regime", {}),
+                        "opportunity": intelligence.get("opportunity", {}),
+                    },
+                )
+        except Exception as exc:
+            logger.warning(
+                "market_terminal_event_publish_failed",
+                extra={
+                    "event": "market_terminal_event_publish_failed",
+                    "context": {
+                        "symbol": symbol,
+                        "error": str(exc)[:200],
+                    },
+                },
+            )
+
     async def generate_live_signals(self, limit: int = 3) -> list[SignalResponse]:
         symbols = list(self.settings.websocket_symbols or ["BTCUSDT", "ETHUSDT", "SOLUSDT"])
         target = max(1, min(limit, int(self.settings.max_active_trades)))
@@ -211,6 +427,10 @@ class TradingOrchestrator:
             )
             try:
                 signal = await self.evaluate_symbol(symbol.upper())
+                await self._publish_market_terminal_events(
+                    symbol=symbol.upper(),
+                    signal=signal,
+                )
                 score = float(signal.snapshot.features.get("strict_trade_score", 0.0) or 0.0)
                 readiness = max(0.0, min(100.0, score))
                 reason = str(signal.snapshot.features.get("strict_trade_reason", "setup still forming"))
@@ -299,6 +519,7 @@ class TradingOrchestrator:
                         "context": {"symbol": symbol.upper(), "error": str(exc)[:200]},
                     },
                 )
+                generated.append((0.0, await self._best_effort_live_signal(symbol.upper(), exc)))
                 continue
         generated.sort(key=lambda item: item[0], reverse=True)
         if not generated:
@@ -391,7 +612,7 @@ class TradingOrchestrator:
             self.strategy_controller.record_regime(str(snapshot.regime), float(snapshot.regime_confidence), "system")
         diagnostics = {
             "symbol": symbol,
-            "market_data": self._market_data_diagnostics(frames),
+            "market_data": self._market_data_diagnostics(frames, symbol=symbol),
             "strategy_candidates": [],
             "rejection_reasons": [],
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -594,10 +815,36 @@ class TradingOrchestrator:
                 "strategy": meta_decision.selected_strategy,
                 "reasons": list(meta_decision.reasons),
             }
+        trade_direction = self._final_signal_action(snapshot, effective_inference, strategy_decision)
+        paper_gate = self._paper_trade_gate(
+            side=trade_direction,
+            confidence=float(
+                strategy_decision.metadata.get("adjusted_confidence", effective_inference.confidence_score) or 0.0
+            ),
+            trade_probability=float(
+                strategy_decision.metadata.get(
+                    "trade_success_probability",
+                    effective_inference.trade_probability,
+                )
+                or 0.0
+            ),
+            strict_score=float(strict_gate["score"] or 0.0),
+            alpha_score=float(alpha_decision["final_score"] or 0.0),
+            risk_score=float(alpha_decision["risk_score"] or 0.0),
+            net_expected_return=float(alpha_decision["net_expected_return"] or 0.0),
+            volatility=float(snapshot.volatility or 0.0),
+            security_tradable=bool(alpha.security.tradable),
+            whale_conflict=whale_conflict_flag,
+            degraded_mode=self._degraded_mode(),
+            micro_allowed=bool(micro_decision["allowed"]),
+            micro_reasons=list(micro_decision.get("reasons", [])),
+            meta_allowed=bool(meta_decision.allow_trade) if meta_decision is not None else True,
+            meta_reasons=list(meta_decision.reasons) if meta_decision is not None else [],
+        )
+        diagnostics["paper_gate"] = paper_gate
         risk_budget = risk.risk_budget * rollout.capital_fraction
         if meta_decision is not None:
             risk_budget *= meta_decision.capital_multiplier
-        trade_direction = self._final_signal_action(snapshot, effective_inference, strategy_decision)
         final_confidence = float(
             strategy_decision.metadata.get("adjusted_confidence", effective_inference.confidence_score) or 0.0
         )
@@ -610,6 +857,25 @@ class TradingOrchestrator:
             }
             strategy = "FORCED_PAPER_TRADE"
             diagnostics["rejection_reasons"].append("force_execution_override")
+        if paper_gate["allow_trade"] and strategy == "NO_TRADE" and trade_direction in {"BUY", "SELL"}:
+            diagnostics["paper_overridden_rejections"] = list(diagnostics["rejection_reasons"])
+            diagnostics["rejection_reasons"] = []
+            strategy = "PAPER_RELAXED_TRADE"
+            alpha_decision["allow_trade"] = True
+            alpha_decision["weights"] = {
+                **dict(alpha_decision.get("weights") or {}),
+                "paper_relaxed_execution": 1.0,
+            }
+            snapshot.features["paper_trade_override_active"] = 1.0
+        snapshot.features["paper_trade_execution_allowed"] = 1.0 if bool(paper_gate["allow_trade"]) else 0.0
+        snapshot.features["paper_trade_confidence_floor"] = float(
+            paper_gate.get("thresholds", {}).get("confidence_floor", self.settings.strict_trade_confidence_floor)
+        )
+        snapshot.features["paper_trade_probability_floor"] = float(
+            paper_gate.get("thresholds", {}).get("trade_probability_floor", self.settings.trade_probability_threshold)
+        )
+        snapshot.features["paper_trade_reason"] = str(paper_gate["reason"])
+        snapshot.features["paper_trade_reason_code"] = str(paper_gate["reason_code"])
         final_action = "HOLD" if strategy == "NO_TRADE" else trade_direction
         accepted_trade = strategy != "NO_TRADE" and final_action in {"BUY", "SELL"}
         rejection_reason = "; ".join(dict.fromkeys(diagnostics["rejection_reasons"])) or None
@@ -679,6 +945,27 @@ class TradingOrchestrator:
             "forced_execution_override": force_override_active and accepted_trade,
             "pipeline_diagnostics": diagnostics,
         }
+        self._log_execution_gate_decision(
+            event="signal_gate_decision",
+            symbol=symbol,
+            side=final_action,
+            confidence=final_confidence,
+            trade_probability=float(
+                strategy_decision.metadata.get(
+                    "trade_success_probability",
+                    effective_inference.trade_probability,
+                )
+                or 0.0
+            ),
+            risk_score=float(alpha_decision["risk_score"] or 0.0),
+            execution_allowed=accepted_trade,
+            reason=str(rejection_reason or paper_gate["reason"] or effective_inference.reason),
+            extra_context={
+                "strategy": published_strategy,
+                "alpha_score": round(float(alpha_decision["final_score"] or 0.0), 6),
+                "paper_gate": paper_gate,
+            },
+        )
         if low_confidence:
             payload["required_tier"] = "free"
             payload["min_balance"] = 0.0
@@ -792,13 +1079,15 @@ class TradingOrchestrator:
         adjusted_confidence = float(
             strategy_decision.metadata.get("adjusted_confidence", strategy_decision.confidence)
         )
+        probability_floor = self._paper_trade_probability_floor()
+        confidence_floor = self._paper_trade_confidence_floor(max(float(inference.confidence_score), 0.55))
         should_override = (
             strategy_decision.signal != "HOLD"
             and (
                 inference.decision == "HOLD"
             )
-            and success_probability >= float(self.settings.trade_probability_threshold)
-            and adjusted_confidence >= max(inference.confidence_score, 0.55)
+            and success_probability >= probability_floor
+            and adjusted_confidence >= confidence_floor
         )
         if not should_override:
             return inference
@@ -943,7 +1232,10 @@ class TradingOrchestrator:
                 if risk_profile is not None
                 else self.settings.strict_trade_confidence_floor
             )
-            if float(request.confidence) < effective_confidence_floor and not force_override_active:
+            execution_confidence_floor = self._paper_trade_confidence_floor(effective_confidence_floor)
+            request.feature_snapshot["strict_trade_confidence_floor"] = float(effective_confidence_floor)
+            request.feature_snapshot["paper_trade_confidence_floor"] = float(execution_confidence_floor)
+            if float(request.confidence) < execution_confidence_floor and not force_override_active:
                 raise ValueError("Trade confidence is below the strict execution floor")
             if risk_profile is not None and risk_profile.allowed_symbols:
                 if request.symbol.upper() not in set(risk_profile.allowed_symbols):
@@ -1056,9 +1348,11 @@ class TradingOrchestrator:
                 )
                 or 0.0
             )
-            if trade_probability < float(self.settings.trade_probability_threshold):
+            trade_probability_floor = self._paper_trade_probability_floor()
+            request.feature_snapshot["paper_trade_probability_floor"] = float(trade_probability_floor)
+            if trade_probability < trade_probability_floor:
                 raise ValueError(
-                    f"Trade probability {trade_probability:.3f} below threshold {self.settings.trade_probability_threshold:.3f}"
+                    f"Trade probability {trade_probability:.3f} below threshold {trade_probability_floor:.3f}"
                 )
             strict_gate = self._strict_trade_gate(
                 features=request.feature_snapshot,
@@ -1068,10 +1362,6 @@ class TradingOrchestrator:
                 volatility=float(request.feature_snapshot.get("volatility", request.expected_risk or 0.0)),
                 confidence_floor_override=effective_confidence_floor,
             )
-            if not strict_gate["allow_trade"] and not force_override_active:
-                raise ValueError(f"Strict trade gate rejected trade: {strict_gate['reason']}")
-            if force_override_active and not strict_gate["allow_trade"]:
-                request.feature_snapshot["forced_execution_override"] = 1.0
             if hasattr(self.model_stability, "update_concentration_state"):
                 self.model_stability.update_concentration_state(portfolio_summary)
             self._apply_portfolio_context_to_feature_snapshot(
@@ -1098,22 +1388,39 @@ class TradingOrchestrator:
                 )
                 if not meta_decision.allow_trade and not force_override_active:
                     blocked_trade_id = request.signal_id or f"blocked:{request.symbol}:{int(datetime.now(timezone.utc).timestamp())}"
-                    self.meta_controller.log_blocked_trade(
-                        trade_id=blocked_trade_id,
-                        user_id=request.user_id,
-                        symbol=request.symbol,
-                        proposed_strategy=request.strategy or "AI",
-                        reason=", ".join(meta_decision.reasons),
-                        signals={
-                            "ai_score": request.alpha_decision.final_score or request.confidence * 100,
-                            "whale_score": request.alpha_context.whale.score,
-                            "sentiment_score": request.alpha_context.sentiment.hype_score,
-                            "macro_bias": macro_bias,
-                            "confidence": meta_decision.confidence_score,
-                        },
-                        conflicts=meta_decision.reasons,
+                    paper_gate = self._paper_trade_gate(
+                        side=request.side,
+                        confidence=float(request.confidence),
+                        trade_probability=float(trade_probability),
+                        strict_score=float(strict_gate["score"] or 0.0),
+                        alpha_score=float(request.alpha_decision.final_score or request.confidence * 100),
+                        risk_score=float(request.alpha_decision.risk_score or 0.0),
+                        net_expected_return=float(request.alpha_decision.net_expected_return or (request.expected_return or 0.0)),
+                        volatility=float(request.feature_snapshot.get("volatility", request.expected_risk or 0.0) or 0.0),
+                        security_tradable=bool(request.alpha_context.security.tradable),
+                        whale_conflict=self._whale_conflict(request.side, whale_signal),
+                        degraded_mode=self._degraded_mode(),
+                        micro_allowed=True,
+                        meta_allowed=bool(meta_decision.allow_trade),
+                        meta_reasons=list(meta_decision.reasons),
                     )
-                    raise ValueError(f"Meta controller blocked trade: {', '.join(meta_decision.reasons)}")
+                    if not paper_gate["allow_trade"]:
+                        self.meta_controller.log_blocked_trade(
+                            trade_id=blocked_trade_id,
+                            user_id=request.user_id,
+                            symbol=request.symbol,
+                            proposed_strategy=request.strategy or "AI",
+                            reason=", ".join(meta_decision.reasons),
+                            signals={
+                                "ai_score": request.alpha_decision.final_score or request.confidence * 100,
+                                "whale_score": request.alpha_context.whale.score,
+                                "sentiment_score": request.alpha_context.sentiment.hype_score,
+                                "macro_bias": macro_bias,
+                                "confidence": meta_decision.confidence_score,
+                            },
+                            conflicts=meta_decision.reasons,
+                        )
+                        raise ValueError(f"Meta controller blocked trade: {', '.join(meta_decision.reasons)}")
             micro_validation = self.micro_mode_controller.evaluate_signal(
                 user_id=request.user_id,
                 account_equity=account_equity,
@@ -1130,8 +1437,51 @@ class TradingOrchestrator:
             ) if self._is_micro_capital(account_equity) else {"allowed": True, "reasons": []}
             if not micro_validation["allowed"]:
                 raise ValueError(f"Micro mode rejected trade: {','.join(micro_validation['reasons'])}")
+            paper_gate = self._paper_trade_gate(
+                side=request.side,
+                confidence=float(request.confidence),
+                trade_probability=float(trade_probability),
+                strict_score=float(strict_gate["score"] or 0.0),
+                alpha_score=float(request.alpha_decision.final_score or request.confidence * 100),
+                risk_score=float(request.alpha_decision.risk_score or 0.0),
+                net_expected_return=float(request.alpha_decision.net_expected_return or (request.expected_return or 0.0)),
+                volatility=float(request.feature_snapshot.get("volatility", request.expected_risk or 0.0) or 0.0),
+                security_tradable=bool(request.alpha_context.security.tradable),
+                whale_conflict=self._whale_conflict(request.side, whale_signal),
+                degraded_mode=self._degraded_mode(),
+                micro_allowed=bool(micro_validation["allowed"]),
+                micro_reasons=list(micro_validation.get("reasons", [])),
+                meta_allowed=bool(meta_decision.allow_trade) if meta_decision is not None else True,
+                meta_reasons=list(meta_decision.reasons) if meta_decision is not None else [],
+            )
+            request.feature_snapshot["paper_trade_execution_allowed"] = 1.0 if bool(paper_gate["allow_trade"]) else 0.0
+            request.feature_snapshot["paper_trade_reason"] = str(paper_gate["reason"])
+            request.feature_snapshot["paper_trade_reason_code"] = str(paper_gate["reason_code"])
+            if not strict_gate["allow_trade"] and not force_override_active and not paper_gate["allow_trade"]:
+                raise ValueError(f"Strict trade gate rejected trade: {strict_gate['reason']}")
+            if force_override_active and not strict_gate["allow_trade"]:
+                request.feature_snapshot["forced_execution_override"] = 1.0
+            if paper_gate["allow_trade"]:
+                request.feature_snapshot["paper_trade_override_active"] = 1.0
+            self._log_execution_gate_decision(
+                event="execution_gate_decision",
+                symbol=request.symbol,
+                side=request.side,
+                confidence=float(request.confidence),
+                trade_probability=float(trade_probability),
+                risk_score=float(request.alpha_decision.risk_score or 0.0),
+                execution_allowed=bool(strict_gate["allow_trade"] or paper_gate["allow_trade"] or force_override_active),
+                reason=str(paper_gate["reason"] if paper_gate["active"] else strict_gate["reason"]),
+                extra_context={
+                    "strict_gate": strict_gate,
+                    "paper_gate": paper_gate,
+                    "meta_allowed": bool(meta_decision.allow_trade) if meta_decision is not None else True,
+                },
+            )
             meta_capital_multiplier = meta_decision.capital_multiplier if meta_decision is not None else 1.0
             if force_override_active and meta_decision is not None and not meta_decision.allow_trade:
+                meta_capital_multiplier = 1.0
+            if paper_gate["allow_trade"] and meta_decision is not None and not meta_decision.allow_trade:
                 meta_capital_multiplier = 1.0
             effective_capital_multiplier = capital_multiplier * meta_capital_multiplier
             adaptive_config = self._adaptive_strategy_config()
@@ -1451,12 +1801,50 @@ class TradingOrchestrator:
                 reason="Trade passed all execution gates",
                 extra={"trade_id": response.trade_id},
             )
+            self._publish_trade_state(
+                user_id=request.user_id,
+                trade_id=response.trade_id,
+                symbol=request.symbol,
+                side=request.side,
+                status=response.status,
+                reason="trade_executed",
+                details={
+                    "trading_mode": self.settings.trading_mode,
+                    "executed_price": response.executed_price,
+                    "executed_quantity": response.executed_quantity,
+                    "slippage_bps": response.slippage_bps,
+                    "execution_latency_ms": float(order.get("executionLatencyMs", route.get("routing_latency_ms", 0.0))),
+                },
+            )
+            self._publish_portfolio_state(user_id=request.user_id, reason="trade_executed")
+            self._publish_dashboard_state(user_id=request.user_id, reason="trade_executed", symbol=request.symbol)
             return response
         except Exception as exc:
             self.system_monitor.increment_error()
             self.system_monitor.record_api_call(success=False)
             if signal_lock_key is not None and not order_submitted and not recovery_state_persisted:
                 self.cache.delete(signal_lock_key)
+            self._log_execution_gate_decision(
+                event="execution_gate_decision",
+                symbol=request.symbol,
+                side=request.side,
+                confidence=float(request.confidence),
+                trade_probability=float(
+                    request.feature_snapshot.get(
+                        "trade_success_probability",
+                        request.feature_snapshot.get("raw_trade_success_probability", request.confidence),
+                    )
+                    or 0.0
+                ),
+                risk_score=float(request.alpha_decision.risk_score or 0.0),
+                execution_allowed=False,
+                reason=str(exc),
+                extra_context={
+                    "signal_id": request.signal_id,
+                    "requested_notional": request.requested_notional,
+                    "paper_trade_reason": request.feature_snapshot.get("paper_trade_reason"),
+                },
+            )
             self._publish_activity(
                 status="scanning",
                 message=f"{request.symbol.upper()} rejected -> {str(exc)}",
@@ -1468,6 +1856,19 @@ class TradingOrchestrator:
                 confidence_building=False,
                 reason=str(exc),
             )
+            self._publish_trade_state(
+                user_id=request.user_id,
+                symbol=request.symbol,
+                side=request.side,
+                status="REJECTED",
+                reason=str(exc),
+                details={
+                    "signal_id": request.signal_id,
+                    "requested_notional": request.requested_notional,
+                    "confidence": float(request.confidence),
+                },
+            )
+            self._publish_dashboard_state(user_id=request.user_id, reason="trade_rejected", symbol=request.symbol)
             raise
 
     def record_trade_outcome(self, user_id: str, trade_id: str, pnl: float) -> None:
@@ -1586,6 +1987,25 @@ class TradingOrchestrator:
                         "learning_whitelisted": learning_report["whitelisted"],
                     },
                 )
+        self._publish_trade_state(
+            user_id=user_id,
+            trade_id=trade_id,
+            symbol=str(active_trade.get("symbol", "")),
+            side=str(active_trade.get("side", "")),
+            status="CLOSED",
+            reason="trade_outcome_recorded",
+            details={
+                "realized_pnl": pnl,
+                "current_equity": current_equity,
+                "protection_state": str(drawdown.state),
+            },
+        )
+        self._publish_portfolio_state(user_id=user_id, reason="trade_outcome_recorded")
+        self._publish_dashboard_state(
+            user_id=user_id,
+            reason="trade_outcome_recorded",
+            symbol=str(active_trade.get("symbol", "")),
+        )
 
     def close_trade_position(
         self,
@@ -1785,6 +2205,19 @@ class TradingOrchestrator:
                             },
                         )
                 self._mark_trade_closed(trade_id, close_payload)
+                self._publish_trade_state(
+                    user_id=user_id,
+                    trade_id=trade_id,
+                    symbol=str(active_trade.get("symbol", "")),
+                    side=str(active_trade.get("side", "")),
+                    status="CLOSED",
+                    reason=exit_reason,
+                    details={
+                        "realized_pnl": close_payload["realized_pnl"],
+                        "exit_price": exit_price,
+                        "exit_type": exit_type,
+                    },
+                )
             else:
                 refreshed_trade = self.redis_state_manager.load_active_trade(trade_id) or {}
                 self.update_active_trade_state(trade_id, refreshed_trade) if refreshed_trade else None
@@ -1807,6 +2240,26 @@ class TradingOrchestrator:
                     },
                 )
                 self.cache.delete(self._trade_closed_key(trade_id))
+                self._publish_trade_state(
+                    user_id=user_id,
+                    trade_id=trade_id,
+                    symbol=str(active_trade.get("symbol", "")),
+                    side=str(active_trade.get("side", "")),
+                    status="PARTIAL",
+                    reason=exit_reason,
+                    details={
+                        "realized_pnl": close_payload["realized_pnl"],
+                        "exit_price": exit_price,
+                        "remaining_quantity": close_payload["remaining_quantity"],
+                    },
+                )
+
+            self._publish_portfolio_state(user_id=user_id, reason="trade_closed")
+            self._publish_dashboard_state(
+                user_id=user_id,
+                reason="trade_closed",
+                symbol=str(active_trade.get("symbol", "")),
+            )
 
             return TradeCloseResponse(
                 trade_id=trade_id,
@@ -2697,6 +3150,167 @@ class TradingOrchestrator:
             return "Blocked: alpha engine rejected return/risk profile"
         return f"Approved: alpha final score {alpha_decision['final_score']:.2f}"
 
+    def _paper_relaxed_execution_active(self) -> bool:
+        return self.settings.trading_mode == "paper" and bool(self.settings.paper_relaxed_execution_enabled)
+
+    def _paper_trade_confidence_floor(self, current_floor: float) -> float:
+        if not self._paper_relaxed_execution_active():
+            return float(current_floor)
+        return min(float(current_floor), float(self.settings.paper_trade_confidence_floor))
+
+    def _paper_trade_probability_floor(self) -> float:
+        if not self._paper_relaxed_execution_active():
+            return float(self.settings.trade_probability_threshold)
+        return min(
+            float(self.settings.trade_probability_threshold),
+            float(self.settings.paper_trade_probability_threshold),
+        )
+
+    def _paper_trade_gate(
+        self,
+        *,
+        side: str,
+        confidence: float,
+        trade_probability: float,
+        strict_score: float,
+        alpha_score: float,
+        risk_score: float,
+        net_expected_return: float,
+        volatility: float,
+        security_tradable: bool,
+        whale_conflict: bool,
+        degraded_mode: bool,
+        micro_allowed: bool,
+        micro_reasons: list[str] | None = None,
+        meta_allowed: bool = True,
+        meta_reasons: list[str] | None = None,
+    ) -> dict[str, object]:
+        current_confidence_floor = float(self.settings.strict_trade_confidence_floor)
+        probability_floor = float(self.settings.trade_probability_threshold)
+        score_floor = float(self.settings.strict_trade_score_threshold)
+        alpha_floor = float(self.settings.alpha_trade_threshold)
+        if not self._paper_relaxed_execution_active():
+            return {
+                "active": False,
+                "allow_trade": False,
+                "reason": "paper_relaxation_inactive",
+                "reason_code": "inactive",
+                "blocked_reasons": [],
+                "soft_failures": [],
+                "thresholds": {
+                    "confidence_floor": current_confidence_floor,
+                    "trade_probability_floor": probability_floor,
+                    "strict_score_floor": score_floor,
+                    "alpha_score_floor": alpha_floor,
+                    "max_risk_score": float(self.settings.paper_trade_max_risk_score),
+                },
+            }
+
+        confidence_floor = self._paper_trade_confidence_floor(current_confidence_floor)
+        probability_floor = self._paper_trade_probability_floor()
+        score_floor = min(
+            float(self.settings.strict_trade_score_threshold),
+            float(self.settings.paper_trade_score_threshold),
+        )
+        alpha_floor = min(
+            float(self.settings.alpha_trade_threshold),
+            float(self.settings.paper_trade_alpha_score_threshold),
+        )
+        max_risk_score = float(self.settings.paper_trade_max_risk_score)
+
+        blocked_reasons: list[str] = []
+        soft_failures: list[str] = []
+        if str(side or "HOLD").upper() not in {"BUY", "SELL"}:
+            blocked_reasons.append("no_direction")
+        if degraded_mode:
+            blocked_reasons.append("degraded_mode")
+        if not security_tradable:
+            blocked_reasons.append("security_untradable")
+        if whale_conflict:
+            blocked_reasons.append("whale_conflict")
+        if not micro_allowed:
+            blocked_reasons.extend(
+                [f"micro:{reason}" for reason in list(micro_reasons or [])] or ["micro:blocked"]
+            )
+        if float(volatility) <= 0.0 or float(volatility) > float(self.settings.trade_safety_max_volatility):
+            blocked_reasons.append("volatility_unsafe")
+        if float(risk_score) > max_risk_score:
+            blocked_reasons.append("risk_score_too_high")
+        if float(net_expected_return) <= 0.0:
+            blocked_reasons.append("net_expected_return_non_positive")
+
+        if float(confidence) < confidence_floor:
+            soft_failures.append("confidence_below_paper_floor")
+        if float(trade_probability) < probability_floor:
+            soft_failures.append("trade_probability_below_paper_floor")
+        if float(strict_score) < score_floor:
+            soft_failures.append("strict_score_below_paper_floor")
+        if float(alpha_score) < alpha_floor:
+            soft_failures.append("alpha_score_below_paper_floor")
+        if not meta_allowed:
+            soft_failures.extend(
+                [f"meta:{reason}" for reason in list(meta_reasons or [])] or ["meta:blocked"]
+            )
+
+        allow_trade = not blocked_reasons and not soft_failures
+        if allow_trade:
+            reason_code = "paper_relaxed_approved"
+            reason = "Paper mode accepted a moderate-quality setup after soft gate relaxation"
+        elif blocked_reasons:
+            reason_code = "paper_relaxed_blocked"
+            reason = ", ".join(dict.fromkeys(blocked_reasons))
+        else:
+            reason_code = "paper_relaxed_soft_failures"
+            reason = ", ".join(dict.fromkeys(soft_failures))
+        return {
+            "active": True,
+            "allow_trade": allow_trade,
+            "reason": reason,
+            "reason_code": reason_code,
+            "blocked_reasons": list(dict.fromkeys(blocked_reasons)),
+            "soft_failures": list(dict.fromkeys(soft_failures)),
+            "thresholds": {
+                "confidence_floor": confidence_floor,
+                "trade_probability_floor": probability_floor,
+                "strict_score_floor": score_floor,
+                "alpha_score_floor": alpha_floor,
+                "max_risk_score": max_risk_score,
+            },
+            "confidence": round(float(confidence), 6),
+            "trade_probability": round(float(trade_probability), 6),
+            "strict_score": round(float(strict_score), 6),
+            "alpha_score": round(float(alpha_score), 6),
+            "risk_score": round(float(risk_score), 6),
+            "execution_allowed": allow_trade,
+        }
+
+    def _log_execution_gate_decision(
+        self,
+        *,
+        event: str,
+        symbol: str,
+        side: str,
+        confidence: float,
+        trade_probability: float,
+        risk_score: float,
+        execution_allowed: bool,
+        reason: str,
+        extra_context: dict | None = None,
+    ) -> None:
+        context = {
+            "symbol": str(symbol or "").upper(),
+            "side": str(side or "").upper(),
+            "trading_mode": self.settings.trading_mode,
+            "confidence": round(float(confidence), 6),
+            "trade_probability": round(float(trade_probability), 6),
+            "risk_score": round(float(risk_score), 6),
+            "execution_allowed": bool(execution_allowed),
+            "reason": str(reason or ""),
+        }
+        if extra_context:
+            context.update(extra_context)
+        logger.info(event, extra={"event": event, "context": context})
+
     def _strict_trade_gate(
         self,
         *,
@@ -2957,9 +3571,16 @@ class TradingOrchestrator:
             ttl=self.settings.signal_version_ttl_seconds,
         )
 
-    def _market_data_diagnostics(self, frames: dict[str, object]) -> dict:
-        diagnostics: dict[str, object] = {"frames": {}, "stale": False, "empty_intervals": []}
+    def _market_data_diagnostics(self, frames: dict[str, object], *, symbol: str | None = None) -> dict:
+        diagnostics: dict[str, object] = {
+            "frames": {},
+            "stale": False,
+            "empty_intervals": [],
+            "sources": {},
+            "using_mock_data": False,
+        }
         now = datetime.now(timezone.utc)
+        normalized_symbol = str(symbol or "").upper().strip()
         for interval, frame in frames.items():
             if frame is None or getattr(frame, "empty", True):
                 diagnostics["empty_intervals"].append(interval)
@@ -2974,6 +3595,22 @@ class TradingOrchestrator:
             }
             if age_seconds > {"1m": 180, "5m": 900, "15m": 2700, "1h": 7200}.get(interval, 900):
                 diagnostics["stale"] = True
+        if hasattr(self.market_data, "diagnostics"):
+            market_data_details = self.market_data.diagnostics()
+            diagnostics["using_mock_data"] = bool(market_data_details.get("using_mock_data", False))
+            if normalized_symbol:
+                fetch_details = market_data_details.get("last_fetch_details", {}) or {}
+                for key, payload in fetch_details.items():
+                    if not key.endswith(f":{normalized_symbol}") and f":{normalized_symbol}:" not in key:
+                        continue
+                    source = str((payload or {}).get("source", "unknown"))
+                    if key.startswith(f"price:{normalized_symbol}"):
+                        diagnostics["sources"]["price"] = source
+                    elif key.startswith(f"order_book:{normalized_symbol}"):
+                        diagnostics["sources"]["order_book"] = source
+                    elif key.startswith(f"ohlcv:{normalized_symbol}:"):
+                        interval = key.rsplit(":", 1)[-1]
+                        diagnostics["sources"][f"ohlcv_{interval}"] = source
         return diagnostics
 
     def _safe_firestore_call(self, method_name: str, *args, swallow_exceptions: bool = True) -> None:

@@ -16,6 +16,12 @@ class SignalModel {
     required this.minBalance,
     required this.rejectionReason,
     required this.lowConfidence,
+    required this.quality,
+    required this.qualityScore,
+    required this.qualityReasons,
+    required this.executionAllowed,
+    required this.marketDataStale,
+    required this.marketDataSources,
   });
 
   final String signalId;
@@ -34,10 +40,18 @@ class SignalModel {
   final double minBalance;
   final String? rejectionReason;
   final bool lowConfidence;
+  final String quality;
+  final double qualityScore;
+  final List<String> qualityReasons;
+  final bool executionAllowed;
+  final bool marketDataStale;
+  final Map<String, String> marketDataSources;
 
   List<String> get reasons {
-    final parsed = decisionReason
-        .split(RegExp(r'[.;|]'))
+    final parsed = <String>[
+      ...decisionReason.split(RegExp(r'[.;|]')),
+      ...qualityReasons,
+    ]
         .map((item) => item.trim())
         .where((item) => item.isNotEmpty)
         .toList();
@@ -50,6 +64,12 @@ class SignalModel {
   bool get isForcedPaperTrade => strategy == 'FORCED_PAPER_TRADE';
 
   bool get isHighPriority => isForcedPaperTrade || alphaScore >= 80;
+
+  bool get isApproved => executionAllowed && quality == 'approved';
+
+  bool get isWatchlist => quality == 'watchlist' || lowConfidence;
+
+  bool get isDegraded => degradedMode || quality == 'degraded';
 
   factory SignalModel.fromJson(Map<String, dynamic> json) {
     return SignalModel(
@@ -70,6 +90,21 @@ class SignalModel {
       minBalance: (json['min_balance'] ?? 0).toDouble(),
       rejectionReason: json['rejection_reason'] as String?,
       lowConfidence: json['low_confidence'] as bool? ?? false,
+      quality: json['quality'] as String? ?? 'watchlist',
+      qualityScore: (json['quality_score'] as num?)?.toDouble() ?? 0,
+      qualityReasons: (json['quality_reasons'] as List<dynamic>? ??
+              const <dynamic>[])
+          .map((item) => item.toString())
+          .where((item) => item.trim().isNotEmpty)
+          .toList(),
+      executionAllowed: json['execution_allowed'] as bool? ?? false,
+      marketDataStale: json['market_data_stale'] as bool? ?? false,
+      marketDataSources:
+          (json['market_data_sources'] as Map<dynamic, dynamic>? ??
+                  const <dynamic, dynamic>{})
+              .map(
+        (key, value) => MapEntry(key.toString(), value.toString()),
+      ),
     );
   }
 }

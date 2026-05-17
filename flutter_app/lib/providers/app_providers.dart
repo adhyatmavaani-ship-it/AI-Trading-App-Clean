@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/api_client.dart';
 import '../core/auth_credentials_store.dart';
+import '../core/error_mapper.dart';
 import '../core/websocket_service.dart';
 import '../repositories/trading_repository.dart';
 
@@ -10,15 +11,16 @@ final authCredentialsStoreProvider = Provider<AuthCredentialsStore>((ref) {
 });
 
 final apiClientProvider = Provider<ApiClient>((ref) {
-  return ApiClient(
-    credentialsStore: ref.watch(authCredentialsStoreProvider),
-  );
+  track('provider_init', <String, dynamic>{'provider': 'apiClientProvider'});
+  return ApiClient();
 });
 
 final webSocketServiceProvider = Provider<WebSocketService>((ref) {
-  final service = WebSocketService(
-    credentialsStore: ref.watch(authCredentialsStoreProvider),
+  track(
+    'provider_init',
+    <String, dynamic>{'provider': 'webSocketServiceProvider'},
   );
+  final service = WebSocketService();
   ref.onDispose(() {
     service.dispose();
   });

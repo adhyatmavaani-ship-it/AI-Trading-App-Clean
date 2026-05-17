@@ -71,6 +71,37 @@ market_data_latency = Histogram(
     buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1.0),
 )
 
+# WebSocket / realtime metrics
+websocket_events_sent = Counter(
+    "websocket_events_sent_total",
+    "Realtime websocket events sent to connected clients",
+    ["event_type"],
+)
+
+websocket_events_dropped = Counter(
+    "websocket_events_dropped_total",
+    "Realtime websocket events dropped before delivery",
+    ["reason"],
+)
+
+websocket_broadcast_latency = Histogram(
+    "websocket_broadcast_latency_seconds",
+    "Time spent fanning out one websocket event to local clients",
+    buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0),
+)
+
+websocket_sequence_gaps = Counter(
+    "websocket_sequence_gaps_total",
+    "Realtime sequence gaps reported by websocket clients",
+    ["stream"],
+)
+
+websocket_replay_requests = Counter(
+    "websocket_replay_requests_total",
+    "Replay requests served from the bounded websocket replay buffer",
+    ["stream", "status"],
+)
+
 # System metrics
 external_api_errors = Counter(
     "external_api_errors_total",

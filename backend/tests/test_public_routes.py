@@ -2,6 +2,7 @@ import sys
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -82,6 +83,14 @@ class StubContainer:
     def __init__(self):
         self.cache = StubCache()
         self.firestore = StubFirestore()
+        self.settings = SimpleNamespace(
+            public_endpoint_timeout_seconds=2.5,
+            slow_operation_threshold_seconds=1.0,
+        )
+
+
+class DisabledFirestore:
+    client = None
 
 
 @unittest.skipUnless(FASTAPI_AVAILABLE, "fastapi is not installed")
@@ -131,6 +140,26 @@ class PublicRoutesTest(unittest.TestCase):
         self.assertEqual(payload["total_trades"], 0)
         logger_exception.assert_called_once_with("public_performance_endpoint_failed")
 
+    def test_public_performance_returns_safe_fallback_when_summary_times_out(self):
+        self.container.settings.public_endpoint_timeout_seconds = 0.01
+        self.container.firestore.load_public_performance_summary = lambda trade_limit=1000: (_ for _ in ()).throw(TimeoutError())
+
+        with patch("app.api.routes.public.logger.warning") as logger_warning:
+            response = self.client.get("/v1/public/performance")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["win_rate"], 0.0)
+        self.assertEqual(payload["total_pnl_pct"], 0.0)
+        self.assertEqual(payload["total_trades"], 0)
+        logger_warning.assert_any_call(
+            "public_performance_endpoint_timed_out",
+            extra={
+                "event": "public_performance_endpoint_timed_out",
+                "context": {"timeout_seconds": 0.1},
+            },
+        )
+
     def test_public_trades_are_anonymized(self):
         response = self.client.get("/v1/public/trades?limit=2")
 
@@ -148,6 +177,20 @@ class PublicRoutesTest(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["count"], 2)
         self.assertEqual(payload["items"][0]["date"], "2026-04-24")
+
+    def test_public_routes_return_defaults_when_firestore_is_disabled(self):
+        self.container.firestore = DisabledFirestore()
+
+        performance = self.client.get("/v1/public/performance")
+        trades = self.client.get("/v1/public/trades")
+        daily = self.client.get("/v1/public/daily")
+
+        self.assertEqual(performance.status_code, 200)
+        self.assertEqual(performance.json()["total_trades"], 0)
+        self.assertEqual(trades.status_code, 200)
+        self.assertEqual(trades.json()["count"], 0)
+        self.assertEqual(daily.status_code, 200)
+        self.assertEqual(daily.json()["count"], 0)
 
 
 if __name__ == "__main__":

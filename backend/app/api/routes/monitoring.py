@@ -182,6 +182,312 @@ async def prometheus_metrics() -> Response:
     return Response(content=get_metrics(), media_type="text/plain; charset=utf-8")
 
 
+@router.get(
+    "/infrastructure/realtime",
+    summary="Realtime infrastructure dashboard snapshot",
+    description="Returns websocket, replay, Redis, and AI worker queue indicators for internal operations dashboards.",
+)
+async def realtime_infrastructure(
+    request: Request,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    get_user_id(request)
+    queue_depth = 0
+    try:
+        from app.services.ai_worker_queue import AIWorkerQueue
+
+        queue_depth = AIWorkerQueue(container.cache).depth()
+    except Exception:
+        queue_depth = 0
+    broker_capabilities = []
+    try:
+        from app.services.broker_abstraction import BrokerCapabilityRegistry
+
+        broker_capabilities = BrokerCapabilityRegistry().list_capabilities()
+    except Exception:
+        broker_capabilities = []
+    gpu_queue_depth = 0
+    try:
+        from app.services.gpu_inference_queue import GPUInferenceQueue
+
+        gpu_queue_depth = GPUInferenceQueue(container.cache).depth()
+    except Exception:
+        gpu_queue_depth = 0
+    websocket_gaps = int(container.cache.get("monitor:websocket_sequence_gaps") or 0)
+    replay_frequency = int(container.cache.get("monitor:websocket_replay_frequency") or 0)
+    stale_feed_count = int(container.cache.get("monitor:websocket_stale_feed_count") or 0)
+    ha_plan = {}
+    try:
+        from app.services.high_availability import HighAvailabilityPlanner
+
+        ha_plan = HighAvailabilityPlanner().plan(
+            redis_fallback=bool(getattr(container.cache, "using_fallback", False)),
+            queue_depth=queue_depth + gpu_queue_depth,
+            websocket_gaps=websocket_gaps,
+            stale_feeds=stale_feed_count,
+        )
+    except Exception:
+        ha_plan = {"mode": "UNKNOWN", "actions": []}
+    slo_status = {}
+    try:
+        from app.services.infrastructure_slo import InfrastructureSLOEngine
+
+        slo_status = InfrastructureSLOEngine().evaluate(
+            websocket_latency_ms=float(container.cache.get("monitor:websocket_latency_ms") or 0.0),
+            sequence_gaps=websocket_gaps,
+            stale_feeds=stale_feed_count,
+            ai_queue_depth=queue_depth,
+            gpu_queue_depth=gpu_queue_depth,
+            render_fps=float(container.cache.get("monitor:chart_fps") or 0.0),
+            redis_fallback=bool(getattr(container.cache, "using_fallback", False)),
+        ).as_dict()
+    except Exception:
+        slo_status = {"mode": "UNKNOWN", "score": 0.0, "breaches": [], "actions": []}
+    replay_checkpoint = {}
+    try:
+        from app.services.replay_checkpoint_store import ReplayCheckpointStore
+
+        replay_checkpoint = ReplayCheckpointStore(container.cache).validate(
+            stream="chart_snapshot"
+        )
+    except Exception:
+        replay_checkpoint = {"valid": False, "reason": "unavailable"}
+    incident_snapshot = {}
+    retention_plan = {}
+    capacity_plan = {}
+    runbook = {}
+    active_websockets = int(container.cache.get("monitor:websocket_active_connections") or 0)
+    total_throughput = (
+        int(container.cache.get("monitor:event_bus_market_throughput") or 0)
+        + int(container.cache.get("monitor:event_bus_ai_throughput") or 0)
+        + int(container.cache.get("monitor:event_bus_analytics_throughput") or 0)
+    )
+    try:
+        from app.services.incident_response import IncidentResponseEngine
+
+        incident_snapshot = IncidentResponseEngine().snapshot(
+            slo=slo_status,
+            high_availability=ha_plan,
+            replay_checkpoint=replay_checkpoint,
+            redis_fallback=bool(getattr(container.cache, "using_fallback", False)),
+        )
+    except Exception:
+        incident_snapshot = {"severity": "UNKNOWN", "status": "UNKNOWN", "runbook": []}
+    try:
+        from app.services.retention_policy import RetentionPolicyPlanner
+
+        retention_plan = RetentionPolicyPlanner().plan(
+            event_count=total_throughput,
+            replay_count=int(container.cache.get("monitor:replay_event_count") or 0),
+            ai_context_count=int(container.cache.get("monitor:ai_context_count") or 0),
+            storage_pressure_pct=float(container.cache.get("monitor:storage_pressure_pct") or 0.0),
+        )
+    except Exception:
+        retention_plan = {"mode": "UNKNOWN", "actions": []}
+    try:
+        from app.services.capacity_planner import CapacityPlanner
+
+        capacity_plan = CapacityPlanner().recommend(
+            active_websockets=active_websockets,
+            event_throughput=total_throughput,
+            ai_queue_depth=queue_depth,
+            gpu_queue_depth=gpu_queue_depth,
+            p95_latency_ms=float(container.cache.get("monitor:websocket_latency_ms") or 0.0),
+        )
+    except Exception:
+        capacity_plan = {"scale_mode": "UNKNOWN"}
+    try:
+        from app.services.runbook_orchestrator import RunbookOrchestrator
+
+        runbook = RunbookOrchestrator().build(
+            incident=incident_snapshot,
+            capacity=capacity_plan,
+            retention=retention_plan,
+        )
+    except Exception:
+        runbook = {"safe_to_auto_apply": False, "steps": [], "operator_required": True}
+    release_readiness = {}
+    canary_plan = {}
+    rollback_plan = {}
+    backup_plan = {}
+    audit_manifest = {}
+    try:
+        from app.services.release_readiness import ReleaseReadinessEngine
+
+        release_readiness = ReleaseReadinessEngine().evaluate(
+            slo=slo_status,
+            incident=incident_snapshot,
+            replay_checkpoint=replay_checkpoint,
+            capacity=capacity_plan,
+            redis_fallback=bool(getattr(container.cache, "using_fallback", False)),
+        )
+    except Exception:
+        release_readiness = {"status": "UNKNOWN", "blockers": []}
+    try:
+        from app.services.canary_planner import CanaryPlanner
+
+        canary_plan = CanaryPlanner().plan(
+            release=release_readiness,
+            capacity=capacity_plan,
+        )
+    except Exception:
+        canary_plan = {"mode": "UNKNOWN", "traffic_steps": []}
+    try:
+        from app.services.rollback_planner import RollbackPlanner
+
+        rollback_plan = RollbackPlanner().plan(
+            release=release_readiness,
+            incident=incident_snapshot,
+        )
+    except Exception:
+        rollback_plan = {"recommended": False, "strategy": "UNKNOWN", "steps": []}
+    try:
+        from app.services.backup_readiness import BackupReadinessPlanner
+
+        backup_plan = BackupReadinessPlanner().plan(
+            replay_checkpoint=replay_checkpoint,
+            retention=retention_plan,
+        )
+    except Exception:
+        backup_plan = {"status": "UNKNOWN"}
+    try:
+        from app.services.audit_export import AuditExportPlanner
+
+        audit_manifest = AuditExportPlanner().build_manifest(
+            incident=incident_snapshot,
+            release=release_readiness,
+            runbook=runbook,
+        )
+    except Exception:
+        audit_manifest = {"manifest_version": "unknown"}
+    config_drift = {}
+    synthetic_probes = {}
+    disaster_recovery = {}
+    data_lineage = {}
+    compliance = {}
+    try:
+        from app.services.config_drift import ConfigDriftDetector
+
+        config_drift = ConfigDriftDetector().detect(
+            redis_enabled=bool(getattr(container.cache, "redis_enabled", False)),
+            redis_fallback=bool(getattr(container.cache, "using_fallback", False)),
+            release=release_readiness,
+            backup=backup_plan,
+            replay_checkpoint=replay_checkpoint,
+        )
+    except Exception:
+        config_drift = {"state": "UNKNOWN", "drift_count": 0, "items": []}
+    try:
+        from app.services.synthetic_probe import SyntheticProbePlanner
+
+        synthetic_probes = SyntheticProbePlanner().plan(
+            release=release_readiness,
+            slo=slo_status,
+        )
+    except Exception:
+        synthetic_probes = {"mode": "UNKNOWN", "probes": []}
+    try:
+        from app.services.disaster_recovery import DisasterRecoveryPlanner
+
+        disaster_recovery = DisasterRecoveryPlanner().plan(
+            backup=backup_plan,
+            replay_checkpoint=replay_checkpoint,
+            capacity=capacity_plan,
+            incident=incident_snapshot,
+        )
+    except Exception:
+        disaster_recovery = {"state": "UNKNOWN", "drill_required": False}
+    try:
+        from app.services.data_lineage import DataLineageManifest
+
+        data_lineage = DataLineageManifest().build(
+            audit=audit_manifest,
+            release=release_readiness,
+        )
+    except Exception:
+        data_lineage = {"manifest_version": "unknown", "contains_secrets": False}
+    try:
+        from app.services.compliance_governance import ComplianceGovernanceEngine
+
+        compliance = ComplianceGovernanceEngine().evaluate(
+            drift=config_drift,
+            lineage=data_lineage,
+            audit=audit_manifest,
+            backup=backup_plan,
+        )
+    except Exception:
+        compliance = {"state": "UNKNOWN", "gaps": []}
+    readiness = {}
+    try:
+        from app.services.operational_readiness import OperationalReadinessEngine
+
+        readiness = OperationalReadinessEngine().evaluate(
+            slo=slo_status,
+            release=release_readiness,
+            compliance=compliance,
+            disaster_recovery=disaster_recovery,
+            config_drift=config_drift,
+            backup=backup_plan,
+        )
+    except Exception:
+        readiness = {"status": "UNKNOWN", "score": 0.0, "actions": []}
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "redis": {
+            "enabled": bool(getattr(container.cache, "redis_enabled", False)),
+            "fallback": bool(getattr(container.cache, "using_fallback", False)),
+            "latency_ms": float(container.cache.get("monitor:redis_latency_ms") or 0.0),
+        },
+        "websocket": {
+            "last_trade_update": container.cache.get_json("realtime:last:trade_update") or {},
+            "last_chart_snapshot": container.cache.get_json("realtime:last:chart_snapshot") or {},
+            "last_ai_trade_feed": container.cache.get_json("realtime:last:ai_trade_feed") or {},
+            "sequence_gaps": websocket_gaps,
+            "replay_frequency": replay_frequency,
+            "stale_feed_count": stale_feed_count,
+        },
+        "ai_workers": {
+            "queue_depth": queue_depth,
+            "latency_ms": float(container.cache.get("monitor:ai_worker_latency_ms") or 0.0),
+        },
+        "rendering": {
+            "fps": float(container.cache.get("monitor:chart_fps") or 0.0),
+            "overlay_pressure": float(container.cache.get("monitor:overlay_pressure") or 0.0),
+            "repaint_pressure": float(container.cache.get("monitor:repaint_pressure") or 0.0),
+        },
+        "event_bus": {
+            "market_throughput": int(container.cache.get("monitor:event_bus_market_throughput") or 0),
+            "ai_throughput": int(container.cache.get("monitor:event_bus_ai_throughput") or 0),
+            "analytics_throughput": int(container.cache.get("monitor:event_bus_analytics_throughput") or 0),
+        },
+        "gpu_inference": {
+            "queue_depth": gpu_queue_depth,
+            "latency_ms": float(container.cache.get("monitor:gpu_inference_latency_ms") or 0.0),
+            "runtime": str(container.cache.get("monitor:gpu_inference_runtime") or "onnx_ready"),
+        },
+        "high_availability": ha_plan,
+        "slo": slo_status,
+        "replay_checkpoint": replay_checkpoint,
+        "incident": incident_snapshot,
+        "retention": retention_plan,
+        "capacity": capacity_plan,
+        "runbook": runbook,
+        "release": release_readiness,
+        "canary": canary_plan,
+        "rollback": rollback_plan,
+        "backup": backup_plan,
+        "audit_export": audit_manifest,
+        "config_drift": config_drift,
+        "synthetic_probes": synthetic_probes,
+        "disaster_recovery": disaster_recovery,
+        "data_lineage": data_lineage,
+        "compliance": compliance,
+        "readiness": readiness,
+        "brokers": broker_capabilities,
+        "execution_latency_ms": float(container.cache.get("monitor:execution_latency_ms") or 0.0),
+    }
+
+
 def _portfolio_concentration_status(summary: dict) -> PortfolioConcentrationStatus:
     snapshot = _portfolio_concentration_snapshot(summary)
     payload = snapshot.model_dump()

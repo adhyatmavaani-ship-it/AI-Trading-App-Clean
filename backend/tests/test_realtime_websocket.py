@@ -20,6 +20,7 @@ from app.services.api_key_auth import get_api_key_auth_service
 
 if FASTAPI_AVAILABLE:
     from app.api.routes import realtime
+    from app.services.realtime_integrity import RealtimeIntegritySequencer
     from app.services.signal_websocket_manager import SignalWebSocketManager
 
 
@@ -77,10 +78,13 @@ class RealtimeWebSocketTest(unittest.TestCase):
                 )
             )
 
-            self.assertEqual(
-                websocket.receive_json(),
-                {"type": "signal", "symbol": "BTCUSDT", "signal_version": 7},
-            )
+            received = websocket.receive_json()
+            self.assertEqual(received["type"], "signal")
+            self.assertEqual(received["symbol"], "BTCUSDT")
+            self.assertEqual(received["signal_version"], 7)
+            self.assertGreaterEqual(received["sequence_id"], 1)
+            self.assertIn("event_id", received)
+            self.assertTrue(received["realtime"]["replay_protection"])
 
     def test_accepts_bearer_token_on_versioned_websocket_route(self):
         with self.client.websocket_connect(
@@ -96,10 +100,73 @@ class RealtimeWebSocketTest(unittest.TestCase):
                 )
             )
 
-            self.assertEqual(
-                websocket.receive_json(),
-                {"type": "signal", "symbol": "ETHUSDT", "signal_version": 8},
+            received = websocket.receive_json()
+            self.assertEqual(received["type"], "signal")
+            self.assertEqual(received["symbol"], "ETHUSDT")
+            self.assertEqual(received["signal_version"], 8)
+            self.assertGreaterEqual(received["sequence_id"], 1)
+            self.assertIn("event_id", received)
+
+    def test_realtime_integrity_rejects_duplicate_event_id(self):
+        sequencer = RealtimeIntegritySequencer()
+
+        first = sequencer.envelope(
+            {"type": "signal", "event_id": "fixed-event", "symbol": "BTCUSDT"}
+        )
+        duplicate = sequencer.envelope(
+            {"type": "signal", "event_id": "fixed-event", "symbol": "BTCUSDT"}
+        )
+
+        self.assertIsNotNone(first)
+        self.assertIsNone(duplicate)
+        self.assertEqual(first["event_id"], "fixed-event")
+        self.assertTrue(first["realtime"]["replay_protection"])
+
+    def test_replay_request_returns_buffered_sequence_range(self):
+        asyncio.run(
+            self.manager.broadcast(
+                {
+                    "type": "chart_snapshot",
+                    "event_id": "chart-1001",
+                    "sequence_id": 1001,
+                    "symbol": "BTCUSDT",
+                }
             )
+        )
+        asyncio.run(
+            self.manager.broadcast(
+                {
+                    "type": "chart_snapshot",
+                    "event_id": "chart-1002",
+                    "sequence_id": 1002,
+                    "symbol": "BTCUSDT",
+                }
+            )
+        )
+
+        with self.client.websocket_connect(
+            "/ws/signals",
+            headers={"X-API-Key": "ws-token"},
+        ) as websocket:
+            websocket.send_text(
+                json.dumps(
+                    {
+                        "type": "replay_request",
+                        "stream": "chart_snapshot",
+                        "from_sequence": 1001,
+                        "to_sequence": 1002,
+                    }
+                )
+            )
+
+            first = websocket.receive_json()
+            second = websocket.receive_json()
+            response = websocket.receive_json()
+
+        self.assertEqual([first["sequence_id"], second["sequence_id"]], [1001, 1002])
+        self.assertEqual(response["type"], "replay_response")
+        self.assertEqual(response["event_count"], 2)
+        self.assertEqual(response["recovery"], "replay")
 
 
 if __name__ == "__main__":

@@ -3,11 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 from app.core.config import Settings
 
+
+logger = logging.getLogger(__name__)
 
 ATR_BUCKETS: list[tuple[str, float, float]] = [
     ("atr_vlow", 0.0, 0.0025),
@@ -238,8 +241,26 @@ class AdaptiveLearningService:
         state["updated_at"] = datetime.now(timezone.utc).isoformat()
         self._save_state(state)
         snapshot = self.snapshot()
-        self.cache.set_json(self.snapshot_key, snapshot, ttl=self.settings.monitor_state_ttl_seconds)
-        self.firestore.save_performance_snapshot("learning:adaptive", snapshot)
+        try:
+            self.cache.set_json(self.snapshot_key, snapshot, ttl=self.settings.monitor_state_ttl_seconds)
+        except Exception as exc:
+            logger.warning(
+                "adaptive_learning_snapshot_cache_failed",
+                extra={
+                    "event": "adaptive_learning_snapshot_cache_failed",
+                    "context": {"error": str(exc)[:200]},
+                },
+            )
+        try:
+            self.firestore.save_performance_snapshot("learning:adaptive", snapshot)
+        except Exception as exc:
+            logger.warning(
+                "adaptive_learning_firestore_snapshot_failed",
+                extra={
+                    "event": "adaptive_learning_firestore_snapshot_failed",
+                    "context": {"error": str(exc)[:200]},
+                },
+            )
         return {
             "pattern_key": pattern_key,
             "regime": regime,
@@ -275,11 +296,25 @@ class AdaptiveLearningService:
         }
 
     def _load_state(self) -> dict[str, Any]:
-        payload = self.cache.get_json(self.cache_key) or self._load_file_state()
+        try:
+            payload = self.cache.get_json(self.cache_key) or self._load_file_state()
+        except Exception as exc:
+            logger.warning(
+                "adaptive_learning_state_load_failed",
+                extra={
+                    "event": "adaptive_learning_state_load_failed",
+                    "context": {"error": str(exc)[:200]},
+                },
+            )
+            payload = self._load_file_state()
+        if not isinstance(payload, dict):
+            payload = {}
         regime_memory = _default_regime_memory()
         loaded_regimes = payload.get("regime_memory") or {}
+        if not isinstance(loaded_regimes, dict):
+            loaded_regimes = {}
         for regime in REGIMES:
-            if regime in loaded_regimes:
+            if regime in loaded_regimes and isinstance(loaded_regimes[regime], dict):
                 regime_memory[regime].update(loaded_regimes[regime] or {})
         return {
             "updated_at": payload.get("updated_at"),
@@ -287,8 +322,26 @@ class AdaptiveLearningService:
         }
 
     def _save_state(self, state: dict[str, Any]) -> None:
-        self.cache.set_json(self.cache_key, state, ttl=self.settings.learning_memory_ttl_seconds)
-        self.state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        try:
+            self.cache.set_json(self.cache_key, state, ttl=self.settings.learning_memory_ttl_seconds)
+        except Exception as exc:
+            logger.warning(
+                "adaptive_learning_state_cache_failed",
+                extra={
+                    "event": "adaptive_learning_state_cache_failed",
+                    "context": {"error": str(exc)[:200]},
+                },
+            )
+        try:
+            self.state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        except Exception as exc:
+            logger.warning(
+                "adaptive_learning_state_file_failed",
+                extra={
+                    "event": "adaptive_learning_state_file_failed",
+                    "context": {"path": str(self.state_file), "error": str(exc)[:200]},
+                },
+            )
 
     def _load_file_state(self) -> dict[str, Any]:
         if not self.state_file.exists():

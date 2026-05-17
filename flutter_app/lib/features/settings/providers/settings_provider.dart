@@ -9,33 +9,13 @@ import '../../../repositories/trading_repository.dart';
 class AppSettingsNotifier extends StateNotifier<AppSettings> {
   AppSettingsNotifier(this._credentialsStore, this._repository)
       : super(const AppSettings()) {
-    _loadStoredAuthState();
+    _clearStoredAuthState();
   }
 
   final AuthCredentialsStore _credentialsStore;
   final TradingRepository _repository;
 
-  void updateRisk(double value) {
-    state = state.copyWith(riskSlider: value);
-  }
-
-  void toggleAutoplay(bool value) {
-    state = state.copyWith(autoplayEnabled: value);
-  }
-
-  void toggleNotifications(bool value) {
-    state = state.copyWith(notificationsEnabled: value);
-  }
-
-  Future<void> saveApiKey(
-    String apiKey, {
-    AuthScheme scheme = AuthScheme.apiKey,
-  }) async {
-    await _credentialsStore.saveApiKey(apiKey, scheme: scheme);
-    state = state.copyWith(hasStoredApiKey: apiKey.trim().isNotEmpty);
-  }
-
-  Future<void> clearApiKey() async {
+  Future<void> clearLegacyAuthCache() async {
     await _credentialsStore.clear();
     state = state.copyWith(hasStoredApiKey: false);
   }
@@ -121,10 +101,13 @@ class AppSettingsNotifier extends StateNotifier<AppSettings> {
     return payload;
   }
 
-  Future<void> _loadStoredAuthState() async {
+  Future<void> _clearStoredAuthState() async {
     final session = await _credentialsStore.loadSession();
+    if (session != null) {
+      await _credentialsStore.clear();
+    }
     state = state.copyWith(
-      hasStoredApiKey: session != null && session.accessToken.trim().isNotEmpty,
+      hasStoredApiKey: false,
     );
   }
 }

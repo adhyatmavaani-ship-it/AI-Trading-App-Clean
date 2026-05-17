@@ -2,36 +2,17 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/auth_credentials_store.dart';
+import '../core/constants.dart';
 import '../core/trading_palette.dart';
 import '../features/auth/providers/auth_provider.dart';
 import '../widgets/glass_panel.dart';
 import '../widgets/gradient_action_button.dart';
 
-class LoginScreen extends ConsumerStatefulWidget {
+class LoginScreen extends ConsumerWidget {
   const LoginScreen({super.key});
 
   @override
-  ConsumerState<LoginScreen> createState() => _LoginScreenState();
-}
-
-class _LoginScreenState extends ConsumerState<LoginScreen> {
-  late final TextEditingController _credentialController;
-  AuthScheme _authScheme = AuthScheme.apiKey;
-
-  @override
-  void initState() {
-    super.initState();
-    _credentialController = TextEditingController();
-  }
-
-  @override
-  void dispose() {
-    _credentialController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final auth = ref.watch(authControllerProvider);
     final theme = Theme.of(context);
 
@@ -61,54 +42,39 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     mainAxisSize: MainAxisSize.min,
                     children: <Widget>[
                       Text(
-                        'Secure Trading Access',
+                        'Production Trading Access',
                         style: theme.textTheme.headlineSmall?.copyWith(
                           fontWeight: FontWeight.w800,
                         ),
                       ),
                       const SizedBox(height: 10),
                       Text(
-                        'Enter the backend credential configured for your trading account. The app supports both X-API-Key and bearer token flows.',
+                        'This app uses the embedded VPS production X-API-Key for every REST and WebSocket request. Local bearer tokens and saved session overrides are ignored.',
                         style: theme.textTheme.bodyMedium,
                       ),
                       const SizedBox(height: 22),
-                      TextField(
-                        controller: _credentialController,
-                        obscureText: true,
-                        enabled: !auth.isSubmitting,
-                        textInputAction: TextInputAction.done,
-                        onSubmitted: (_) => _submit(),
-                        decoration: const InputDecoration(
-                          labelText: 'API key or bearer token',
-                          hintText: 'Paste your trading credential',
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: TradingPalette.overlay,
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: TradingPalette.panelBorder),
                         ),
-                      ),
-                      const SizedBox(height: 14),
-                      DropdownButtonFormField<AuthScheme>(
-                        value: _authScheme,
-                        decoration: const InputDecoration(
-                          labelText: 'Authentication scheme',
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: <Widget>[
+                            const Text(
+                              'Production auth source',
+                              style: TextStyle(fontWeight: FontWeight.w700),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Header: X-API-Key present\nUser context: ${AppConstants.requiredUserId}\nMode: required_api_key',
+                              style: theme.textTheme.bodySmall,
+                            ),
+                          ],
                         ),
-                        items: const <DropdownMenuItem<AuthScheme>>[
-                          DropdownMenuItem<AuthScheme>(
-                            value: AuthScheme.apiKey,
-                            child: Text('X-API-Key'),
-                          ),
-                          DropdownMenuItem<AuthScheme>(
-                            value: AuthScheme.bearer,
-                            child: Text('Authorization Bearer'),
-                          ),
-                        ],
-                        onChanged: auth.isSubmitting
-                            ? null
-                            : (value) {
-                                if (value == null) {
-                                  return;
-                                }
-                                setState(() {
-                                  _authScheme = value;
-                                });
-                              },
                       ),
                       if (auth.errorMessage != null &&
                           auth.errorMessage!.trim().isNotEmpty) ...<Widget>[
@@ -134,15 +100,22 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       const SizedBox(height: 20),
                       GradientActionButton(
                         label: auth.isSubmitting
-                            ? 'Verifying credential...'
-                            : 'Unlock Trading Workspace',
-                        icon: Icons.lock_open_rounded,
+                            ? 'Verifying production auth...'
+                            : 'Continue With Production Auth',
+                        icon: Icons.verified_user_rounded,
                         expanded: true,
-                        onPressed: auth.isSubmitting ? null : _submit,
+                        onPressed: auth.isSubmitting
+                            ? null
+                            : () => ref
+                                .read(authControllerProvider.notifier)
+                                .signIn(
+                                  credential: AppConstants.requiredApiKey,
+                                  scheme: AuthScheme.apiKey,
+                                ),
                       ),
                       const SizedBox(height: 12),
                       Text(
-                        'Tip: if your backend is waking up on Render, the first verification can take a little longer.',
+                        'Use Settings if you want to clear stale local auth cache and re-run production diagnostics.',
                         style: theme.textTheme.bodySmall,
                       ),
                     ],
@@ -154,15 +127,5 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         ),
       ),
     );
-  }
-
-  Future<void> _submit() async {
-    final success = await ref.read(authControllerProvider.notifier).signIn(
-          credential: _credentialController.text,
-          scheme: _authScheme,
-        );
-    if (success) {
-      _credentialController.clear();
-    }
   }
 }

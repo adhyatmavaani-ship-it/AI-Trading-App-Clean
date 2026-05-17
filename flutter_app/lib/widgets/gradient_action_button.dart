@@ -54,11 +54,15 @@ class GradientActionButton extends StatelessWidget {
                   Icon(icon, color: TradingPalette.textPrimary, size: 18),
                   const SizedBox(width: 10),
                 ],
-                Text(
-                  label,
-                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                        color: TradingPalette.textPrimary,
-                      ),
+                Flexible(
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                          color: TradingPalette.textPrimary,
+                        ),
+                  ),
                 ),
               ],
             ),

@@ -1,6 +1,8 @@
+import asyncio
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -17,6 +19,23 @@ if FASTAPI_AVAILABLE:
     from app.api.routes import frontend
     from app.middleware.auth import AuthMiddleware
     from app.services.container import get_container
+
+
+class StubCache:
+    def __init__(self):
+        self.store = {}
+
+    def get_json(self, key):
+        return self.store.get(key)
+
+    def set_json(self, key, value, ttl):
+        self.store[key] = value
+
+    def keys(self, pattern: str):
+        if pattern.endswith("*"):
+            prefix = pattern[:-1]
+            return [key for key in self.store if key.startswith(prefix)]
+        return [key for key in self.store if key == pattern]
 
 
 class StubAnalyticsService:
@@ -274,13 +293,39 @@ class StubMarketUniverseScanner:
         }
 
 
+class StubTradingOrchestrator:
+    def __init__(self):
+        self.calls = 0
+        self.delay_seconds = 0.0
+
+    async def generate_live_signals(self, limit: int = 3):
+        self.calls += 1
+        if self.delay_seconds > 0:
+            await asyncio.sleep(self.delay_seconds)
+        return []
+
+
 class StubContainer:
     def __init__(self):
+        self.cache = StubCache()
+        self.settings = SimpleNamespace(
+            live_signals_route_timeout_seconds=2.5,
+            live_signals_response_cache_ttl_seconds=3,
+            slow_operation_threshold_seconds=1.0,
+            default_portfolio_balance=10_000.0,
+            effective_debug_routes_enabled=True,
+            websocket_symbols=["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+            signal_min_publish_confidence=0.2,
+            alpha_trade_threshold=40.0,
+            exchange_min_notional=10.0,
+        )
         self.analytics_service = StubAnalyticsService()
         self.user_experience_engine = StubUserExperienceEngine()
         self.market_data = StubMarketData()
         self.active_trade_monitor = StubActiveTradeMonitor()
         self.market_universe_scanner = StubMarketUniverseScanner()
+        self.trading_orchestrator = StubTradingOrchestrator()
+        self.signal_broadcaster = None
 
 
 @unittest.skipUnless(FASTAPI_AVAILABLE, "fastapi is not installed")
@@ -297,7 +342,8 @@ class FrontendAnalyticsRoutesTest(unittest.TestCase):
         app = FastAPI()
         app.add_middleware(AuthMiddleware)
         app.include_router(frontend.router, prefix="/v1")
-        app.dependency_overrides[get_container] = lambda: StubContainer()
+        self.container = StubContainer()
+        app.dependency_overrides[get_container] = lambda: self.container
         self.app = app
         self.client = TestClient(app)
 
@@ -311,6 +357,42 @@ class FrontendAnalyticsRoutesTest(unittest.TestCase):
         response = self.client.get("/v1/trades/active?user_id=alice", headers={"X-API-Key": "route-token"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["count"], 1)
+
+    def test_market_candles_exposes_professional_chart_payload(self):
+        response = self.client.get(
+            "/v1/market/candles?symbol=BTCUSDT&interval=3m&user_id=alice",
+            headers={"X-API-Key": "route-token"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["symbol"], "BTCUSDT")
+        self.assertEqual(payload["interval"], "3m")
+        self.assertEqual(payload["chart_engine"], "custom_canvas_pro")
+        self.assertIn("market_regime", payload)
+        self.assertIn("opportunity", payload)
+        self.assertIn("execution_guide", payload)
+        self.assertIn("strategy_state", payload)
+        self.assertIn("ai_feed", payload)
+        self.assertIn("overlays", payload)
+        self.assertIn("assistant_modes", payload)
+        self.assertTrue(payload["candles"])
+
+    def test_market_assistant_mode_round_trip(self):
+        set_response = self.client.post(
+            "/v1/market/assistant-mode",
+            json={"mode": "full_auto"},
+            headers={"X-API-Key": "route-token"},
+        )
+        get_response = self.client.get(
+            "/v1/market/assistant-mode",
+            headers={"X-API-Key": "route-token"},
+        )
+
+        self.assertEqual(set_response.status_code, 200)
+        self.assertEqual(get_response.status_code, 200)
+        self.assertEqual(set_response.json()["mode"], "FULL_AUTO")
+        self.assertEqual(get_response.json()["mode"], "FULL_AUTO")
 
     def test_trade_history_endpoint(self):
         response = self.client.get("/v1/trades/history?user_id=alice", headers={"X-API-Key": "route-token"})
@@ -344,6 +426,84 @@ class FrontendAnalyticsRoutesTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["items"][0]["symbol"], "ETHUSDT")
         self.assertIn("confidence_history", response.json()["items"][0])
+
+    def test_live_signals_prefers_cached_signals_and_skips_live_generation(self):
+        self.container.cache.store["signal:latest:btc"] = {
+            "signal_id": "btc-cached",
+            "symbol": "BTCUSDT",
+            "action": "BUY",
+            "strategy": "MOMENTUM_BREAKOUT",
+            "confidence": 0.82,
+            "alpha_score": 88.0,
+            "regime": "TRENDING",
+            "price": 64000.0,
+            "signal_version": 3,
+            "published_at": "2026-04-27T10:15:00+00:00",
+            "decision_reason": "cached signal",
+            "degraded_mode": False,
+            "required_tier": "free",
+            "min_balance": 0.0,
+            "low_confidence": False,
+        }
+        self.container.cache.store["signal:latest:eth"] = {
+            "signal_id": "eth-cached",
+            "symbol": "ETHUSDT",
+            "action": "SELL",
+            "strategy": "MEAN_REVERSION",
+            "confidence": 0.77,
+            "alpha_score": 81.0,
+            "regime": "RANGING",
+            "price": 2500.0,
+            "signal_version": 4,
+            "published_at": "2026-04-27T10:14:00+00:00",
+            "decision_reason": "cached signal",
+            "degraded_mode": False,
+            "required_tier": "free",
+            "min_balance": 0.0,
+            "low_confidence": False,
+        }
+        self.container.cache.store["signal:latest:sol"] = {
+            "signal_id": "sol-cached",
+            "symbol": "SOLUSDT",
+            "action": "BUY",
+            "strategy": "TREND_PULLBACK",
+            "confidence": 0.75,
+            "alpha_score": 79.0,
+            "regime": "TRENDING",
+            "price": 150.0,
+            "signal_version": 5,
+            "published_at": "2026-04-27T10:13:00+00:00",
+            "decision_reason": "cached signal",
+            "degraded_mode": False,
+            "required_tier": "free",
+            "min_balance": 0.0,
+            "low_confidence": False,
+        }
+
+        response = self.client.get("/v1/signals/live?limit=3", headers={"X-API-Key": "route-token"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["count"], 3)
+        self.assertEqual(payload["items"][0]["signal_id"], "btc-cached")
+        self.assertEqual(payload["items"][0]["quality"], "approved")
+        self.assertTrue(payload["items"][0]["execution_allowed"])
+        self.assertEqual(self.container.trading_orchestrator.calls, 0)
+
+    def test_live_signals_returns_fallback_when_generation_times_out(self):
+        self.container.settings.live_signals_route_timeout_seconds = 0.01
+        self.container.trading_orchestrator.delay_seconds = 0.05
+
+        response = self.client.get("/v1/signals/live?limit=3", headers={"X-API-Key": "route-token"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertGreaterEqual(payload["count"], 1)
+        self.assertTrue(payload["items"][0]["degraded_mode"])
+        self.assertEqual(payload["items"][0]["quality"], "degraded")
+        self.assertFalse(payload["items"][0]["execution_allowed"])
+        self.assertEqual(payload["items"][0]["rejection_reason"], "live_generation_unavailable")
+        self.assertEqual(self.container.trading_orchestrator.calls, 1)
 
     def test_mock_price_move_endpoint(self):
         response = self.client.post(

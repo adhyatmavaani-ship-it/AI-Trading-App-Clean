@@ -13,6 +13,10 @@ final systemHealthProvider = StreamProvider<SystemHealthModel>((ref) {
   return ref.watch(tradingRepositoryProvider).watchSystemHealth();
 });
 
+final infrastructureSnapshotProvider = StreamProvider((ref) {
+  return ref.watch(tradingRepositoryProvider).watchInfrastructureSnapshot();
+});
+
 final concentrationWindowProvider = StateProvider<String>((ref) => '24h');
 
 final concentrationHistoryProvider =

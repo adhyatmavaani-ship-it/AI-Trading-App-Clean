@@ -7,12 +7,14 @@ import '../models/active_trade.dart';
 import '../models/activity.dart';
 import '../models/batch.dart';
 import '../models/backtest_job.dart';
+import '../models/infrastructure_snapshot.dart';
 import '../models/meta_analytics.dart';
 import '../models/meta_decision.dart';
 import '../models/market_chart.dart';
 import '../models/market_summary.dart';
 import '../models/portfolio_concentration.dart';
 import '../models/public_dashboard.dart';
+import '../models/realtime_event.dart';
 import '../models/signal.dart';
 import '../models/system_diagnostics.dart';
 import '../models/system_health.dart';
@@ -55,14 +57,40 @@ class TradingRepository {
     required String symbol,
     String interval = '5m',
     int limit = 96,
-    String userId = 'alice',
+    String? userId,
   }) {
     return _apiClient.getMarketCandles(
       symbol: symbol,
       interval: interval,
       limit: limit,
-      userId: userId,
+      userId: userId ?? AppConstants.requiredUserId,
     );
+  }
+
+  Future<void> prefetchMarketContext({
+    required String symbol,
+    required String interval,
+    String? userId,
+  }) async {
+    final neighbors = _neighborIntervals(interval);
+    if (neighbors.isEmpty) {
+      return;
+    }
+    try {
+      await Future.wait(
+        neighbors.map(
+          (neighbor) => _apiClient.getMarketCandles(
+            symbol: symbol,
+            interval: neighbor,
+            limit: 96,
+            userId: userId ?? AppConstants.requiredUserId,
+          ),
+        ),
+        eagerError: false,
+      );
+    } catch (_) {
+      // Prefetch is opportunistic; foreground chart fetch remains authoritative.
+    }
   }
 
   Future<RiskCoachOhlcResponse> fetchRiskCoachOhlc() {
@@ -151,6 +179,14 @@ class TradingRepository {
     return _apiClient.getMarketSummary(limit: limit);
   }
 
+  Future<String> fetchAssistantMode() {
+    return _apiClient.getAssistantMode();
+  }
+
+  Future<String> setAssistantMode(String mode) {
+    return _apiClient.setAssistantMode(mode);
+  }
+
   Future<Map<String, dynamic>> fetchRiskProfile(String userId) {
     return _apiClient.getRiskProfile(userId);
   }
@@ -222,15 +258,116 @@ class TradingRepository {
   }
 
   Stream<List<ActiveTradeModel>> watchActiveTrades(String userId) async* {
-    yield await fetchActiveTrades(userId);
-    while (true) {
-      await Future<void>.delayed(AppConstants.pollingInterval);
-      yield await fetchActiveTrades(userId);
+    final controller = StreamController<List<ActiveTradeModel>>();
+    Timer? fallbackTimer;
+    Timer? debounceTimer;
+    StreamSubscription<RealtimeTradeUpdateModel>? tradeSubscription;
+    List<ActiveTradeModel> latestTrades = const <ActiveTradeModel>[];
+    bool refreshInFlight = false;
+
+    Future<void> refresh() async {
+      if (refreshInFlight) {
+        return;
+      }
+      refreshInFlight = true;
+      try {
+        latestTrades = await fetchActiveTrades(userId);
+        if (!controller.isClosed) {
+          controller.add(latestTrades);
+        }
+      } catch (error, stackTrace) {
+        if (!controller.isClosed) {
+          controller.addError(error, stackTrace);
+        }
+      } finally {
+        refreshInFlight = false;
+      }
     }
+
+    void scheduleRefresh() {
+      debounceTimer?.cancel();
+      debounceTimer = Timer(const Duration(milliseconds: 350), () {
+        unawaited(refresh());
+      });
+    }
+
+    unawaited(refresh());
+    tradeSubscription = watchTradeUpdates(userId: userId).listen(
+      (event) {
+        if (event.status.toUpperCase() == 'REJECTED' && latestTrades.isEmpty) {
+          return;
+        }
+        scheduleRefresh();
+      },
+      onError: controller.addError,
+    );
+    fallbackTimer = Timer.periodic(
+      AppConstants.realtimeFallbackPollingInterval,
+      (_) => unawaited(refresh()),
+    );
+
+    controller.onCancel = () async {
+      fallbackTimer?.cancel();
+      debounceTimer?.cancel();
+      await tradeSubscription?.cancel();
+    };
+    yield* controller.stream;
   }
 
   Stream<ActivityItemModel> watchActivity() {
     return _webSocketService.connectActivity();
+  }
+
+  Stream<RealtimeTradeUpdateModel> watchTradeUpdates({String? userId}) {
+    final targetUserId = userId?.trim();
+    return _webSocketService.connectTradeUpdates().where(
+          (event) => targetUserId == null || event.matchesUser(targetUserId),
+        );
+  }
+
+  Stream<RealtimePortfolioUpdateModel> watchPortfolioUpdates({
+    String? userId,
+  }) {
+    final targetUserId = userId?.trim();
+    return _webSocketService.connectPortfolioUpdates().where(
+          (event) => targetUserId == null || event.matchesUser(targetUserId),
+        );
+  }
+
+  Stream<DashboardRealtimeSummaryModel> watchDashboardSummaries({
+    String? userId,
+  }) {
+    final targetUserId = userId?.trim();
+    return _webSocketService.connectDashboardSummaries().where(
+          (event) => targetUserId == null || event.matchesUser(targetUserId),
+        );
+  }
+
+  Stream<ChartRealtimeSnapshotModel> watchChartSnapshots({
+    String? symbol,
+  }) {
+    final normalized = symbol?.trim().toUpperCase();
+    return _webSocketService.connectChartSnapshots().where(
+          (event) =>
+              normalized == null || event.symbol.toUpperCase() == normalized,
+        );
+  }
+
+  Stream<AiTradeFeedRealtimeModel> watchAiTradeFeed({
+    String? symbol,
+  }) {
+    final normalized = symbol?.trim().toUpperCase();
+    return _webSocketService.connectAiTradeFeed().where(
+          (event) =>
+              normalized == null || event.symbol.toUpperCase() == normalized,
+        );
+  }
+
+  Stream<Map<String, dynamic>> watchRecoveryRequests() {
+    return _webSocketService.connectEvents().where(
+          (event) => event['type'] == 'replay_response' &&
+              event['recovery'] == 'snapshot_required',
+        );
   }
 
   Stream<List<ActivityItemModel>> watchActivityHistory(
@@ -250,6 +387,23 @@ class TradingRepository {
     }
   }
 
+  List<String> _neighborIntervals(String interval) {
+    const ladder = <String>['1m', '3m', '5m', '15m', '1h'];
+    final normalized = interval.trim().toLowerCase();
+    final index = ladder.indexOf(normalized);
+    if (index < 0) {
+      return const <String>[];
+    }
+    final neighbors = <String>{};
+    if (index > 0) {
+      neighbors.add(ladder[index - 1]);
+    }
+    if (index < ladder.length - 1) {
+      neighbors.add(ladder[index + 1]);
+    }
+    return neighbors.toList(growable: false);
+  }
+
   Future<List<BatchModel>> fetchBatches({int limit = 25}) {
     return _apiClient.getBatches(limit: limit);
   }
@@ -258,6 +412,10 @@ class TradingRepository {
     TradeExecutionRequestModel request,
   ) {
     return _apiClient.executeTrade(request);
+  }
+
+  Future<TradeEvaluationModel> fetchTradeEvaluation(String symbol) {
+    return _apiClient.getTradeEvaluation(symbol);
   }
 
   Future<BacktestJobStatusModel> runBacktest(
@@ -304,11 +462,94 @@ class TradingRepository {
   }
 
   Stream<UserPnLModel> watchUserPnL(String userId) async* {
-    yield await fetchUserPnL(userId);
-    while (true) {
-      await Future<void>.delayed(AppConstants.pollingInterval);
-      yield await fetchUserPnL(userId);
+    final controller = StreamController<UserPnLModel>();
+    Timer? fallbackTimer;
+    Timer? debounceTimer;
+    StreamSubscription<RealtimePortfolioUpdateModel>? portfolioSubscription;
+    StreamSubscription<RealtimeTradeUpdateModel>? tradeSubscription;
+    UserPnLModel? latest;
+    bool refreshInFlight = false;
+
+    Future<void> refresh() async {
+      if (refreshInFlight) {
+        return;
+      }
+      refreshInFlight = true;
+      try {
+        latest = await fetchUserPnL(userId);
+        if (!controller.isClosed && latest != null) {
+          controller.add(latest!);
+        }
+      } catch (error, stackTrace) {
+        if (!controller.isClosed) {
+          controller.addError(error, stackTrace);
+        }
+      } finally {
+        refreshInFlight = false;
+      }
     }
+
+    void scheduleRefresh() {
+      debounceTimer?.cancel();
+      debounceTimer = Timer(const Duration(milliseconds: 350), () {
+        unawaited(refresh());
+      });
+    }
+
+    unawaited(refresh());
+    portfolioSubscription = watchPortfolioUpdates(userId: userId).listen(
+      (event) {
+        final current = latest;
+        if (current == null) {
+          scheduleRefresh();
+          return;
+        }
+        final summary = event.summary;
+        final startingEquity = current.startingEquity == 0
+            ? summary.currentEquity
+            : current.startingEquity;
+        final absolutePnl = summary.currentEquity - startingEquity;
+        latest = current.copyWith(
+          currentEquity: summary.currentEquity,
+          peakEquity: summary.peakEquity,
+          rollingDrawdown: summary.rollingDrawdown,
+          protectionState: summary.protectionState,
+          activeTrades: summary.activeTrades,
+          absolutePnl: absolutePnl,
+          pnlPct: startingEquity == 0 ? 0 : absolutePnl / startingEquity,
+          realizedPnl: summary.realizedPnl,
+          unrealizedPnl: summary.unrealizedPnl,
+          grossExposure: summary.grossExposure,
+          openNotional: summary.openNotional,
+        );
+        if (!controller.isClosed && latest != null) {
+          controller.add(latest!);
+        }
+      },
+      onError: controller.addError,
+    );
+    tradeSubscription = watchTradeUpdates(userId: userId).listen(
+      (event) {
+        final status = event.status.toUpperCase();
+        if (status == 'REJECTED') {
+          return;
+        }
+        scheduleRefresh();
+      },
+      onError: controller.addError,
+    );
+    fallbackTimer = Timer.periodic(
+      AppConstants.realtimeFallbackPollingInterval,
+      (_) => unawaited(refresh()),
+    );
+
+    controller.onCancel = () async {
+      fallbackTimer?.cancel();
+      debounceTimer?.cancel();
+      await portfolioSubscription?.cancel();
+      await tradeSubscription?.cancel();
+    };
+    yield* controller.stream;
   }
 
   Future<TradeTimelineModel> fetchTradeTimeline(String tradeId) {
@@ -317,6 +558,10 @@ class TradingRepository {
 
   Future<SystemHealthModel> fetchSystemHealth() {
     return _apiClient.getSystemHealth();
+  }
+
+  Future<InfrastructureSnapshotModel> fetchInfrastructureSnapshot() {
+    return _apiClient.getInfrastructureSnapshot();
   }
 
   Future<PortfolioConcentrationHistoryModel> fetchConcentrationHistory({
@@ -384,6 +629,14 @@ class TradingRepository {
     while (true) {
       await Future<void>.delayed(AppConstants.pollingInterval);
       yield await fetchSystemHealth();
+    }
+  }
+
+  Stream<InfrastructureSnapshotModel> watchInfrastructureSnapshot() async* {
+    yield await fetchInfrastructureSnapshot();
+    while (true) {
+      await Future<void>.delayed(AppConstants.websocketIntegrityCheckInterval);
+      yield await fetchInfrastructureSnapshot();
     }
   }
 

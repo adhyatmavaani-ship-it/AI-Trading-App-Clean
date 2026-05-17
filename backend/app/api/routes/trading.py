@@ -14,6 +14,127 @@ from app.services.container import ServiceContainer, get_container
 router = APIRouter(prefix="/trading", tags=["Trading"])
 
 
+def _http_exception_from_trading_error(exc, *, correlation_id: str) -> HTTPException:
+    detail = exc.to_dict()
+    details = dict(detail.get("details") or {})
+    details.setdefault("correlation_id", correlation_id)
+    detail["details"] = details
+    return HTTPException(status_code=exc.status_code, detail=detail)
+
+
+def _map_execution_value_error(exc: ValueError, *, request: TradeRequest, correlation_id: str):
+    message = str(exc).strip() or "Trade execution validation failed"
+    normalized = message.lower()
+    details = {
+        "symbol": request.symbol.upper(),
+        "side": request.side.upper(),
+        "correlation_id": correlation_id,
+    }
+
+    if message == "quantity or requested_notional is required":
+        return ValidationError(message, error_code="MISSING_EXECUTION_SIZE", details=details)
+    if message == "limit_price is required for LIMIT orders":
+        return ValidationError(message, error_code="MISSING_LIMIT_PRICE", details=details)
+    if message == "Trading is paused by drawdown protection":
+        return StateError(message, error_code="DRAWDOWN_PAUSE_ACTIVE", details=details)
+    if message.startswith("Trading is paused by emergency stop:"):
+        details["stop_reason"] = message.split(":", 1)[1].strip() or "manual"
+        return StateError(message, error_code="EMERGENCY_STOP_ACTIVE", details=details)
+    if message == "Trading is paused because execution latency is degraded":
+        return StateError(message, error_code="EXECUTION_DEGRADED", details=details)
+    if message == "Trade confidence is below the strict execution floor":
+        details["confidence"] = float(request.confidence)
+        details["required_confidence"] = float(
+            request.feature_snapshot.get(
+                "paper_trade_confidence_floor",
+                request.feature_snapshot.get("strict_trade_confidence", request.confidence),
+            )
+            or request.confidence
+        )
+        return RiskLimitExceededError(message, error_code="CONFIDENCE_TOO_LOW", details=details)
+    if message.startswith("Risk profile ") and " blocks " in message:
+        details["symbol"] = request.symbol.upper()
+        return RiskLimitExceededError(message, error_code="SYMBOL_NOT_ALLOWED", details=details)
+    if message == "Security scanner blocked trade":
+        return ValidationError(message, error_code="SYMBOL_NOT_TRADABLE", details=details)
+    if message == "Whale tracker vetoed conflicting trade":
+        return RiskLimitExceededError(message, error_code="WHALE_CONFLICT_VETO", details=details)
+    if message == "Capital protection disabled trading":
+        return StateError(message, error_code="CAPITAL_PROTECTION_DISABLED", details=details)
+    if normalized.startswith("trade probability ") and " below threshold " in normalized:
+        return RiskLimitExceededError(message, error_code="TRADE_PROBABILITY_TOO_LOW", details=details)
+    if message.startswith("Strict trade gate rejected trade:"):
+        details["strict_trade_reason"] = message.split(":", 1)[1].strip()
+        return RiskLimitExceededError(message, error_code="STRICT_GATE_BLOCKED", details=details)
+    if message.startswith("Meta controller blocked trade:"):
+        raw_reasons = message.split(":", 1)[1].strip()
+        details["reasons"] = [item.strip() for item in raw_reasons.split(",") if item.strip()]
+        return RiskLimitExceededError(message, error_code="META_CONTROLLER_BLOCKED", details=details)
+    if message.startswith("Micro mode rejected trade:"):
+        raw_reasons = message.split(":", 1)[1].strip()
+        reasons = [item.strip() for item in raw_reasons.split(",") if item.strip()]
+        details["reasons"] = reasons
+        if "loss_cooldown" in reasons:
+            return RiskLimitExceededError(message, error_code="COOLDOWN_ACTIVE", details=details)
+        if "slippage_too_high" in reasons:
+            return RiskLimitExceededError(message, error_code="SLIPPAGE_UNSAFE", details=details)
+        if "daily_loss_limit" in reasons:
+            return RiskLimitExceededError(message, error_code="DAILY_LOSS_LIMIT_REACHED", details=details)
+        return RiskLimitExceededError(message, error_code="MICRO_MODE_BLOCKED", details=details)
+    if message == "below_exchange_minimum":
+        return ValidationError("Order size is below exchange minimum", error_code="MIN_NOTIONAL_NOT_MET", details=details)
+    if message == "User protection controls reduced trade allocation to zero":
+        return RiskLimitExceededError(message, error_code="INSUFFICIENT_ALLOCATABLE_BALANCE", details=details)
+    if "portfolio exposure limit reached" in normalized:
+        return RiskLimitExceededError(message, error_code="EXPOSURE_EXCEEDED", details=details)
+    if "portfolio side exposure limit reached" in normalized:
+        return RiskLimitExceededError(message, error_code="SIDE_EXPOSURE_EXCEEDED", details=details)
+    if "portfolio theme exposure limit reached" in normalized:
+        return RiskLimitExceededError(message, error_code="THEME_EXPOSURE_EXCEEDED", details=details)
+    if "portfolio cluster exposure limit reached" in normalized:
+        return RiskLimitExceededError(message, error_code="CLUSTER_EXPOSURE_EXCEEDED", details=details)
+    if "portfolio beta bucket exposure limit reached" in normalized:
+        return RiskLimitExceededError(message, error_code="BETA_BUCKET_EXCEEDED", details=details)
+    if "portfolio concentration limit reached" in normalized:
+        return RiskLimitExceededError(message, error_code="PORTFOLIO_CONCENTRATION_LIMIT", details=details)
+    if "portfolio controls reduced trade below minimum notional" in normalized:
+        return ValidationError(message, error_code="MIN_NOTIONAL_NOT_MET", details=details)
+    if "daily loss limit reached" in normalized:
+        return RiskLimitExceededError(message, error_code="DAILY_LOSS_LIMIT_REACHED", details=details)
+    if "emergency stop is active" in normalized:
+        return StateError(message, error_code="EMERGENCY_STOP_ACTIVE", details=details)
+    if "requested limit price exceeds slippage guardrail" in normalized:
+        return RiskLimitExceededError(message, error_code="SLIPPAGE_UNSAFE", details=details)
+    if "order does not satisfy exchange minimum notional" in normalized:
+        return ValidationError(message, error_code="MIN_NOTIONAL_NOT_MET", details=details)
+    if message.startswith("Trade safety validation failed:"):
+        raw_reasons = message.split(":", 1)[1].strip()
+        details["reasons"] = [item.strip() for item in raw_reasons.split(",") if item.strip()]
+        if "slippage" in normalized:
+            return RiskLimitExceededError(message, error_code="SLIPPAGE_UNSAFE", details=details)
+        if "volatility" in normalized:
+            return RiskLimitExceededError(message, error_code="VOLATILITY_TOO_HIGH", details=details)
+        if "liquidity coverage" in normalized:
+            return RiskLimitExceededError(message, error_code="LIQUIDITY_INSUFFICIENT", details=details)
+        return RiskLimitExceededError(message, error_code="TRADE_SAFETY_REJECTED", details=details)
+    return ValidationError(message, error_code="EXECUTION_VALIDATION_FAILED", details=details)
+
+
+def _map_execution_runtime_error(exc: RuntimeError, *, request: TradeRequest, correlation_id: str):
+    message = str(exc).strip() or "Execution service is unavailable"
+    details = {
+        "symbol": request.symbol.upper(),
+        "side": request.side.upper(),
+        "correlation_id": correlation_id,
+    }
+    normalized = message.lower()
+    if "live execution is unavailable" in normalized or "no exchange clients available" in normalized:
+        return ExecutionError(message, error_code="BROKER_UNAVAILABLE", details=details)
+    if "not initialized" in normalized:
+        return ExecutionError(message, error_code="BROKER_UNAVAILABLE", details=details)
+    return ExecutionError(message, error_code="EXECUTION_RUNTIME_ERROR", details=details)
+
+
 def _authorize_trade_user(http_request: Request, requested_user_id: str) -> tuple[str, str]:
     authenticated_user_id = get_user_id(http_request)
     normalized_requested_user_id = requested_user_id.strip()
@@ -84,13 +205,25 @@ async def execute_trade(
 
         return await container.trading_orchestrator.execute_signal(request)
     except AuthenticationError as exc:
-        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+        detail = exc.to_dict()
+        details = dict(detail.get("details") or {})
+        details.setdefault("correlation_id", correlation_id)
+        detail["details"] = details
+        raise HTTPException(status_code=403, detail=detail) from exc
     except ValidationError as exc:
-        raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
+        raise _http_exception_from_trading_error(exc, correlation_id=correlation_id) from exc
+    except ValueError as exc:
+        mapped = _map_execution_value_error(exc, request=request, correlation_id=correlation_id)
+        raise _http_exception_from_trading_error(mapped, correlation_id=correlation_id) from exc
     except RiskLimitExceededError as exc:
-        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+        raise _http_exception_from_trading_error(exc, correlation_id=correlation_id) from exc
+    except ExecutionError as exc:
+        raise _http_exception_from_trading_error(exc, correlation_id=correlation_id) from exc
+    except RuntimeError as exc:
+        mapped = _map_execution_runtime_error(exc, request=request, correlation_id=correlation_id)
+        raise _http_exception_from_trading_error(mapped, correlation_id=correlation_id) from exc
     except StateError as exc:
-        raise HTTPException(status_code=409, detail=exc.to_dict()) from exc
+        raise _http_exception_from_trading_error(exc, correlation_id=correlation_id) from exc
     except Exception as exc:  # pragma: no cover
         await container.alerting_service.send(
             "Trade execution failed",

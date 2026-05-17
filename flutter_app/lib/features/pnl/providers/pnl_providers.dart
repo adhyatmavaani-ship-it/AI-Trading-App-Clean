@@ -1,23 +1,25 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/constants.dart';
 import '../../../models/active_trade.dart';
 import '../../../models/user_pnl.dart';
 import '../../../providers/app_providers.dart';
 
 final userPnLProvider =
-    StreamProvider.family<UserPnLModel, String>((ref, userId) {
+    StreamProvider.autoDispose.family<UserPnLModel, String>((ref, userId) {
   return ref.watch(tradingRepositoryProvider).watchUserPnL(userId);
 });
 
-final activeUserIdProvider = StateProvider<String>((ref) => 'alice');
+final activeUserIdProvider =
+    StateProvider<String>((ref) => AppConstants.requiredUserId);
 
 final activeTradesProvider =
-    StreamProvider.family<List<ActiveTradeModel>, String>((ref, userId) {
+    StreamProvider.autoDispose.family<List<ActiveTradeModel>, String>((ref, userId) {
   return ref.watch(tradingRepositoryProvider).watchActiveTrades(userId);
 });
 
 final equityCurveProvider =
-    StreamProvider.family<List<UserPnLModel>, String>((ref, userId) async* {
+    StreamProvider.autoDispose.family<List<UserPnLModel>, String>((ref, userId) async* {
   final history = <UserPnLModel>[];
   await for (final snapshot
       in ref.watch(tradingRepositoryProvider).watchUserPnL(userId)) {

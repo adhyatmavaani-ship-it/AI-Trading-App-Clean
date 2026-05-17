@@ -58,6 +58,144 @@ class TradeExecutionRequestModel {
   }
 }
 
+class TradeEvaluationSnapshotModel {
+  const TradeEvaluationSnapshotModel({
+    required this.price,
+    required this.regime,
+    required this.featureSnapshot,
+  });
+
+  final double price;
+  final String regime;
+  final Map<String, double> featureSnapshot;
+
+  factory TradeEvaluationSnapshotModel.fromJson(Map<String, dynamic> json) {
+    final rawFeatures =
+        json['features'] as Map<dynamic, dynamic>? ?? const <dynamic, dynamic>{};
+    return TradeEvaluationSnapshotModel(
+      price: (json['price'] as num?)?.toDouble() ?? 0,
+      regime: json['regime'] as String? ?? 'UNKNOWN',
+      featureSnapshot: rawFeatures.map(
+        (key, value) => MapEntry(
+          key.toString(),
+          value is num ? value.toDouble() : 0,
+        ),
+      ),
+    );
+  }
+}
+
+class TradeEvaluationInferenceModel {
+  const TradeEvaluationInferenceModel({
+    required this.decision,
+    required this.confidenceScore,
+    required this.tradeProbability,
+    required this.expectedReturn,
+    required this.expectedRisk,
+    required this.reason,
+  });
+
+  final String decision;
+  final double confidenceScore;
+  final double tradeProbability;
+  final double expectedReturn;
+  final double expectedRisk;
+  final String reason;
+
+  factory TradeEvaluationInferenceModel.fromJson(Map<String, dynamic> json) {
+    return TradeEvaluationInferenceModel(
+      decision: json['decision'] as String? ?? 'HOLD',
+      confidenceScore: (json['confidence_score'] as num?)?.toDouble() ?? 0,
+      tradeProbability: (json['trade_probability'] as num?)?.toDouble() ?? 0,
+      expectedReturn: (json['expected_return'] as num?)?.toDouble() ?? 0,
+      expectedRisk: (json['expected_risk'] as num?)?.toDouble() ?? 0,
+      reason: json['reason'] as String? ?? '',
+    );
+  }
+}
+
+class TradeEvaluationAlphaDecisionModel {
+  const TradeEvaluationAlphaDecisionModel({
+    required this.finalScore,
+    required this.allowTrade,
+    required this.expectedReturn,
+    required this.netExpectedReturn,
+    required this.riskScore,
+    required this.executionCostTotal,
+  });
+
+  final double finalScore;
+  final bool allowTrade;
+  final double expectedReturn;
+  final double netExpectedReturn;
+  final double riskScore;
+  final double executionCostTotal;
+
+  factory TradeEvaluationAlphaDecisionModel.fromJson(
+    Map<String, dynamic> json,
+  ) {
+    return TradeEvaluationAlphaDecisionModel(
+      finalScore: (json['final_score'] as num?)?.toDouble() ?? 0,
+      allowTrade: json['allow_trade'] as bool? ?? false,
+      expectedReturn: (json['expected_return'] as num?)?.toDouble() ?? 0,
+      netExpectedReturn: (json['net_expected_return'] as num?)?.toDouble() ?? 0,
+      riskScore: (json['risk_score'] as num?)?.toDouble() ?? 0,
+      executionCostTotal:
+          (json['execution_cost_total'] as num?)?.toDouble() ?? 0,
+    );
+  }
+}
+
+class TradeEvaluationModel {
+  const TradeEvaluationModel({
+    required this.symbol,
+    required this.strategy,
+    required this.timeframe,
+    required this.riskBudget,
+    required this.rolloutCapitalFraction,
+    required this.snapshot,
+    required this.inference,
+    required this.alphaDecision,
+  });
+
+  final String symbol;
+  final String strategy;
+  final String timeframe;
+  final double riskBudget;
+  final double rolloutCapitalFraction;
+  final TradeEvaluationSnapshotModel snapshot;
+  final TradeEvaluationInferenceModel inference;
+  final TradeEvaluationAlphaDecisionModel alphaDecision;
+
+  bool get allowTrade => alphaDecision.allowTrade;
+  String get approvedSide => inference.decision.toUpperCase();
+  double get confidenceScore => inference.confidenceScore;
+  String get reason => inference.reason;
+  double get alphaScore => alphaDecision.finalScore;
+
+  factory TradeEvaluationModel.fromJson(Map<String, dynamic> json) {
+    return TradeEvaluationModel(
+      symbol: json['symbol'] as String? ?? '',
+      strategy: json['strategy'] as String? ?? 'NO_TRADE',
+      timeframe: json['timeframe'] as String? ?? 'multi',
+      riskBudget: (json['risk_budget'] as num?)?.toDouble() ?? 0,
+      rolloutCapitalFraction:
+          (json['rollout_capital_fraction'] as num?)?.toDouble() ?? 0,
+      snapshot: TradeEvaluationSnapshotModel.fromJson(
+        (json['snapshot'] as Map<String, dynamic>?) ?? const <String, dynamic>{},
+      ),
+      inference: TradeEvaluationInferenceModel.fromJson(
+        (json['inference'] as Map<String, dynamic>?) ??
+            const <String, dynamic>{},
+      ),
+      alphaDecision: TradeEvaluationAlphaDecisionModel.fromJson(
+        (json['alpha_decision'] as Map<String, dynamic>?) ??
+            const <String, dynamic>{},
+      ),
+    );
+  }
+}
+
 class TradeExecutionResponseModel {
   const TradeExecutionResponseModel({
     required this.tradeId,

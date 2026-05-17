@@ -3,10 +3,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/trading_palette.dart';
 import '../features/market/providers/market_providers.dart';
+import '../features/retention/providers/retention_providers.dart';
+import '../features/trade/providers/trade_providers.dart';
 import '../models/signal.dart';
 import '../widgets/live_pulse_indicator.dart';
 import 'ai_signal_screen.dart';
 import 'dashboard_screen.dart';
+import 'onboarding_screen.dart';
 import 'portfolio_screen.dart';
 import 'settings_screen.dart';
 import 'trade_screen.dart';
@@ -25,6 +28,10 @@ class _AppShellState extends ConsumerState<AppShell> {
 
   @override
   Widget build(BuildContext context) {
+    final onboardingCompleted = ref.watch(onboardingCompletedProvider);
+    if (!onboardingCompleted) {
+      return const OnboardingScreen();
+    }
     return LayoutBuilder(
       builder: (context, constraints) {
         final desktop = constraints.maxWidth >= 1080;
@@ -154,6 +161,7 @@ class _AppShellState extends ConsumerState<AppShell> {
         return DashboardScreen(
           onOpenSignals: () => _selectDestination(AppDestination.signals),
           onOpenTrade: _openTrade,
+          onOpenTradeSignal: _openTradeWithSignal,
         );
       case AppDestination.signals:
         return AiSignalScreen(onExecuteSignal: _openTradeWithSignal);
@@ -168,11 +176,17 @@ class _AppShellState extends ConsumerState<AppShell> {
 
   void _openTrade(String symbol) {
     ref.read(selectedMarketSymbolProvider.notifier).state = symbol;
+    ref.read(selectedTradeIntentProvider.notifier).state = null;
+    ref.read(localAiMemoryProvider.notifier).recordAsset(symbol);
     _selectDestination(AppDestination.trade);
   }
 
   void _openTradeWithSignal(SignalModel signal) {
     ref.read(selectedMarketSymbolProvider.notifier).state = signal.symbol;
+    ref.read(selectedTradeIntentProvider.notifier).state =
+        TradeIntent.fromSignal(signal);
+    ref.read(localAiMemoryProvider.notifier).recordAsset(signal.symbol);
+    ref.read(localAiMemoryProvider.notifier).recordMode(signal.strategy);
     _selectDestination(AppDestination.trade);
   }
 
@@ -240,11 +254,7 @@ class _DesktopSidebar extends StatelessWidget {
         icon: Icons.account_balance_wallet,
         label: 'Portfolio'
       ),
-      (
-        value: AppDestination.settings,
-        icon: Icons.settings,
-        label: 'Settings'
-      ),
+      (value: AppDestination.settings, icon: Icons.settings, label: 'Settings'),
     ];
 
     return Container(
@@ -296,7 +306,7 @@ class _DesktopSidebar extends StatelessWidget {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  'Render-connected mobile + desktop trading cockpit with live signals and diagnostics.',
+                  'VPS-connected mobile + desktop trading cockpit with live signals and diagnostics.',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ],
@@ -344,7 +354,7 @@ class _ShellHeader extends StatelessWidget {
             ),
           ),
           const LivePulseIndicator(
-            label: 'RENDER LIVE',
+            label: 'VPS LIVE',
             color: TradingPalette.electricBlue,
           ),
         ],

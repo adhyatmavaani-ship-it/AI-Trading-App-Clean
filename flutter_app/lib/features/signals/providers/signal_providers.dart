@@ -16,10 +16,11 @@ class SignalFeedState {
   SignalFeedState copyWith({
     List<SignalModel>? items,
     Object? lastError,
+    bool clearError = false,
   }) {
     return SignalFeedState(
       items: items ?? this.items,
-      lastError: lastError ?? this.lastError,
+      lastError: clearError ? null : (lastError ?? this.lastError),
     );
   }
 }
@@ -30,13 +31,16 @@ class SignalFeedNotifier extends StateNotifier<SignalFeedState> {
   void hydrate(List<SignalModel> initial) {
     final deduped = _dedupe(initial);
     state = state.copyWith(
-        items: deduped.take(AppConstants.maxSignalCacheSize).toList());
+      items: deduped.take(AppConstants.maxSignalCacheSize).toList(),
+      clearError: true,
+    );
   }
 
   void ingest(SignalModel signal) {
     final current = <SignalModel>[signal, ...state.items];
     state = state.copyWith(
       items: _dedupe(current).take(AppConstants.maxSignalCacheSize).toList(),
+      clearError: true,
     );
   }
 
@@ -69,5 +73,15 @@ final signalStreamProvider = StreamProvider<SignalModel>((ref) {
 
 final signalFeedProvider =
     StateNotifierProvider<SignalFeedNotifier, SignalFeedState>((ref) {
-  return SignalFeedNotifier();
+  final notifier = SignalFeedNotifier();
+  ref.listen<AsyncValue<List<SignalModel>>>(initialSignalsProvider,
+      (previous, next) {
+    next.whenData(notifier.hydrate);
+    next.whenOrNull(error: (error, _) => notifier.setError(error));
+  });
+  ref.listen<AsyncValue<SignalModel>>(signalStreamProvider, (previous, next) {
+    next.whenData(notifier.ingest);
+    next.whenOrNull(error: (error, _) => notifier.setError(error));
+  });
+  return notifier;
 });

@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/api_exception.dart';
 import '../../../core/auth_credentials_store.dart';
 import '../../../core/constants.dart';
+import '../../../core/error_mapper.dart';
 import '../../../providers/app_bootstrap_provider.dart';
 import '../../../providers/app_providers.dart';
 
@@ -13,6 +14,7 @@ class AuthState {
     this.isLoading = false,
     this.isSubmitting = false,
     this.isAuthenticated = false,
+    this.isDegraded = false,
     this.errorMessage,
     this.session,
   });
@@ -20,6 +22,7 @@ class AuthState {
   final bool isLoading;
   final bool isSubmitting;
   final bool isAuthenticated;
+  final bool isDegraded;
   final String? errorMessage;
   final AuthSession? session;
 
@@ -27,6 +30,7 @@ class AuthState {
     bool? isLoading,
     bool? isSubmitting,
     bool? isAuthenticated,
+    bool? isDegraded,
     String? errorMessage,
     bool clearError = false,
     AuthSession? session,
@@ -35,6 +39,7 @@ class AuthState {
       isLoading: isLoading ?? this.isLoading,
       isSubmitting: isSubmitting ?? this.isSubmitting,
       isAuthenticated: isAuthenticated ?? this.isAuthenticated,
+      isDegraded: isDegraded ?? this.isDegraded,
       errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
       session: session ?? this.session,
     );
@@ -47,7 +52,8 @@ class AuthController extends StateNotifier<AuthState> {
         super(
           AuthState(
             isLoading: true,
-            isAuthenticated: AppConstants.defaultApiKey.trim().isNotEmpty,
+            isAuthenticated: true,
+            isDegraded: AppConstants.defaultApiKey.trim().isEmpty,
           ),
         ) {
     _restoreSession();
@@ -56,16 +62,45 @@ class AuthController extends StateNotifier<AuthState> {
   final Ref _ref;
   final AuthCredentialsStore _credentialsStore;
 
+  bool get _embeddedProductionAuthEnabled =>
+      AppConstants.hasEmbeddedProductionAuth;
+
   Future<void> _restoreSession() async {
     final session = await _credentialsStore.loadSession();
-    final isAuthenticated =
-        session != null || AppConstants.defaultApiKey.trim().isNotEmpty;
+    if (session != null) {
+      track('auth_legacy_session_cleared');
+      await _credentialsStore.clear();
+    }
+    var healthOk = false;
+    if (_embeddedProductionAuthEnabled) {
+      try {
+        final payload = await _ref.read(apiClientProvider).getHealthStatus();
+        healthOk = (payload['status'] as String?)?.trim().isNotEmpty == true;
+      } catch (error, stackTrace) {
+        logError(error, stackTrace: stackTrace);
+      }
+    }
+    const isAuthenticated = true;
+    final isDegraded = !_embeddedProductionAuthEnabled || !healthOk;
+    track(
+      'auth_restore',
+      <String, dynamic>{
+        'authenticated': isAuthenticated,
+        'degraded': isDegraded,
+        'session_scheme': 'required_api_key',
+        'health_ok': healthOk,
+      },
+    );
     state = AuthState(
       isLoading: false,
       isAuthenticated: isAuthenticated,
-      session: session,
+      isDegraded: isDegraded,
+      errorMessage: isDegraded
+          ? 'Realtime connection is recovering. Paper trading and AI advisory mode are available.'
+          : null,
+      session: null,
     );
-    if (isAuthenticated) {
+    if (!isDegraded) {
       _primeAuthenticatedData();
     }
   }
@@ -74,26 +109,19 @@ class AuthController extends StateNotifier<AuthState> {
     required String credential,
     required AuthScheme scheme,
   }) async {
-    final normalized = credential.trim();
-    if (normalized.isEmpty) {
-      state = state.copyWith(
-        isSubmitting: false,
-        isAuthenticated: false,
-        errorMessage: 'Enter your API key or bearer token to continue.',
-        clearError: true,
-        session: null,
-      );
-      return false;
-    }
-
-    final session = AuthSession(accessToken: normalized, scheme: scheme);
     state = state.copyWith(
       isSubmitting: true,
       clearError: true,
-      isAuthenticated: false,
+      isAuthenticated: true,
     );
-
-    await _credentialsStore.saveSession(session);
+    await _credentialsStore.clear();
+    track(
+      'auth_sign_in_attempt',
+      <String, dynamic>{
+        'scheme': 'required_api_key',
+        'requested_scheme': scheme.name,
+      },
+    );
 
     try {
       final rootStatus = await _ref.read(apiClientProvider).getRootStatus();
@@ -105,20 +133,27 @@ class AuthController extends StateNotifier<AuthState> {
           code: 'invalid_auth_response',
         );
       }
-      state = AuthState(
+      state = const AuthState(
         isLoading: false,
         isSubmitting: false,
         isAuthenticated: true,
-        session: session,
+        isDegraded: false,
+        session: null,
       );
+      track('auth_sign_in_success',
+          <String, dynamic>{'scheme': 'required_api_key'});
       _primeAuthenticatedData();
       return true;
     } catch (error) {
       await _credentialsStore.clear();
+      track('auth_sign_in_failed',
+          <String, dynamic>{'scheme': 'required_api_key'});
       state = AuthState(
         isLoading: false,
         isSubmitting: false,
-        isAuthenticated: false,
+        isAuthenticated: true,
+        isDegraded: true,
+        session: null,
         errorMessage: _messageFor(error),
       );
       return false;
@@ -128,11 +163,19 @@ class AuthController extends StateNotifier<AuthState> {
   Future<void> signOut() async {
     await _credentialsStore.clear();
     _ref.invalidate(appBootstrapProvider);
-    state = const AuthState(
+    track('auth_sign_out');
+    state = AuthState(
       isLoading: false,
       isSubmitting: false,
-      isAuthenticated: false,
+      isAuthenticated: true,
+      isDegraded: !_embeddedProductionAuthEnabled,
+      errorMessage: !_embeddedProductionAuthEnabled
+          ? 'Paper trading mode is active while production auth reconnects.'
+          : null,
     );
+    if (_embeddedProductionAuthEnabled) {
+      _primeAuthenticatedData();
+    }
   }
 
   Future<void> refresh() async {
@@ -142,9 +185,13 @@ class AuthController extends StateNotifier<AuthState> {
 
   String _messageFor(Object error) {
     if (error is ApiException) {
-      return error.message;
+      return ErrorMapper.map(
+        error,
+        fallback:
+            'Realtime connection is recovering. Paper trading and AI advisory mode are available.',
+      );
     }
-    return 'Unable to verify your credential right now. Check connectivity and try again.';
+    return 'Realtime connection is recovering. Paper trading and AI advisory mode are available.';
   }
 
   void _primeAuthenticatedData() {

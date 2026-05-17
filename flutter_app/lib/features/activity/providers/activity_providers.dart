@@ -16,10 +16,11 @@ class ActivityFeedState {
   ActivityFeedState copyWith({
     List<ActivityItemModel>? items,
     Object? lastError,
+    bool clearError = false,
   }) {
     return ActivityFeedState(
       items: items ?? this.items,
-      lastError: lastError ?? this.lastError,
+      lastError: clearError ? null : (lastError ?? this.lastError),
     );
   }
 
@@ -32,6 +33,7 @@ class ActivityFeedNotifier extends StateNotifier<ActivityFeedState> {
   void hydrate(List<ActivityItemModel> initial) {
     state = state.copyWith(
       items: _dedupe(initial).take(AppConstants.maxSignalCacheSize).toList(),
+      clearError: true,
     );
   }
 
@@ -39,6 +41,7 @@ class ActivityFeedNotifier extends StateNotifier<ActivityFeedState> {
     final current = <ActivityItemModel>[item, ...state.items];
     state = state.copyWith(
       items: _dedupe(current).take(AppConstants.maxSignalCacheSize).toList(),
+      clearError: true,
     );
   }
 
@@ -110,12 +113,36 @@ final activityStreamProvider = StreamProvider<ActivityItemModel>((ref) {
 
 final activityFeedProvider =
     StateNotifierProvider<ActivityFeedNotifier, ActivityFeedState>((ref) {
-  return ActivityFeedNotifier();
+  final notifier = ActivityFeedNotifier();
+  ref.listen<AsyncValue<List<ActivityItemModel>>>(
+    initialActivityHistoryProvider,
+    (previous, next) {
+      next.whenData(notifier.hydrate);
+      next.whenOrNull(error: (error, _) => notifier.setError(error));
+    },
+  );
+  ref.listen<AsyncValue<ActivityItemModel>>(activityStreamProvider,
+      (previous, next) {
+    next.whenData(notifier.ingest);
+    next.whenOrNull(error: (error, _) => notifier.setError(error));
+  });
+  return notifier;
 });
 
 final readinessBoardProvider =
     StateNotifierProvider<ReadinessBoardNotifier, List<ReadinessCardModel>>(
   (ref) {
-    return ReadinessBoardNotifier();
+    final notifier = ReadinessBoardNotifier();
+    ref.listen<AsyncValue<List<ReadinessCardModel>>>(
+      initialReadinessBoardProvider,
+      (previous, next) {
+        next.whenData(notifier.hydrate);
+      },
+    );
+    ref.listen<AsyncValue<ActivityItemModel>>(activityStreamProvider,
+        (previous, next) {
+      next.whenData(notifier.ingest);
+    });
+    return notifier;
   },
 );

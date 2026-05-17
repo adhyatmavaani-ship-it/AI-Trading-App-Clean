@@ -6,11 +6,9 @@ import 'websocket_channel_factory_io.dart'
 WebSocketChannel connectTradingWebSocket(
   Uri uri, {
   String? apiKey,
-  String? bearerToken,
 }) {
   return platform.connectTradingWebSocket(
     uri,
     apiKey: apiKey,
-    bearerToken: bearerToken,
   );
 }

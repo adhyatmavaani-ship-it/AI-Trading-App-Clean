@@ -1,8 +1,13 @@
 ﻿from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
+import hashlib
+import json
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+import time
 
 from app.core.exceptions import AuthenticationError
 from app.middleware.auth import get_user_id
@@ -16,9 +21,15 @@ from app.schemas.frontend_api import (
     VirtualOrderBatchListResponse,
 )
 from app.schemas.trading import SignalResponse
+from app.services.chart_intelligence import (
+    ASSISTANT_MODES,
+    build_chart_intelligence,
+    resample_ohlcv,
+)
 from app.services.container import ServiceContainer, get_container
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class MockPriceMoveRequest(BaseModel):
@@ -31,6 +42,10 @@ class MockPriceMoveRequest(BaseModel):
 
 class MarketSummaryRequest(BaseModel):
     limit: int = Field(default=18, ge=6, le=50, description="How many symbols should be included in the market sentiment scan.")
+
+
+class AssistantModeRequest(BaseModel):
+    mode: str = Field(..., description="Requested trade assistant mode.")
 
 
 def _ensure_debug_routes_enabled(container: ServiceContainer) -> None:
@@ -85,6 +100,8 @@ async def get_exchange_diagnostics(
         }
     except AuthenticationError as exc:
         raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except HTTPException:
+        raise
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -101,25 +118,101 @@ async def get_live_signals(
     request: Request = ...,
     container: ServiceContainer = Depends(get_container),
 ) -> LiveSignalsResponse:
+    started = time.perf_counter()
+    settings = getattr(container, "settings", None)
+    timeout_seconds = max(float(getattr(settings, "live_signals_route_timeout_seconds", 2.5)), 0.1)
+    slow_threshold = max(float(getattr(settings, "slow_operation_threshold_seconds", 1.0)), 0.1)
+    response_cache_ttl_seconds = max(int(getattr(settings, "live_signals_response_cache_ttl_seconds", 3)), 0)
+    auth_user_id = "anonymous"
+    cache_hit = False
+    used_generated = False
     try:
         try:
-            authenticated_user_id = get_user_id(request)
+            auth_user_id = get_user_id(request)
         except AuthenticationError:
-            authenticated_user_id = "anonymous"
-        viewer_subscription = _load_viewer_signal_subscription(container, authenticated_user_id)
-        signals = await _generate_live_signals(container, limit=min(limit, 3))
-        if len(signals) < min(limit, 3):
-            cached_signals = await _collect_live_signals(container, viewer_subscription)
-            seen_ids = {item.signal_id for item in signals}
-            signals.extend(item for item in cached_signals if item.signal_id not in seen_ids)
+            auth_user_id = "anonymous"
+        viewer_subscription = _load_viewer_signal_subscription(container, auth_user_id)
+        cache_key = _live_signals_response_cache_key(viewer_subscription, limit)
+        cached_response = _cache_get_json_safe(container, cache_key)
+        if cached_response:
+            cache_hit = True
+            return LiveSignalsResponse(**cached_response)
+
+        target = min(limit, 3)
+        cached_signals = sorted(
+            await _collect_live_signals(container, viewer_subscription),
+            key=lambda item: item.published_at,
+            reverse=True,
+        )
+        signals = list(cached_signals[:limit])
+        if len(signals) < target:
+            try:
+                async with asyncio.timeout(timeout_seconds):
+                    generated = await _generate_live_signals(container, limit=target)
+                if generated:
+                    used_generated = True
+                seen_ids = {item.signal_id for item in signals}
+                signals.extend(item for item in generated if item.signal_id not in seen_ids)
+            except TimeoutError:
+                logger.warning(
+                    "live_signals_generation_timed_out",
+                    extra={
+                        "event": "live_signals_generation_timed_out",
+                        "context": {
+                            "timeout_seconds": timeout_seconds,
+                            "user_id": auth_user_id,
+                        },
+                    },
+                )
+            except asyncio.CancelledError:
+                logger.warning(
+                    "live_signals_generation_cancelled",
+                    extra={
+                        "event": "live_signals_generation_cancelled",
+                        "context": {"user_id": auth_user_id},
+                    },
+                )
+                raise
+            except Exception as exc:
+                logger.exception(
+                    "live_signals_generation_failed",
+                    extra={
+                        "event": "live_signals_generation_failed",
+                        "context": {
+                            "user_id": auth_user_id,
+                            "error": str(exc)[:200],
+                        },
+                    },
+                )
         if not signals:
-            signals = _fallback_live_signals(container, limit=min(limit, 3))
+            signals = _fallback_live_signals(container, limit=target)
         ordered = sorted(signals, key=lambda item: item.published_at, reverse=True)[:limit]
-        return LiveSignalsResponse(count=len(ordered), items=ordered)
+        response = LiveSignalsResponse(count=len(ordered), items=ordered)
+        if response_cache_ttl_seconds > 0:
+            _cache_set_json_safe(
+                container,
+                cache_key,
+                response.model_dump(mode="json"),
+                ttl=response_cache_ttl_seconds,
+            )
+        return response
     except AuthenticationError as exc:
         raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except HTTPException:
+        raise
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        _log_route_timing(
+            path="/v1/signals/live",
+            started=started,
+            slow_threshold=slow_threshold,
+            context={
+                "cache_hit": cache_hit,
+                "used_generated": used_generated,
+                "user_id": auth_user_id,
+            },
+        )
 
 
 @router.get(
@@ -173,7 +266,7 @@ async def get_activity_readiness(
 )
 async def get_market_candles(
     symbol: str = Query(default="BTCUSDT", description="Market symbol to chart."),
-    interval: str = Query(default="5m", pattern=r"^(1m|5m|15m|1h)$", description="Candle interval to return."),
+    interval: str = Query(default="5m", pattern=r"^(1m|3m|5m|15m|1h)$", description="Candle interval to return."),
     limit: int = Query(default=96, ge=16, le=240, description="Maximum number of candles to return."),
     user_id: str | None = Query(default=None, description="Optional user whose AI trade markers should be included."),
     request: Request = ...,
@@ -183,70 +276,121 @@ async def get_market_candles(
         authenticated_user_id = get_user_id(request)
         target_user_id = str(user_id or authenticated_user_id).strip()
         _ensure_user_access(authenticated_user_id, target_user_id)
-        normalized_symbol = str(symbol or "BTCUSDT").upper().strip()
-        normalized_interval = str(interval or "5m").lower().strip()
-        frames = await container.market_data.fetch_multi_timeframe_ohlcv(
-            normalized_symbol,
-            intervals=(normalized_interval,),
-        )
-        frame = frames.get(normalized_interval)
-        if frame is None or getattr(frame, "empty", True):
-            return {
-                "symbol": normalized_symbol,
-                "interval": normalized_interval,
-                "candles": [],
-                "markers": [],
-                "confidence_intervals": [],
-                "confidence_history": [],
-                "latest_price": 0.0,
-                "change_pct": 0.0,
-            }
-        trimmed = frame.tail(limit).copy()
-        for column in ("open", "high", "low", "close", "volume"):
-            trimmed[column] = trimmed[column].astype(float)
-        latest_price = float(trimmed["close"].iloc[-1])
-        previous_price = float(trimmed["close"].iloc[-2] if len(trimmed) > 1 else latest_price)
-        change_pct = ((latest_price / max(previous_price, 1e-8)) - 1.0) * 100.0
-        candles = [
-            {
-                "timestamp": int(row.get("close_time", row.get("open_time", 0)) or 0),
-                "open": round(float(row["open"]), 8),
-                "high": round(float(row["high"]), 8),
-                "low": round(float(row["low"]), 8),
-                "close": round(float(row["close"]), 8),
-                "volume": round(float(row["volume"]), 8),
-            }
-            for row in trimmed.to_dict(orient="records")
-        ]
-        markers = _build_market_markers(
+        return await _build_market_chart_payload(
             container=container,
+            authenticated_user_id=authenticated_user_id,
             target_user_id=target_user_id,
-            normalized_symbol=normalized_symbol,
-            candles=candles,
-            latest_price=latest_price,
+            symbol=symbol,
+            interval=interval,
+            limit=limit,
         )
-        confidence_intervals = _build_confidence_intervals(
-            candles=candles,
-            markers=markers,
-        )
-        activity_engine = getattr(container, "user_experience_engine", None)
-        confidence_history = (
-            activity_engine.confidence_history(symbol=normalized_symbol, limit=24)
-            if activity_engine is not None
-            else []
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get(
+    "/market/opportunity/{symbol}",
+    tags=["Market"],
+    summary="Get AI opportunity snapshot for one symbol",
+    description="Returns scalp scoring, regime, overlays, strategy telemetry, and execution guidance without requiring the full chart payload.",
+)
+async def get_market_opportunity(
+    symbol: str,
+    interval: str = Query(default="5m", pattern=r"^(1m|3m|5m|15m|1h)$", description="Scalp interval to evaluate."),
+    user_id: str | None = Query(default=None, description="Optional user whose assistant mode should be used."),
+    request: Request = ...,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    try:
+        authenticated_user_id = get_user_id(request)
+        target_user_id = str(user_id or authenticated_user_id).strip()
+        _ensure_user_access(authenticated_user_id, target_user_id)
+        payload = await _build_market_chart_payload(
+            container=container,
+            authenticated_user_id=authenticated_user_id,
+            target_user_id=target_user_id,
+            symbol=symbol,
+            interval=interval,
+            limit=96,
         )
         return {
-            "symbol": normalized_symbol,
-            "interval": normalized_interval,
-            "latest_price": round(latest_price, 8),
-            "change_pct": round(change_pct, 4),
-            "candles": candles,
-            "markers": markers,
-            "confidence_intervals": confidence_intervals,
-            "confidence_history": confidence_history,
+            "symbol": payload["symbol"],
+            "interval": payload["interval"],
+            "chart_engine": payload["chart_engine"],
+            "scalp_engine": payload["scalp_engine"],
+            "opportunity": payload["opportunity"],
+            "market_regime": payload["market_regime"],
+            "assistant_modes": payload["assistant_modes"],
+            "active_assistant_mode": payload["active_assistant_mode"],
+            "execution_guide": payload["execution_guide"],
+            "strategy_state": payload["strategy_state"],
+            "ai_feed": payload["ai_feed"],
+            "overlays": payload["overlays"],
+            "render_hints": payload["render_hints"],
         }
     except AuthenticationError as exc:
         raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get(
+    "/market/assistant-mode",
+    tags=["Market"],
+    summary="Get current AI trade assistant mode",
+    description="Returns the active assistant mode for the authenticated user plus the supported Manual, Assisted, Semi Auto, and Full Auto modes.",
+)
+async def get_market_assistant_mode(
+    request: Request = ...,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    try:
+        user_id = get_user_id(request)
+        return {
+            "user_id": user_id,
+            "mode": _load_assistant_mode(container, user_id),
+            "modes": list(ASSISTANT_MODES),
+        }
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post(
+    "/market/assistant-mode",
+    tags=["Market"],
+    summary="Update current AI trade assistant mode",
+    description="Stores the authenticated user's preferred assistant mode while preserving the existing backend execution architecture.",
+)
+async def set_market_assistant_mode(
+    payload: AssistantModeRequest,
+    request: Request = ...,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    try:
+        user_id = get_user_id(request)
+        normalized_mode = _normalize_assistant_mode(payload.mode)
+        container.cache.set_json(
+            _assistant_mode_cache_key(user_id),
+            {"mode": normalized_mode},
+            ttl=max(int(getattr(container.settings, "signal_version_ttl_seconds", 3600)), 60),
+        )
+        return {
+            "user_id": user_id,
+            "mode": normalized_mode,
+            "modes": list(ASSISTANT_MODES),
+        }
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -272,6 +416,188 @@ async def get_market_universe(
         raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+async def _build_market_chart_payload(
+    *,
+    container: ServiceContainer,
+    authenticated_user_id: str,
+    target_user_id: str,
+    symbol: str,
+    interval: str,
+    limit: int,
+) -> dict:
+    _ensure_user_access(authenticated_user_id, target_user_id)
+    normalized_symbol = str(symbol or "BTCUSDT").upper().strip()
+    normalized_interval = str(interval or "5m").lower().strip()
+    assistant_mode = _load_assistant_mode(container, target_user_id)
+    cache_ttl_seconds = max(int(getattr(container.settings, "market_chart_cache_ttl_seconds", 2)), 0)
+    cache_key = (
+        f"market:chart:v2:{target_user_id}:{normalized_symbol}:{normalized_interval}:"
+        f"{min(max(int(limit), 16), 240)}:{assistant_mode}"
+    )
+    cached = container.cache.get_json(cache_key)
+    if cached:
+        return cached
+
+    frame = await _fetch_chart_frame(
+        container=container,
+        symbol=normalized_symbol,
+        interval=normalized_interval,
+    )
+    if frame is None or getattr(frame, "empty", True):
+        payload = {
+            "symbol": normalized_symbol,
+            "interval": normalized_interval,
+            "candles": [],
+            "markers": [],
+            "confidence_intervals": [],
+            "confidence_history": [],
+            "latest_price": 0.0,
+            "change_pct": 0.0,
+            **build_chart_intelligence(
+                symbol=normalized_symbol,
+                interval=normalized_interval,
+                frame=None,
+                assistant_mode=assistant_mode,
+            ),
+        }
+        payload.update(_snapshot_integrity(payload))
+        if cache_ttl_seconds > 0:
+            container.cache.set_json(cache_key, payload, ttl=cache_ttl_seconds)
+        return payload
+
+    trimmed = frame.tail(limit).copy()
+    for column in ("open", "high", "low", "close", "volume"):
+        trimmed[column] = trimmed[column].astype(float)
+    latest_price = float(trimmed["close"].iloc[-1])
+    previous_price = float(trimmed["close"].iloc[-2] if len(trimmed) > 1 else latest_price)
+    change_pct = ((latest_price / max(previous_price, 1e-8)) - 1.0) * 100.0
+    candles = [
+        {
+            "timestamp": int(row.get("close_time", row.get("open_time", 0)) or 0),
+            "open": round(float(row["open"]), 8),
+            "high": round(float(row["high"]), 8),
+            "low": round(float(row["low"]), 8),
+            "close": round(float(row["close"]), 8),
+            "volume": round(float(row["volume"]), 8),
+        }
+        for row in trimmed.to_dict(orient="records")
+    ]
+    markers = _build_market_markers(
+        container=container,
+        target_user_id=target_user_id,
+        normalized_symbol=normalized_symbol,
+        candles=candles,
+        latest_price=latest_price,
+    )
+    signal = await _load_chart_signal(container, normalized_symbol)
+    analytics = getattr(container, "analytics_service", None)
+    intelligence = build_chart_intelligence(
+        symbol=normalized_symbol,
+        interval=normalized_interval,
+        frame=trimmed,
+        signal=signal,
+        existing_markers=markers,
+        analytics_summary=analytics.summary(target_user_id) if analytics is not None else None,
+        assistant_mode=assistant_mode,
+        learning_enabled=getattr(container, "adaptive_learning_service", None) is not None,
+    )
+    markers = _dedupe_market_markers([*markers, *list(intelligence.pop("synthetic_markers", []))])
+    confidence_intervals = _build_confidence_intervals(
+        candles=candles,
+        markers=markers,
+    )
+    activity_engine = getattr(container, "user_experience_engine", None)
+    confidence_history = (
+        activity_engine.confidence_history(symbol=normalized_symbol, limit=24)
+        if activity_engine is not None
+        else []
+    )
+    payload = {
+        "symbol": normalized_symbol,
+        "interval": normalized_interval,
+        "latest_price": round(latest_price, 8),
+        "change_pct": round(change_pct, 4),
+        "candles": candles,
+        "markers": markers,
+        "confidence_intervals": confidence_intervals,
+        "confidence_history": confidence_history,
+        **intelligence,
+    }
+    payload.update(_snapshot_integrity(payload))
+    if cache_ttl_seconds > 0:
+        container.cache.set_json(cache_key, payload, ttl=cache_ttl_seconds)
+    return payload
+
+
+def _snapshot_integrity(payload: dict) -> dict[str, object]:
+    stable = {
+        key: value
+        for key, value in payload.items()
+        if key not in {"snapshot_version", "state_hash", "integrity_checksum"}
+    }
+    encoded = json.dumps(stable, sort_keys=True, default=str)
+    state_hash = hashlib.sha1(encoded.encode("utf-8")).hexdigest()[:16]
+    snapshot_version = int(datetime.now(timezone.utc).timestamp() * 1000)
+    checksum = hashlib.sha256(
+        f"market_chart:{snapshot_version}:{state_hash}".encode("utf-8")
+    ).hexdigest()[:24]
+    return {
+        "snapshot_version": snapshot_version,
+        "state_hash": state_hash,
+        "integrity_checksum": checksum,
+    }
+
+
+async def _fetch_chart_frame(
+    *,
+    container: ServiceContainer,
+    symbol: str,
+    interval: str,
+):
+    normalized_interval = str(interval or "5m").lower().strip()
+    if normalized_interval == "3m":
+        frames = await container.market_data.fetch_multi_timeframe_ohlcv(
+            symbol,
+            intervals=("1m",),
+        )
+        return resample_ohlcv(frames.get("1m"), minutes=3)
+    frames = await container.market_data.fetch_multi_timeframe_ohlcv(
+        symbol,
+        intervals=(normalized_interval,),
+    )
+    return frames.get(normalized_interval)
+
+
+async def _load_chart_signal(
+    container: ServiceContainer,
+    symbol: str,
+) -> SignalResponse | None:
+    orchestrator = getattr(container, "trading_orchestrator", None)
+    if orchestrator is None or not hasattr(orchestrator, "evaluate_symbol"):
+        return None
+    try:
+        return await orchestrator.evaluate_symbol(symbol)
+    except Exception:
+        return None
+
+
+def _assistant_mode_cache_key(user_id: str) -> str:
+    return f"market:assistant_mode:{str(user_id or 'system').strip().lower() or 'system'}"
+
+
+def _normalize_assistant_mode(mode: str) -> str:
+    normalized = str(mode or "").strip().upper().replace(" ", "_")
+    if normalized not in ASSISTANT_MODES:
+        raise ValueError("mode must be one of MANUAL, ASSISTED, SEMI_AUTO, FULL_AUTO")
+    return normalized
+
+
+def _load_assistant_mode(container: ServiceContainer, user_id: str) -> str:
+    payload = container.cache.get_json(_assistant_mode_cache_key(user_id)) or {}
+    candidate = str(payload.get("mode", "ASSISTED") or "ASSISTED").upper()
+    return candidate if candidate in ASSISTANT_MODES else "ASSISTED"
 
 
 async def _market_summary_response(
@@ -437,6 +763,7 @@ async def _collect_live_signals(container: ServiceContainer, viewer_subscription
                 min_balance=float(payload.get("min_balance", 0.0)),
                 rejection_reason=str(payload.get("rejection_reason")) if payload.get("rejection_reason") else None,
                 low_confidence=bool(payload.get("low_confidence", False)),
+                **_signal_quality_fields_from_payload(payload),
             )
         )
     return signals
@@ -482,6 +809,16 @@ def _live_signal_from_response(container: ServiceContainer, signal: SignalRespon
     required_tier = "free" if low_confidence else "vip" if alpha_score >= 90 else "pro" if alpha_score >= 80 else "free"
     min_balance = 0.0 if low_confidence else max(container.settings.exchange_min_notional, 25.0 if alpha_score >= 80 else container.settings.exchange_min_notional)
     published_at = signal.snapshot.timestamp
+    quality_reasons: list[str] = []
+    if rejection_reason:
+        quality_reasons.append(rejection_reason)
+    strict_reason = str(signal.snapshot.features.get("strict_trade_reason", "") or "").strip()
+    if strict_reason:
+        quality_reasons.append(strict_reason)
+    quality_reasons = list(dict.fromkeys(reason for reason in quality_reasons if reason))
+    strict_trade_score = float(signal.snapshot.features.get("strict_trade_score", alpha_score) or 0.0)
+    execution_allowed = bool(signal.alpha_decision.allow_trade and not low_confidence and signal.strategy not in {"NO_TRADE", "LOW_CONFIDENCE_WATCHLIST"})
+    quality = "approved" if execution_allowed else "degraded" if rejection_reason == "best_effort_generation" else "watchlist" if low_confidence else "blocked"
     return LiveSignalItem(
         signal_id=f"{signal.symbol}:generated:{int(published_at.timestamp())}",
         symbol=signal.symbol,
@@ -499,6 +836,12 @@ def _live_signal_from_response(container: ServiceContainer, signal: SignalRespon
         min_balance=min_balance,
         rejection_reason=rejection_reason,
         low_confidence=low_confidence,
+        quality=quality,
+        quality_score=round(max(0.0, min(strict_trade_score, 100.0)), 2),
+        quality_reasons=quality_reasons,
+        execution_allowed=execution_allowed,
+        market_data_stale=False,
+        market_data_sources={},
     )
 
 
@@ -538,11 +881,134 @@ def _fallback_live_signals(
                 min_balance=0.0,
                 rejection_reason="live_generation_unavailable",
                 low_confidence=True,
+                quality="degraded",
+                quality_score=0.0,
+                quality_reasons=["live_generation_unavailable"],
+                execution_allowed=False,
+                market_data_stale=True,
+                market_data_sources={},
             )
         )
         if len(items) >= max(1, limit):
             break
     return items
+
+
+def _signal_quality_fields_from_payload(payload: dict) -> dict:
+    pipeline_diagnostics = payload.get("pipeline_diagnostics") or {}
+    market_data = pipeline_diagnostics.get("market_data") or {}
+    rejection_reason = str(payload.get("rejection_reason") or "").strip()
+    rejection_reasons = list(pipeline_diagnostics.get("rejection_reasons") or [])
+    if rejection_reason:
+        rejection_reasons.append(rejection_reason)
+    strict_reason = str((payload.get("feature_snapshot") or {}).get("strict_trade_reason", "") or "").strip()
+    if strict_reason:
+        rejection_reasons.append(strict_reason)
+    quality_reasons = list(dict.fromkeys(str(reason) for reason in rejection_reasons if str(reason or "").strip()))
+    low_confidence = bool(payload.get("low_confidence", False))
+    degraded_mode = bool(payload.get("degraded_mode", False))
+    strategy = str(payload.get("strategy", "") or "").upper()
+    final_trade_status = str(payload.get("final_trade_status", "") or "").lower()
+    execution_allowed = bool(
+        not low_confidence
+        and not degraded_mode
+        and strategy not in {"NO_TRADE", "LOW_CONFIDENCE_WATCHLIST"}
+        and (
+            final_trade_status == "accepted"
+            or (not quality_reasons and final_trade_status in {"", "approved"})
+        )
+    )
+    if degraded_mode or rejection_reason == "live_generation_unavailable":
+        quality = "degraded"
+    elif execution_allowed:
+        quality = "approved"
+    elif low_confidence:
+        quality = "watchlist"
+    else:
+        quality = "blocked"
+    quality_score = float(
+        (payload.get("feature_snapshot") or {}).get(
+            "strict_trade_score",
+            payload.get("alpha_score", float(payload.get("confidence", 0.0) or 0.0) * 100),
+        )
+        or 0.0
+    )
+    market_data_sources = {
+        str(key): str(value)
+        for key, value in (market_data.get("sources") or {}).items()
+        if value is not None
+    }
+    return {
+        "quality": quality,
+        "quality_score": round(max(0.0, min(quality_score, 100.0)), 2),
+        "quality_reasons": quality_reasons,
+        "execution_allowed": execution_allowed,
+        "market_data_stale": bool(market_data.get("stale", False)) or bool(market_data.get("empty_intervals")),
+        "market_data_sources": market_data_sources,
+    }
+
+
+def _live_signals_response_cache_key(viewer_subscription: dict, limit: int) -> str:
+    user_id = str(viewer_subscription.get("user_id", "anonymous")).strip() or "anonymous"
+    return f"signals:live:route:v1:{user_id}:{int(limit)}"
+
+
+def _cache_get_json_safe(container: ServiceContainer, key: str) -> dict | None:
+    try:
+        get_json = getattr(container.cache, "get_json", None)
+        if get_json is None:
+            return None
+        payload = get_json(key)
+        return payload if isinstance(payload, dict) else None
+    except Exception as exc:
+        logger.warning(
+            "route_cache_get_failed",
+            extra={
+                "event": "route_cache_get_failed",
+                "context": {"key": key, "error": str(exc)[:200]},
+            },
+        )
+        return None
+
+
+def _cache_set_json_safe(container: ServiceContainer, key: str, value: dict, *, ttl: int) -> None:
+    try:
+        set_json = getattr(container.cache, "set_json", None)
+        if set_json is None:
+            return
+        set_json(key, value, ttl=ttl)
+    except Exception as exc:
+        logger.warning(
+            "route_cache_set_failed",
+            extra={
+                "event": "route_cache_set_failed",
+                "context": {"key": key, "error": str(exc)[:200]},
+            },
+        )
+
+
+def _log_route_timing(*, path: str, started: float, slow_threshold: float, context: dict | None = None) -> None:
+    duration_ms = round((time.perf_counter() - started) * 1000, 2)
+    logger.info(
+        "endpoint_execution_timing",
+        extra={
+            "event": "endpoint_execution_timing",
+            "context": {
+                "path": path,
+                "duration_ms": duration_ms,
+                "slow": duration_ms >= slow_threshold * 1000,
+                **(context or {}),
+            },
+        },
+    )
+    if duration_ms >= slow_threshold * 1000:
+        logger.warning(
+            "endpoint_execution_slow",
+            extra={
+                "event": "endpoint_execution_slow",
+                "context": {"path": path, "duration_ms": duration_ms},
+            },
+        )
 
 
 @router.get(
@@ -1080,6 +1546,10 @@ def _build_market_markers(
             }
         )
 
+    return _dedupe_market_markers(markers)
+
+
+def _dedupe_market_markers(markers: list[dict[str, object]]) -> list[dict[str, object]]:
     deduped: list[dict[str, object]] = []
     seen: set[tuple[str, str, str, str]] = set()
     for marker in sorted(markers, key=lambda item: str(item.get("timestamp", ""))):

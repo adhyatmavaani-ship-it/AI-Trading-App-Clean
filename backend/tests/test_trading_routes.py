@@ -18,7 +18,12 @@ if FASTAPI_AVAILABLE:
 
 
 class StubTradingOrchestrator:
+    def __init__(self, failure: Exception | None = None):
+        self.failure = failure
+
     async def execute_signal(self, request):
+        if self.failure is not None:
+            raise self.failure
         return {
             "trade_id": "trade-1",
             "status": "EXECUTED",
@@ -48,14 +53,17 @@ class StubAlertingService:
 
 
 class StubContainer:
-    def __init__(self):
-        self.trading_orchestrator = StubTradingOrchestrator()
+    def __init__(self, failure: Exception | None = None):
+        self.trading_orchestrator = StubTradingOrchestrator(failure=failure)
         self.alerting_service = StubAlertingService()
 
 
 @unittest.skipUnless(FASTAPI_AVAILABLE, "fastapi is not installed")
 class TradingRoutesTest(unittest.TestCase):
     def setUp(self):
+        self._build_app()
+
+    def _build_app(self, failure: Exception | None = None) -> None:
         from app.core.config import get_settings
 
         get_settings.cache_clear()
@@ -70,7 +78,7 @@ class TradingRoutesTest(unittest.TestCase):
         app = FastAPI()
         app.add_middleware(AuthMiddleware)
         app.include_router(trading.router, prefix="/v1")
-        app.dependency_overrides[get_container] = lambda: StubContainer()
+        app.dependency_overrides[get_container] = lambda: StubContainer(failure=failure)
         self.app = app
         self.client = TestClient(app)
 
@@ -159,6 +167,53 @@ class TradingRoutesTest(unittest.TestCase):
             response.json()["detail"]["error_code"],
             "EXECUTION_USER_MISMATCH",
         )
+
+    def test_execute_trade_maps_low_confidence_rejection(self):
+        self.app.dependency_overrides[get_container] = lambda: StubContainer(
+            failure=ValueError("Trade confidence is below the strict execution floor")
+        )
+
+        response = self.client.post(
+            "/v1/trading/execute",
+            headers={"X-API-Key": "route-token"},
+            json={
+                "user_id": "alice",
+                "symbol": "BTCUSDT",
+                "side": "BUY",
+                "quantity": 1.0,
+                "confidence": 0.42,
+                "reason": "test",
+            },
+        )
+
+        self.assertEqual(response.status_code, 403)
+        payload = response.json()["detail"]
+        self.assertEqual(payload["error_code"], "CONFIDENCE_TOO_LOW")
+        self.assertEqual(payload["details"]["symbol"], "BTCUSDT")
+        self.assertIn("correlation_id", payload["details"])
+
+    def test_execute_trade_maps_broker_unavailable_runtime_error(self):
+        self.app.dependency_overrides[get_container] = lambda: StubContainer(
+            failure=RuntimeError("No exchange clients available for execution")
+        )
+
+        response = self.client.post(
+            "/v1/trading/execute",
+            headers={"X-API-Key": "route-token"},
+            json={
+                "user_id": "alice",
+                "symbol": "BTCUSDT",
+                "side": "BUY",
+                "quantity": 1.0,
+                "confidence": 0.8,
+                "reason": "test",
+            },
+        )
+
+        self.assertEqual(response.status_code, 500)
+        payload = response.json()["detail"]
+        self.assertEqual(payload["error_code"], "BROKER_UNAVAILABLE")
+        self.assertEqual(payload["details"]["symbol"], "BTCUSDT")
 
 
 if __name__ == "__main__":

@@ -66,6 +66,8 @@ class _InMemoryRedisClient:
         self._lock = threading.RLock()
         self._kv: dict[str, tuple[str, float | None]] = {}
         self._zsets: dict[str, dict[str, float]] = {}
+        self._streams: dict[str, list[tuple[str, dict[str, str]]]] = {}
+        self._stream_sequence = 0
 
     def _purge_if_expired(self, key: str) -> None:
         entry = self._kv.get(key)
@@ -130,6 +132,35 @@ class _InMemoryRedisClient:
 
     def publish(self, channel: str, message: str) -> int:
         return 0
+
+    def xadd(
+        self,
+        name: str,
+        fields: dict[str, str],
+        maxlen: int | None = None,
+        approximate: bool = True,
+    ) -> str:
+        with self._lock:
+            self._stream_sequence += 1
+            event_id = f"{int(time.time() * 1000)}-{self._stream_sequence}"
+            rows = self._streams.setdefault(name, [])
+            rows.append((event_id, fields))
+            if maxlen is not None and len(rows) > maxlen:
+                del rows[: len(rows) - maxlen]
+            return event_id
+
+    def xrange(
+        self,
+        name: str,
+        min: str = "-",
+        max: str = "+",
+        count: int | None = None,
+    ) -> list[tuple[str, dict[str, str]]]:
+        with self._lock:
+            rows = list(self._streams.get(name, []))
+        if count is not None:
+            return rows[:count]
+        return rows
 
     def scan_iter(self, match: str | None = None):
         with self._lock:
@@ -273,6 +304,33 @@ class RedisCache:
 
     def publish(self, channel: str, message: str) -> int:
         return int(self.client.publish(channel, message))
+
+    def stream_add(self, stream: str, payload: dict[str, Any], max_len: int = 1000) -> str | None:
+        xadd = getattr(self.client, "xadd", None)
+        if xadd is None:
+            return None
+        return str(
+            xadd(
+                stream,
+                {"payload": json.dumps(payload, default=str)},
+                maxlen=max_len,
+                approximate=True,
+            )
+        )
+
+    def stream_range(self, stream: str, start: str = "-", end: str = "+", count: int = 100) -> list[dict[str, Any]]:
+        xrange = getattr(self.client, "xrange", None)
+        if xrange is None:
+            return []
+        rows = xrange(stream, min=start, max=end, count=count)
+        events: list[dict[str, Any]] = []
+        for event_id, fields in rows:
+            raw = fields.get("payload") if isinstance(fields, dict) else None
+            if raw:
+                payload = json.loads(raw)
+                payload["_stream_id"] = str(event_id)
+                events.append(payload)
+        return events
 
     def keys(self, pattern: str) -> list[str]:
         return list(self.client.scan_iter(match=pattern))

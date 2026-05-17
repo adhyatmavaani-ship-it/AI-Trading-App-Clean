@@ -497,7 +497,7 @@ class TradingOrchestratorReliabilityTest(unittest.TestCase):
             requested_notional=100.0,
         )
 
-        with self.assertRaisesRegex(ValueError, "confidence"):
+        with self.assertRaisesRegex(ValueError, "confidence|strict floor|Strict trade gate"):
             asyncio.run(orchestrator.execute_signal(request))
 
     def test_duplicate_symbol_trade_is_blocked(self):
@@ -994,6 +994,42 @@ class TradingOrchestratorReliabilityTest(unittest.TestCase):
 
         self.assertEqual(response.status, "FILLED")
         self.assertLessEqual(saved_trade["requested_notional"], 100.0)
+
+    def test_paper_mode_relaxes_soft_gates_and_publishes_realtime_updates(self):
+        orchestrator, firestore = self._build_orchestrator()
+        request = TradeRequest(
+            user_id="u1",
+            symbol="BTCUSDT",
+            side="BUY",
+            order_type="MARKET",
+            confidence=0.58,
+            reason="paper relaxation validation",
+            requested_notional=100.0,
+            expected_return=0.01,
+            expected_risk=0.02,
+            feature_snapshot={
+                "15m_volume": 500000.0,
+                "volatility": 0.01,
+                "trade_success_probability": 0.5,
+                "raw_trade_success_probability": 0.5,
+            },
+        )
+
+        response = asyncio.run(orchestrator.execute_signal(request))
+
+        self.assertEqual(response.status, "FILLED")
+        self.assertEqual(len(firestore.trades), 1)
+        self.assertTrue(request.feature_snapshot.get("paper_trade_override_active"))
+        trade_event = orchestrator.cache.get_json("realtime:last:trade_update")
+        portfolio_event = orchestrator.cache.get_json("realtime:last:portfolio_update")
+        dashboard_event = orchestrator.cache.get_json("realtime:last:dashboard_summary")
+        self.assertIsNotNone(trade_event)
+        self.assertIsNotNone(portfolio_event)
+        self.assertIsNotNone(dashboard_event)
+        self.assertEqual(trade_event["status"], "FILLED")
+        self.assertEqual(trade_event["symbol"], "BTCUSDT")
+        self.assertEqual(portfolio_event["reason"], "trade_executed")
+        self.assertEqual(dashboard_event["reason"], "trade_executed")
 
     def test_auto_emergency_stop_blocks_after_daily_loss_breach(self):
         orchestrator, _ = self._build_orchestrator()
