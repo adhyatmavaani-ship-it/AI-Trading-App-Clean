@@ -78,6 +78,7 @@ void main() {
         ),
       ],
       topGainers: <MarketUniverseEntryModel>[],
+      topLosers: <MarketUniverseEntryModel>[],
       highVolatility: <MarketUniverseEntryModel>[],
       aiPicks: <MarketUniverseEntryModel>[],
     );

@@ -321,6 +321,7 @@ class FakeTradingRepository extends TradingRepository {
     return const MarketUniverseModel(
       items: <MarketUniverseEntryModel>[btc, eth],
       topGainers: <MarketUniverseEntryModel>[btc, eth],
+      topLosers: <MarketUniverseEntryModel>[],
       highVolatility: <MarketUniverseEntryModel>[btc],
       aiPicks: <MarketUniverseEntryModel>[btc],
     );

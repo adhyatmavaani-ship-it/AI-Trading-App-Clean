@@ -31,14 +31,14 @@ class MarketDataService:
         configured = self._configured_exchanges()
         active = sorted(self.exchange_clients.keys())
         mode = str(self.settings.market_data_mode).lower()
-        resolved_mode = "simulated" if mode == "simulated" or not active else "exchange"
+        resolved_mode = "simulated" if self._simulation_enabled() else "exchange"
         return {
             "configured_mode": mode,
             "resolved_mode": resolved_mode,
             "configured_exchanges": configured,
             "active_exchanges": active,
             "exchange_status": self.exchange_status,
-            "using_mock_data": resolved_mode == "simulated",
+            "using_mock_data": self._simulation_enabled(),
             "last_init_attempt_at": self._isoformat(self._last_init_attempt_at),
             "retry_seconds": float(self.settings.market_data_exchange_retry_seconds),
             "last_fetch_details": self.last_fetch_details,
@@ -132,23 +132,31 @@ class MarketDataService:
 
     async def fetch_latest_price(self, symbol: str) -> float:
         self._ensure_exchange_clients()
+        normalized_symbol = str(symbol or "").upper().strip()
         cached_price = self.latest_stream_price(symbol)
         if cached_price is not None:
-            self._remember_fetch("price", symbol, "stream")
+            self._remember_fetch("price", normalized_symbol, "stream")
             return cached_price
         for exchange_id, client in list(self.exchange_clients.items()):
             try:
-                price = await asyncio.to_thread(client.fetch_ticker_price, symbol)
-                self._remember_fetch("price", symbol, f"exchange:{exchange_id}")
+                price = await asyncio.to_thread(client.fetch_ticker_price, normalized_symbol)
+                self._remember_fetch("price", normalized_symbol, f"exchange:{exchange_id}")
                 return price
             except Exception as exc:
                 self._record_exchange_failure(exchange_id, exc)
                 logger.warning(
-                    "market_data_price_fallback",
-                    extra={"event": "market_data_price_fallback", "context": {"symbol": symbol, "exchange": exchange_id}},
+                    "market_data_price_exchange_failed",
+                    extra={"event": "market_data_price_exchange_failed", "context": {"symbol": normalized_symbol, "exchange": exchange_id}},
                 )
-        self._remember_fetch("price", symbol, "simulated")
-        return self._mock_latest_price(symbol)
+        if self._simulation_enabled():
+            self._remember_fetch("price", normalized_symbol, "simulated")
+            return self._mock_latest_price(normalized_symbol)
+        cached_close = self._latest_cached_close(normalized_symbol)
+        if cached_close is not None:
+            self._remember_fetch("price", normalized_symbol, "last_valid_cache")
+            return cached_close
+        self._remember_fetch("price", normalized_symbol, "unavailable")
+        raise RuntimeError(f"Live market price unavailable for {normalized_symbol}")
 
     async def fetch_market_tickers(
         self,
@@ -190,10 +198,13 @@ class MarketDataService:
                     "market_data_tickers_exchange_failed",
                     extra={"event": "market_data_tickers_exchange_failed", "context": {"exchange": exchange_id}},
                 )
-        simulated = self._mock_market_tickers(quote_asset=normalized_quote or self.settings.default_quote_asset)
-        self.cache.set_json(cache_key, {"items": simulated}, self.settings.market_data_cache_ttl)
-        self._remember_fetch("market_tickers", normalized_quote or "ALL", "simulated")
-        return simulated[:limit] if limit is not None else simulated
+        if self._simulation_enabled():
+            simulated = self._mock_market_tickers(quote_asset=normalized_quote or self.settings.default_quote_asset)
+            self.cache.set_json(cache_key, {"items": simulated}, self.settings.market_data_cache_ttl)
+            self._remember_fetch("market_tickers", normalized_quote or "ALL", "simulated")
+            return simulated[:limit] if limit is not None else simulated
+        self._remember_fetch("market_tickers", normalized_quote or "ALL", "unavailable")
+        raise RuntimeError("Live market tickers unavailable")
 
     async def fetch_multi_timeframe_ohlcv(
         self, symbol: str, intervals: tuple[str, ...] = ("1m", "5m", "15m")
@@ -201,6 +212,7 @@ class MarketDataService:
         self._ensure_exchange_clients()
         results = {}
         pending_intervals: list[str] = []
+        stale_cached: dict[str, pd.DataFrame] = {}
         for interval in intervals:
             cache_key = f"ohlcv:{symbol}:{interval}"
             cached = self.cache.get_json(cache_key)
@@ -210,6 +222,8 @@ class MarketDataService:
                     results[interval] = frame
                     self._remember_fetch("ohlcv", symbol, "cache", interval=interval)
                 else:
+                    if not frame.empty:
+                        stale_cached[interval] = frame
                     pending_intervals.append(interval)
             else:
                 pending_intervals.append(interval)
@@ -218,14 +232,21 @@ class MarketDataService:
             frame, source = await self._fetch_ohlcv_with_fallback(symbol=symbol, interval=interval)
             if frame.empty or self._frame_is_stale(frame, interval):
                 logger.warning(
-                    "market_data_ohlcv_fallback",
+                    "market_data_ohlcv_unavailable",
                     extra={
-                        "event": "market_data_ohlcv_fallback",
+                        "event": "market_data_ohlcv_unavailable",
                         "context": {"symbol": symbol, "interval": interval},
                     },
                 )
-                frame = self._mock_ohlcv_frame(symbol=symbol, interval=interval)
-                source = "simulated"
+                if self._simulation_enabled():
+                    frame = self._mock_ohlcv_frame(symbol=symbol, interval=interval)
+                    source = "simulated"
+                elif interval in stale_cached:
+                    frame = stale_cached[interval]
+                    source = "last_valid_cache"
+                else:
+                    self._remember_fetch("ohlcv", symbol, "unavailable", interval=interval, rows=0)
+                    continue
             results[interval] = frame
             self._remember_fetch("ohlcv", symbol, source, interval=interval, rows=len(frame))
             self.cache.set_json(
@@ -252,8 +273,11 @@ class MarketDataService:
                     "market_data_order_book_fallback",
                     extra={"event": "market_data_order_book_fallback", "context": {"symbol": symbol, "exchange": exchange_id}},
                 )
-        self._remember_fetch("order_book", symbol, "simulated")
-        return self._mock_order_book(self._mock_latest_price(symbol))
+        if self._simulation_enabled():
+            self._remember_fetch("order_book", symbol, "simulated")
+            return self._mock_order_book(self._mock_latest_price(symbol))
+        self._remember_fetch("order_book", symbol, "unavailable")
+        raise RuntimeError(f"Live order book unavailable for {str(symbol or '').upper().strip()}")
 
     def _response_frame(self, response: object) -> pd.DataFrame:
         if isinstance(response, Exception):
@@ -432,7 +456,10 @@ class MarketDataService:
                     "market_data_ohlcv_exchange_failed",
                     extra={"event": "market_data_ohlcv_exchange_failed", "context": {"symbol": symbol, "interval": interval, "exchange": exchange_id}},
                 )
-        return pd.DataFrame(), "simulated"
+        return pd.DataFrame(), "unavailable"
+
+    def _simulation_enabled(self) -> bool:
+        return str(self.settings.market_data_mode).lower() == "simulated"
 
     def _configured_exchanges(self) -> list[str]:
         ordered = [self.settings.primary_exchange, *self.settings.backup_exchanges]

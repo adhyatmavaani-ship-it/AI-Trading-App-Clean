@@ -11,6 +11,8 @@ import '../models/active_trade.dart';
 import '../models/market_chart.dart';
 import '../models/market_summary.dart';
 import '../models/signal.dart';
+import '../models/user_pnl.dart';
+import '../providers/app_providers.dart';
 import '../widgets/glass_panel.dart';
 import '../widgets/gradient_action_button.dart';
 import '../widgets/state_widgets.dart';
@@ -39,7 +41,9 @@ class _AiTradeCenterScreenState extends ConsumerState<AiTradeCenterScreen> {
     final signalFeed = ref.watch(signalFeedProvider);
     final initialSignals = ref.watch(initialSignalsProvider);
     final marketSummary = ref.watch(marketSummaryProvider);
+    final marketUniverse = ref.watch(marketUniverseProvider);
     final activeTrades = ref.watch(activeTradesProvider(userId));
+    final pnl = ref.watch(userPnLProvider(userId));
     final signals = signalFeed.items.isNotEmpty
         ? signalFeed.items
         : (initialSignals.valueOrNull ?? const <SignalModel>[]);
@@ -56,6 +60,16 @@ class _AiTradeCenterScreenState extends ConsumerState<AiTradeCenterScreen> {
       child: ListView(
         padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
         children: <Widget>[
+          _TickerTape(
+            summary: marketSummary,
+            onTapSymbol: _openChartForSymbol,
+          ),
+          const SizedBox(height: 14),
+          _MarketMovers(
+            universe: marketUniverse,
+            onTapSymbol: _openChartForSymbol,
+          ),
+          const SizedBox(height: 18),
           _MarketBrief(summary: marketSummary),
           const SizedBox(height: 18),
           if (signalFeed.lastError != null)
@@ -75,11 +89,21 @@ class _AiTradeCenterScreenState extends ConsumerState<AiTradeCenterScreen> {
             onExplain: bestTrade == null
                 ? null
                 : () => _showExplanation(context, bestTrade),
+            onAuto: () async {
+              await ref
+                  .read(tradingRepositoryProvider)
+                  .setAssistantMode('FULL_AUTO');
+              ref.invalidate(assistantModeProvider);
+              ref.invalidate(marketChartProvider);
+              widget.onOpenChart();
+            },
             onOpenChart: widget.onOpenChart,
           ),
           const SizedBox(height: 18),
+          _ProtectionShield(pnl: pnl, activeTrades: activeTrades),
+          const SizedBox(height: 18),
           _SectionHeader(
-            title: 'Top AI Opportunities',
+            title: 'AI Watchlist',
             actionLabel: 'Chart',
             onAction: widget.onOpenChart,
           ),
@@ -128,6 +152,11 @@ class _AiTradeCenterScreenState extends ConsumerState<AiTradeCenterScreen> {
       ),
       builder: (context) => _TradeExplanationSheet(signal: signal),
     );
+  }
+
+  void _openChartForSymbol(String symbol) {
+    ref.read(selectedMarketSymbolProvider.notifier).state = symbol;
+    widget.onOpenChart();
   }
 }
 
@@ -206,6 +235,399 @@ class _MarketBrief extends StatelessWidget {
   }
 }
 
+class _TickerTape extends StatefulWidget {
+  const _TickerTape({
+    required this.summary,
+    required this.onTapSymbol,
+  });
+
+  final AsyncValue<MarketSummaryModel> summary;
+  final ValueChanged<String> onTapSymbol;
+
+  @override
+  State<_TickerTape> createState() => _TickerTapeState();
+}
+
+class _TickerTapeState extends State<_TickerTape>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 24),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tickerMap = {
+      for (final item in widget.summary.valueOrNull?.ticker ??
+          const <MarketTickerItemModel>[])
+        _displayAsset(item.symbol): item,
+    };
+    const ordered = <String>[
+      'BTC',
+      'ETH',
+      'SOL',
+      'BNB',
+      'XRP',
+      'GOLD',
+      'NASDAQ'
+    ];
+    final cells = ordered
+        .map((asset) => _TickerCell(
+              asset: asset,
+              item: tickerMap[asset],
+              onTap: tickerMap[asset] == null
+                  ? null
+                  : () => widget.onTapSymbol(tickerMap[asset]!.symbol),
+            ))
+        .toList();
+    return ClipRect(
+      child: SizedBox(
+        height: 42,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final repeated = <Widget>[...cells, ...cells];
+            return AnimatedBuilder(
+              animation: _controller,
+              builder: (context, child) {
+                return Transform.translate(
+                  offset: Offset(-_controller.value * constraints.maxWidth, 0),
+                  child: child,
+                );
+              },
+              child: OverflowBox(
+                alignment: Alignment.centerLeft,
+                maxWidth: double.infinity,
+                child: Row(children: repeated),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _TickerCell extends StatelessWidget {
+  const _TickerCell({
+    required this.asset,
+    required this.item,
+    required this.onTap,
+  });
+
+  final String asset;
+  final MarketTickerItemModel? item;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final change = item?.changePct ?? 0;
+    final color = item == null
+        ? TradingPalette.textFaint
+        : change >= 0
+            ? TradingPalette.neonGreen
+            : TradingPalette.neonRed;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(999),
+      child: Container(
+        margin: const EdgeInsets.only(right: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.035),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: TradingPalette.panelBorder),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Text(
+              asset,
+              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                    color: TradingPalette.textPrimary,
+                    fontWeight: FontWeight.w900,
+                  ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              item == null
+                  ? 'No live feed'
+                  : '${_priceOrPending(item!.price)} ${change >= 0 ? '+' : ''}${change.toStringAsFixed(2)}%',
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: color,
+                    fontWeight: FontWeight.w800,
+                  ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MarketMovers extends StatelessWidget {
+  const _MarketMovers({
+    required this.universe,
+    required this.onTapSymbol,
+  });
+
+  final AsyncValue<MarketUniverseModel> universe;
+  final ValueChanged<String> onTapSymbol;
+
+  @override
+  Widget build(BuildContext context) {
+    return universe.when(
+      data: (data) {
+        final gainers = data.topGainers.take(3).toList();
+        final losers = data.topLosers.take(3).toList();
+        if (gainers.isEmpty && losers.isEmpty) {
+          return const GlassPanel(
+            child: Text('Market scanner is waiting for verified live candles.'),
+          );
+        }
+        return LayoutBuilder(
+          builder: (context, constraints) {
+            final wide = constraints.maxWidth >= 760;
+            final sections = <Widget>[
+              _MoverColumn(
+                title: 'Top Gainers',
+                items: gainers,
+                positive: true,
+                onTapSymbol: onTapSymbol,
+              ),
+              _MoverColumn(
+                title: 'Top Losers',
+                items: losers,
+                positive: false,
+                onTapSymbol: onTapSymbol,
+              ),
+            ];
+            return wide
+                ? Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Expanded(child: sections.first),
+                      const SizedBox(width: 12),
+                      Expanded(child: sections.last),
+                    ],
+                  )
+                : Column(
+                    children: <Widget>[
+                      sections.first,
+                      const SizedBox(height: 12),
+                      sections.last,
+                    ],
+                  );
+          },
+        );
+      },
+      loading: () => const LoadingState(label: 'Scanning live movers...'),
+      error: (error, _) => _ConnectionNotice(error: error),
+    );
+  }
+}
+
+class _MoverColumn extends StatelessWidget {
+  const _MoverColumn({
+    required this.title,
+    required this.items,
+    required this.positive,
+    required this.onTapSymbol,
+  });
+
+  final String title;
+  final List<MarketUniverseEntryModel> items;
+  final bool positive;
+  final ValueChanged<String> onTapSymbol;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = positive ? TradingPalette.neonGreen : TradingPalette.neonRed;
+    return GlassPanel(
+      glowColor: color,
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text(
+            title,
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w900,
+                ),
+          ),
+          const SizedBox(height: 10),
+          for (final item in items)
+            _MoverTile(
+                item: item,
+                color: color,
+                onTap: () => onTapSymbol(item.symbol)),
+        ],
+      ),
+    );
+  }
+}
+
+class _MoverTile extends StatelessWidget {
+  const _MoverTile({
+    required this.item,
+    required this.color,
+    required this.onTap,
+  });
+
+  final MarketUniverseEntryModel item;
+  final Color color;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final confidence = item.potentialScore > 0
+        ? item.potentialScore.clamp(0, 100)
+        : (50 + item.volumeRatio * 12 + item.volatilityPct * 2).clamp(0, 100);
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(14),
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: Row(
+          children: <Widget>[
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(
+                    item.symbol,
+                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                          fontWeight: FontWeight.w900,
+                        ),
+                  ),
+                  Text(
+                    '${_priceOrPending(item.price)}  ${item.changePct >= 0 ? '+' : ''}${item.changePct.toStringAsFixed(2)}%',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: color,
+                          fontWeight: FontWeight.w800,
+                        ),
+                  ),
+                ],
+              ),
+            ),
+            SizedBox(
+              width: 74,
+              height: 26,
+              child: CustomPaint(
+                painter: _SparklinePainter(
+                  values: item.sparkline,
+                  color: color,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            _MetricPill(
+              label: 'AI',
+              value: '${confidence.toStringAsFixed(0)}%',
+              color: color,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ProtectionShield extends StatelessWidget {
+  const _ProtectionShield({
+    required this.pnl,
+    required this.activeTrades,
+  });
+
+  final AsyncValue<UserPnLModel> pnl;
+  final AsyncValue<List<ActiveTradeModel>> activeTrades;
+
+  @override
+  Widget build(BuildContext context) {
+    return pnl.when(
+      data: (snapshot) {
+        final drawdownPct = snapshot.rollingDrawdown <= 1
+            ? snapshot.rollingDrawdown * 100
+            : snapshot.rollingDrawdown;
+        final exposurePct = snapshot.currentEquity <= 0
+            ? 0.0
+            : (snapshot.grossExposure / snapshot.currentEquity) * 100;
+        final tradeCount =
+            activeTrades.valueOrNull?.length ?? snapshot.activeTrades;
+        return GlassPanel(
+          glowColor: TradingPalette.electricBlue,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Row(
+                children: <Widget>[
+                  const Icon(Icons.shield_rounded,
+                      color: TradingPalette.electricBlue),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'AI Protection Active',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w900,
+                          ),
+                    ),
+                  ),
+                  _MetricPill(
+                    label: 'State',
+                    value: snapshot.protectionState,
+                    color: TradingPalette.electricBlue,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: <Widget>[
+                  Expanded(
+                    child: _MetricPill(
+                      label: 'Daily Risk',
+                      value: '${drawdownPct.toStringAsFixed(2)}% / 3%',
+                      color: TradingPalette.amber,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _MetricPill(
+                      label: 'Exposure',
+                      value: '${exposurePct.toStringAsFixed(1)}%',
+                      color: TradingPalette.electricBlue,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _MetricPill(
+                      label: 'Loss Guard',
+                      value: '$tradeCount active / 3 max',
+                      color: TradingPalette.neonGreen,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+      loading: () => const LoadingState(label: 'Loading protection shield...'),
+      error: (error, _) => _ConnectionNotice(error: error),
+    );
+  }
+}
+
 class _BestTradeHero extends StatelessWidget {
   const _BestTradeHero({
     required this.signal,
@@ -213,6 +635,7 @@ class _BestTradeHero extends StatelessWidget {
     required this.onExecute,
     required this.onPaper,
     required this.onExplain,
+    required this.onAuto,
     required this.onOpenChart,
   });
 
@@ -221,6 +644,7 @@ class _BestTradeHero extends StatelessWidget {
   final VoidCallback? onExecute;
   final VoidCallback? onPaper;
   final VoidCallback? onExplain;
+  final VoidCallback? onAuto;
   final VoidCallback onOpenChart;
 
   @override
@@ -354,17 +778,19 @@ class _BestTradeHero extends StatelessWidget {
               children: <Widget>[
                 Expanded(
                   child: GradientActionButton(
-                    label: 'Execute Trade',
-                    icon: Icons.verified_rounded,
-                    onPressed: onExecute,
+                    label: 'BUY',
+                    icon: Icons.trending_up_rounded,
+                    gradient: TradingPalette.profitGlow,
+                    onPressed: bullish ? onExecute : null,
                   ),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: onPaper,
-                    icon: const Icon(Icons.science_rounded),
-                    label: const Text('Paper Trade'),
+                  child: GradientActionButton(
+                    label: 'SELL',
+                    icon: Icons.trending_down_rounded,
+                    gradient: TradingPalette.lossGlow,
+                    onPressed: bullish ? null : onExecute,
                   ),
                 ),
               ],
@@ -373,17 +799,26 @@ class _BestTradeHero extends StatelessWidget {
             Row(
               children: <Widget>[
                 Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: onPaper,
+                    icon: const Icon(Icons.science_rounded),
+                    label: const Text('PAPER TRADE'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
                   child: TextButton.icon(
                     onPressed: onExplain,
                     icon: const Icon(Icons.psychology_alt_rounded),
-                    label: const Text('Explain Trade'),
+                    label: const Text('ASK AI'),
                   ),
                 ),
+                const SizedBox(width: 8),
                 Expanded(
                   child: TextButton.icon(
-                    onPressed: onOpenChart,
-                    icon: const Icon(Icons.candlestick_chart_rounded),
-                    label: const Text('Open Chart'),
+                    onPressed: onAuto,
+                    icon: const Icon(Icons.auto_mode_rounded),
+                    label: const Text('AUTO'),
                   ),
                 ),
               ],
@@ -953,6 +1388,69 @@ class _SignalDot extends StatelessWidget {
       decoration: BoxDecoration(color: color, shape: BoxShape.circle),
     );
   }
+}
+
+class _SparklinePainter extends CustomPainter {
+  const _SparklinePainter({
+    required this.values,
+    required this.color,
+  });
+
+  final List<double> values;
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (values.length < 2) {
+      final paint = Paint()
+        ..color = TradingPalette.panelBorder
+        ..strokeWidth = 1.2
+        ..style = PaintingStyle.stroke;
+      canvas.drawLine(
+        Offset(0, size.height / 2),
+        Offset(size.width, size.height / 2),
+        paint,
+      );
+      return;
+    }
+    final minValue = values.reduce((a, b) => a < b ? a : b);
+    final maxValue = values.reduce((a, b) => a > b ? a : b);
+    final range =
+        (maxValue - minValue).abs() < 0.0000001 ? 1.0 : maxValue - minValue;
+    final path = Path();
+    for (var index = 0; index < values.length; index++) {
+      final x = size.width * index / (values.length - 1);
+      final normalized = (values[index] - minValue) / range;
+      final y = size.height - normalized * size.height;
+      if (index == 0) {
+        path.moveTo(x, y);
+      } else {
+        path.lineTo(x, y);
+      }
+    }
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = 1.7
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..style = PaintingStyle.stroke;
+    canvas.drawPath(path, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _SparklinePainter oldDelegate) {
+    return oldDelegate.values != values || oldDelegate.color != color;
+  }
+}
+
+String _displayAsset(String symbol) {
+  final normalized = symbol.toUpperCase();
+  for (final quote in const <String>['USDT', 'USD', 'BUSD']) {
+    if (normalized.endsWith(quote) && normalized.length > quote.length) {
+      return normalized.substring(0, normalized.length - quote.length);
+    }
+  }
+  return normalized;
 }
 
 String _entryText(SignalModel? signal, ChartExecutionGuideModel? guide) {

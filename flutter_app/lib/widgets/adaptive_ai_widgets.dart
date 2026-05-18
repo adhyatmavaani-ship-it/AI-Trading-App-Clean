@@ -161,18 +161,70 @@ class AutopilotPanel extends StatelessWidget {
         : safety.safetyScore >= 60
             ? TradingPalette.amber
             : TradingPalette.neonRed;
-    return _AdaptiveDeskPanel(
-      title: 'Adaptive Autopilot',
-      badge: safety.verdict,
-      color: color,
-      rows: <String>[
-        '${autopilot.action} (${autopilot.recommendedMode})',
-        autopilot.reason,
-        'Leverage adjustment: ${autopilot.leverageAdjustment.toStringAsFixed(2)}x',
-        'Frequency: ${autopilot.signalFrequencyAdjustment}',
-        'Style: ${autopilot.scalpVsSwing}',
-        'Safety score: ${safety.safetyScore.toStringAsFixed(0)}%',
-      ],
+    final guardrails = <String>[
+      safety.volatilityAcceptable
+          ? 'Volatility acceptable; exits can remain adaptive.'
+          : 'Volatility unstable; AI reduces chase behavior.',
+      safety.liquidityAcceptable
+          ? 'Liquidity acceptable; execution remains eligible.'
+          : 'Liquidity weak; capital protection takes priority.',
+      safety.confidenceStable
+          ? 'Confidence stable; monitoring for invalidation.'
+          : 'Confidence unstable; Auto Mode stays defensive.',
+    ];
+    return GlassPanel(
+      glowColor: color,
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              Expanded(
+                child: Text(
+                  'AI Auto Mode',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w900,
+                      ),
+                ),
+              ),
+              StatusBadge(label: safety.verdict, color: color),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: <Widget>[
+              _MetricPill(
+                label: 'Safety',
+                value: safety.safetyScore,
+              ),
+              _MetricPill(
+                label: 'Risk x',
+                value: autopilot.leverageAdjustment,
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          _MetricLine(
+            label: 'Protection',
+            value: safety.safetyScore,
+            color: color,
+          ),
+          _Bullet(
+            text:
+                '${autopilot.action} (${autopilot.recommendedMode}, ${autopilot.scalpVsSwing}).',
+          ),
+          _Bullet(text: autopilot.reason),
+          _Bullet(
+            text:
+                'Signal cadence: ${autopilot.signalFrequencyAdjustment}. Manual override stays available.',
+          ),
+          const SizedBox(height: 6),
+          ...guardrails.map((row) => _Bullet(text: row)),
+        ],
+      ),
     );
   }
 }

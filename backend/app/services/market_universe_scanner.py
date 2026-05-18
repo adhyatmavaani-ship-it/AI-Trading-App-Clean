@@ -72,6 +72,10 @@ class MarketUniverseScanner:
             key=lambda item: float(item.get("change_pct", 0.0) or 0.0),
             reverse=True,
         )[:6]
+        top_losers = sorted(
+            normalized_entries,
+            key=lambda item: float(item.get("change_pct", 0.0) or 0.0),
+        )[:6]
         high_volatility = sorted(
             normalized_entries,
             key=lambda item: float(item.get("volatility_pct", 0.0) or 0.0),
@@ -91,6 +95,7 @@ class MarketUniverseScanner:
             },
             "categories": {
                 "top_gainers": top_gainers,
+                "top_losers": top_losers,
                 "high_volatility": high_volatility,
                 "ai_picks": ai_picks,
             },
@@ -224,6 +229,10 @@ class MarketUniverseScanner:
                 trend_pct = ((float(trend_series.iloc[-1]) / max(rolling_start, 1e-8)) - 1.0) * 100.0
         quote_volume = latest_close * latest_volume
         category = "high_volatility" if volatility_pct >= 2.0 else "top_gainer" if change_pct >= 0 else "watch"
+        sparkline = [
+            round(float(value), 8)
+            for value in close_series.tail(min(len(close_series), 24)).tolist()
+        ]
         return {
             "symbol": str(symbol).upper(),
             "price": round(float(latest_price), 8),
@@ -232,5 +241,6 @@ class MarketUniverseScanner:
             "volatility_pct": round(volatility_pct, 4),
             "trend_pct": round(trend_pct, 4),
             "quote_volume": round(quote_volume, 4),
+            "sparkline": sparkline,
             "category": category,
         }

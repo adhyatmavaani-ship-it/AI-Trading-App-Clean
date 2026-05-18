@@ -344,10 +344,18 @@ final tradeEvaluationProvider =
     StreamProvider.autoDispose<TradeEvaluationModel>((ref) async* {
   final repository = ref.watch(tradingRepositoryProvider);
   final symbol = ref.watch(selectedMarketSymbolProvider);
-  yield await repository.fetchTradeEvaluation(symbol);
+  TradeEvaluationModel? latest;
   while (true) {
+    try {
+      latest = await repository.fetchTradeEvaluation(symbol);
+      yield latest;
+    } catch (error, stackTrace) {
+      if (latest == null) {
+        Error.throwWithStackTrace(error, stackTrace);
+      }
+      yield latest;
+    }
     await Future<void>.delayed(AppConstants.tradeEvaluationPollingInterval);
-    yield await repository.fetchTradeEvaluation(symbol);
   }
 });
 

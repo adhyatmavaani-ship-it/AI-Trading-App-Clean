@@ -21,9 +21,11 @@ final marketChartProvider =
   final userId = ref.watch(activeUserIdProvider);
   final controller = StreamController<MarketChartModel>();
   Timer? pollTimer;
+  Timer? realtimeFlushTimer;
   StreamSubscription<ChartRealtimeSnapshotModel>? realtimeSubscription;
   StreamSubscription<Map<String, dynamic>>? recoverySubscription;
   MarketChartModel? latest;
+  ChartRealtimeSnapshotModel? pendingRealtimeSnapshot;
   bool refreshInFlight = false;
 
   Future<void> refresh() async {
@@ -48,7 +50,7 @@ final marketChartProvider =
         ),
       );
     } catch (error, stackTrace) {
-      if (!controller.isClosed) {
+      if (!controller.isClosed && latest == null) {
         controller.addError(error, stackTrace);
       }
     } finally {
@@ -111,19 +113,41 @@ final marketChartProvider =
       snapshotVersion: snapshot.snapshotVersion == 0
           ? current.snapshotVersion
           : snapshot.snapshotVersion,
-      stateHash: snapshot.stateHash.isEmpty ? current.stateHash : snapshot.stateHash,
+      stateHash:
+          snapshot.stateHash.isEmpty ? current.stateHash : snapshot.stateHash,
       integrityChecksum: snapshot.integrityChecksum.isEmpty
           ? current.integrityChecksum
           : snapshot.integrityChecksum,
     );
-    if (!controller.isClosed && latest != null) {
+    if (!controller.isClosed &&
+        latest != null &&
+        (latest!.stateHash != current.stateHash ||
+            latest!.snapshotVersion != current.snapshotVersion ||
+            snapshot.latestPrice != current.latestPrice)) {
       controller.add(latest!);
     }
   }
 
+  void scheduleRealtime(ChartRealtimeSnapshotModel snapshot) {
+    pendingRealtimeSnapshot = snapshot;
+    if (realtimeFlushTimer?.isActive ?? false) {
+      return;
+    }
+    realtimeFlushTimer = Timer(
+      const Duration(milliseconds: 90),
+      () {
+        final pending = pendingRealtimeSnapshot;
+        pendingRealtimeSnapshot = null;
+        if (pending != null) {
+          ingestRealtime(pending);
+        }
+      },
+    );
+  }
+
   unawaited(refresh());
   realtimeSubscription = repository.watchChartSnapshots(symbol: symbol).listen(
-        ingestRealtime,
+        scheduleRealtime,
         onError: controller.addError,
       );
   recoverySubscription = repository.watchRecoveryRequests().listen(
@@ -141,6 +165,7 @@ final marketChartProvider =
 
   ref.onDispose(() async {
     pollTimer?.cancel();
+    realtimeFlushTimer?.cancel();
     await realtimeSubscription?.cancel();
     await recoverySubscription?.cancel();
     await controller.close();
@@ -152,20 +177,36 @@ final marketChartProvider =
 final marketUniverseProvider =
     StreamProvider.autoDispose<MarketUniverseModel>((ref) async* {
   final repository = ref.watch(tradingRepositoryProvider);
-  yield await repository.fetchMarketUniverse();
+  MarketUniverseModel? latest;
   while (true) {
+    try {
+      latest = await repository.fetchMarketUniverse();
+      yield latest;
+    } catch (error, stackTrace) {
+      if (latest == null) {
+        Error.throwWithStackTrace(error, stackTrace);
+      }
+      yield latest;
+    }
     await Future<void>.delayed(AppConstants.marketSurfaceRefreshInterval);
-    yield await repository.fetchMarketUniverse();
   }
 });
 
 final marketSummaryProvider =
     StreamProvider.autoDispose<MarketSummaryModel>((ref) async* {
   final repository = ref.watch(tradingRepositoryProvider);
-  yield await repository.fetchMarketSummary();
+  MarketSummaryModel? latest;
   while (true) {
+    try {
+      latest = await repository.fetchMarketSummary();
+      yield latest;
+    } catch (error, stackTrace) {
+      if (latest == null) {
+        Error.throwWithStackTrace(error, stackTrace);
+      }
+      yield latest;
+    }
     await Future<void>.delayed(AppConstants.marketSurfaceRefreshInterval);
-    yield await repository.fetchMarketSummary();
   }
 });
 

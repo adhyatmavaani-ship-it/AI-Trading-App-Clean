@@ -490,7 +490,7 @@ class FrontendAnalyticsRoutesTest(unittest.TestCase):
         self.assertTrue(payload["items"][0]["execution_allowed"])
         self.assertEqual(self.container.trading_orchestrator.calls, 0)
 
-    def test_live_signals_returns_fallback_when_generation_times_out(self):
+    def test_live_signals_returns_empty_when_generation_times_out(self):
         self.container.settings.live_signals_route_timeout_seconds = 0.01
         self.container.trading_orchestrator.delay_seconds = 0.05
 
@@ -498,11 +498,8 @@ class FrontendAnalyticsRoutesTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertGreaterEqual(payload["count"], 1)
-        self.assertTrue(payload["items"][0]["degraded_mode"])
-        self.assertEqual(payload["items"][0]["quality"], "degraded")
-        self.assertFalse(payload["items"][0]["execution_allowed"])
-        self.assertEqual(payload["items"][0]["rejection_reason"], "live_generation_unavailable")
+        self.assertEqual(payload["count"], 0)
+        self.assertEqual(payload["items"], [])
         self.assertEqual(self.container.trading_orchestrator.calls, 1)
 
     def test_mock_price_move_endpoint(self):

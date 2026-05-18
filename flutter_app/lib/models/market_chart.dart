@@ -275,8 +275,8 @@ class MarketChartModel {
       ),
       renderProfile: ChartRenderProfileModel.fromJson(
         Map<String, dynamic>.from(
-          (json['render_hints'] as Map? ?? const <String, dynamic>{})['render_profile']
-                  as Map? ??
+          (json['render_hints'] as Map? ??
+                  const <String, dynamic>{})['render_profile'] as Map? ??
               const <String, dynamic>{},
         ),
       ),
@@ -850,6 +850,8 @@ class MarketUniverseEntryModel {
     required this.trendPct,
     required this.quoteVolume,
     required this.category,
+    this.potentialScore = 0,
+    this.sparkline = const <double>[],
   });
 
   final String symbol;
@@ -860,6 +862,8 @@ class MarketUniverseEntryModel {
   final double trendPct;
   final double quoteVolume;
   final String category;
+  final double potentialScore;
+  final List<double> sparkline;
 
   factory MarketUniverseEntryModel.fromJson(Map<String, dynamic> json) {
     return MarketUniverseEntryModel(
@@ -871,6 +875,11 @@ class MarketUniverseEntryModel {
       trendPct: (json['trend_pct'] as num?)?.toDouble() ?? 0,
       quoteVolume: (json['quote_volume'] as num?)?.toDouble() ?? 0,
       category: json['category'] as String? ?? 'watch',
+      potentialScore: (json['potential_score'] as num?)?.toDouble() ?? 0,
+      sparkline: (json['sparkline'] as List<dynamic>? ?? const <dynamic>[])
+          .whereType<num>()
+          .map((item) => item.toDouble())
+          .toList(),
     );
   }
 }
@@ -896,12 +905,14 @@ class MarketUniverseModel {
   const MarketUniverseModel({
     required this.items,
     required this.topGainers,
+    required this.topLosers,
     required this.highVolatility,
     required this.aiPicks,
   });
 
   final List<MarketUniverseEntryModel> items;
   final List<MarketUniverseEntryModel> topGainers;
+  final List<MarketUniverseEntryModel> topLosers;
   final List<MarketUniverseEntryModel> highVolatility;
   final List<MarketUniverseEntryModel> aiPicks;
 
@@ -919,6 +930,7 @@ class MarketUniverseModel {
     return MarketUniverseModel(
       items: parseEntries(json['items']),
       topGainers: parseEntries(categories['top_gainers']),
+      topLosers: parseEntries(categories['top_losers']),
       highVolatility: parseEntries(categories['high_volatility']),
       aiPicks: parseEntries(categories['ai_picks']),
     );

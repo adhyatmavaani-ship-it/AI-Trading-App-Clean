@@ -6,11 +6,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/adaptive_ai_intelligence_engine.dart';
 import '../core/ai_opportunity_engine.dart';
-import '../core/edge_validation_engine.dart';
 import '../core/error_presenter.dart';
 import '../core/institutional_intelligence_engine.dart';
-import '../core/production_infrastructure_engine.dart';
-import '../core/trading_operating_system_engine.dart';
 import '../core/trading_palette.dart';
 import '../core/websocket_service.dart';
 import '../features/auth/providers/auth_provider.dart';
@@ -23,17 +20,13 @@ import '../models/market_chart.dart';
 import '../models/signal.dart';
 import '../models/trade_execution.dart';
 import '../providers/app_providers.dart';
-import '../widgets/adaptive_ai_widgets.dart';
-import '../widgets/edge_validation_widgets.dart';
 import '../widgets/glass_panel.dart';
 import '../widgets/institutional_trust_widgets.dart';
 import '../widgets/live_pulse_indicator.dart';
 import '../widgets/pro_trading_chart.dart';
-import '../widgets/production_infrastructure_widgets.dart';
 import '../widgets/section_card.dart';
 import '../widgets/state_widgets.dart';
 import '../widgets/status_badge.dart';
-import '../widgets/trading_os_widgets.dart';
 
 class TradeScreen extends ConsumerStatefulWidget {
   const TradeScreen({super.key});
@@ -74,7 +67,6 @@ class _TradeScreenState extends ConsumerState<TradeScreen> {
         ref.watch(webSocketServiceProvider).stateListenable.value;
     final marketUniverseAsync = ref.watch(marketUniverseProvider);
     final activeTradesAsync = ref.watch(activeTradesProvider(userId));
-    final pnlAsync = ref.watch(userPnLProvider(userId));
     final signalFeed = ref.watch(signalFeedProvider);
     final signalItems = signalFeed.items;
     final symbolOptions = _buildSymbolOptions(
@@ -91,12 +83,6 @@ class _TradeScreenState extends ConsumerState<TradeScreen> {
           state: executionState,
           evaluation: tradeEvaluationAsync.valueOrNull,
         );
-    const operatingSystem = TradingOperatingSystemEngine();
-    final portfolioRead = operatingSystem.portfolioIntelligence(
-      pnl: pnlAsync.valueOrNull,
-      trades: activeTradesAsync.valueOrNull ?? const <ActiveTradeModel>[],
-    );
-
     _syncAmountField(executionState.amount);
 
     return RefreshIndicator(
@@ -109,8 +95,6 @@ class _TradeScreenState extends ConsumerState<TradeScreen> {
             tradeIntent: tradeIntent,
             tradeEvaluationAsync: tradeEvaluationAsync,
             chart: marketChartAsync.valueOrNull,
-            portfolioRead: portfolioRead,
-            websocketState: socketState,
             executionState: executionState,
             paperState: paperState,
             authDegraded: authState.isDegraded,
@@ -142,6 +126,57 @@ class _TradeScreenState extends ConsumerState<TradeScreen> {
             ),
             onDismissFeedback: executionController.clearFeedback,
           );
+          Widget buildStickyExecutionBar() {
+            return _StickyExecutionBar(
+              disabled: executionState.isSubmitting,
+              activeSide: executionState.side,
+              websocketState: socketState,
+              onBuy: () {
+                executionController.setSide('BUY');
+                if (!executionBlocked) {
+                  _confirmAndExecute(
+                    userId: userId,
+                    symbol: selectedSymbol,
+                    intent: tradeIntent,
+                    evaluation: tradeEvaluationAsync.valueOrNull,
+                  );
+                }
+              },
+              onSell: () {
+                executionController.setSide('SELL');
+                if (!executionBlocked) {
+                  _confirmAndExecute(
+                    userId: userId,
+                    symbol: selectedSymbol,
+                    intent: tradeIntent,
+                    evaluation: tradeEvaluationAsync.valueOrNull,
+                  );
+                }
+              },
+              onAskAi: () => _showAiReadout(
+                context: context,
+                symbol: selectedSymbol,
+                chart: marketChartAsync.valueOrNull,
+                signal: _signalForSymbol(signalItems, selectedSymbol),
+              ),
+              onAuto: () async {
+                await ref
+                    .read(tradingRepositoryProvider)
+                    .setAssistantMode('FULL_AUTO');
+                ref.invalidate(assistantModeProvider);
+                ref.invalidate(marketChartProvider);
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text(
+                        'Auto mode armed. Manual override remains active.',
+                      ),
+                    ),
+                  );
+                }
+              },
+            );
+          }
 
           final chartPanel = SectionCard(
             title: 'Execution Chart',
@@ -187,6 +222,10 @@ class _TradeScreenState extends ConsumerState<TradeScreen> {
                 marketChartAsync.when(
                   data: (chart) => ProTradingChart(
                     chart: chart,
+                    activeTrades: activeTradesAsync.valueOrNull ??
+                        const <ActiveTradeModel>[],
+                    fullscreenActionBar: buildStickyExecutionBar(),
+                    height: isWide ? 520 : 430,
                     onAssistantModeChanged: (mode) async {
                       await ref
                           .read(tradingRepositoryProvider)
@@ -210,40 +249,63 @@ class _TradeScreenState extends ConsumerState<TradeScreen> {
             selectedSymbol: selectedSymbol,
             activeTradesAsync: activeTradesAsync,
           );
+          final stickyExecutionBar = buildStickyExecutionBar();
 
-          return ListView(
-            physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.fromLTRB(20, 6, 20, 32),
+          return Stack(
             children: <Widget>[
-              _TradeHeroCard(
-                selectedSymbol: selectedSymbol,
-                tradeIntent: tradeIntent,
-                signal: _signalForSymbol(signalItems, selectedSymbol),
-                evaluation: tradeEvaluationAsync.valueOrNull,
-              ),
-              const SizedBox(height: 18),
-              if (isWide)
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
-                    Expanded(flex: 7, child: chartPanel),
-                    const SizedBox(width: 18),
-                    Expanded(flex: 5, child: executionPanel),
+              ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.fromLTRB(20, 6, 20, 112),
+                children: <Widget>[
+                  _TradeHeroCard(
+                    selectedSymbol: selectedSymbol,
+                    tradeIntent: tradeIntent,
+                    signal: _signalForSymbol(signalItems, selectedSymbol),
+                    evaluation: tradeEvaluationAsync.valueOrNull,
+                  ),
+                  const SizedBox(height: 14),
+                  _AiReasoningPanel(
+                    symbol: selectedSymbol,
+                    chart: marketChartAsync.valueOrNull,
+                    signal: _signalForSymbol(signalItems, selectedSymbol),
+                    evaluation: tradeEvaluationAsync.valueOrNull,
+                    executionState: executionState,
+                    activeTrades: activeTradesAsync.valueOrNull ??
+                        const <ActiveTradeModel>[],
+                  ),
+                  const SizedBox(height: 18),
+                  if (isWide)
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Expanded(flex: 7, child: chartPanel),
+                        const SizedBox(width: 18),
+                        Expanded(flex: 5, child: executionPanel),
+                      ],
+                    )
+                  else ...<Widget>[
+                    chartPanel,
+                    const SizedBox(height: 18),
+                    executionPanel,
                   ],
-                )
-              else ...<Widget>[
-                chartPanel,
-                const SizedBox(height: 18),
-                executionPanel,
-              ],
-              const SizedBox(height: 18),
-              activeTradesPanel,
-              const SizedBox(height: 18),
-              _PaperPortfolioPanel(
-                state: paperState,
-                onClose: (tradeId) {
-                  ref.read(localPaperTradingProvider.notifier).close(tradeId);
-                },
+                  const SizedBox(height: 18),
+                  activeTradesPanel,
+                  const SizedBox(height: 18),
+                  _PaperPortfolioPanel(
+                    state: paperState,
+                    onClose: (tradeId) {
+                      ref
+                          .read(localPaperTradingProvider.notifier)
+                          .close(tradeId);
+                    },
+                  ),
+                ],
+              ),
+              Positioned(
+                left: 16,
+                right: 16,
+                bottom: 14,
+                child: stickyExecutionBar,
               ),
             ],
           );
@@ -350,6 +412,55 @@ class _TradeScreenState extends ConsumerState<TradeScreen> {
       SnackBar(
         content: Text(
           'Paper ${position.side} opened on ${position.symbol} at ${position.entry.toStringAsFixed(4)}',
+        ),
+      ),
+    );
+  }
+
+  void _showAiReadout({
+    required BuildContext context,
+    required String symbol,
+    required MarketChartModel? chart,
+    required SignalModel? signal,
+  }) {
+    final guide = chart?.executionGuide;
+    final reasons = <String>[
+      if (signal?.decisionReason.trim().isNotEmpty == true)
+        signal!.decisionReason,
+      if ((chart?.marketRegime.state ?? '').trim().isNotEmpty)
+        'Regime: ${chart!.marketRegime.state}. Confidence ${chart.marketRegime.confidence.toStringAsFixed(0)}%.',
+      if (guide != null && guide.riskReward > 0)
+        'Execution plan: ${guide.side} with R:R ${guide.riskReward.toStringAsFixed(2)}.',
+      if (chart == null || chart.candles.isEmpty)
+        'Live candles are not verified yet. AI should wait instead of forcing a setup.',
+    ];
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: TradingPalette.deepNavy,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(22, 18, 22, 28),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text(
+                'AI Readout: $symbol',
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w900,
+                    ),
+              ),
+              const SizedBox(height: 14),
+              for (final reason in reasons)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Text(reason),
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -515,14 +626,816 @@ class _TradeHeroCard extends StatelessWidget {
   }
 }
 
+class _AiReasoningPanel extends StatelessWidget {
+  const _AiReasoningPanel({
+    required this.symbol,
+    required this.chart,
+    required this.signal,
+    required this.evaluation,
+    required this.executionState,
+    required this.activeTrades,
+  });
+
+  final String symbol;
+  final MarketChartModel? chart;
+  final SignalModel? signal;
+  final TradeEvaluationModel? evaluation;
+  final TradeExecutionState executionState;
+  final List<ActiveTradeModel> activeTrades;
+
+  @override
+  Widget build(BuildContext context) {
+    final activeTrade = activeTrades
+        .where((trade) => trade.symbol.toUpperCase() == symbol.toUpperCase())
+        .firstOrNull;
+    final guide = chart?.executionGuide;
+    final allowTrade = evaluation?.allowTrade == true;
+    final side = (evaluation?.approvedSide.isNotEmpty == true
+            ? evaluation!.approvedSide
+            : signal?.action ?? guide?.side ?? 'WAIT')
+        .toUpperCase();
+    final title = allowTrade
+        ? '$symbol $side validated'
+        : activeTrade != null
+            ? '$symbol active trade under AI watch'
+            : '$symbol setup waiting';
+    final reasons = _reasoningLines(
+      symbol: symbol,
+      chart: chart,
+      signal: signal,
+      evaluation: evaluation,
+      activeTrade: activeTrade,
+    );
+    final color = allowTrade
+        ? TradingPalette.neonGreen
+        : activeTrade != null
+            ? TradingPalette.electricBlue
+            : TradingPalette.amber;
+    return GlassPanel(
+      glowColor: color,
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              Icon(
+                activeTrade != null
+                    ? Icons.auto_graph_rounded
+                    : allowTrade
+                        ? Icons.verified_rounded
+                        : Icons.psychology_alt_rounded,
+                color: color,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  title,
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w900,
+                      ),
+                ),
+              ),
+              StatusBadge(
+                label: chart?.activeAssistantMode ?? 'ASSISTED',
+                color: color,
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          _AiStateRibbon(
+            stage: _aiStage(
+              chart: chart,
+              signal: signal,
+              evaluation: evaluation,
+              executionState: executionState,
+              activeTrade: activeTrade,
+            ),
+          ),
+          const SizedBox(height: 12),
+          if (chart != null) ...<Widget>[
+            _LiveConfidenceDelta(chart: chart!, evaluation: evaluation),
+            const SizedBox(height: 12),
+          ],
+          for (final reason in reasons.take(4))
+            Padding(
+              padding: const EdgeInsets.only(bottom: 7),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Padding(
+                    padding: const EdgeInsets.only(top: 7),
+                    child: Icon(Icons.circle, size: 6, color: color),
+                  ),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Text(
+                      reason,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: TradingPalette.textMuted,
+                            height: 1.25,
+                          ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AiStateRibbon extends StatelessWidget {
+  const _AiStateRibbon({required this.stage});
+
+  final String stage;
+
+  @override
+  Widget build(BuildContext context) {
+    const stages = <String>[
+      'Scanning Market',
+      'Ranking Opportunities',
+      'Validating Risk',
+      'Confirming Liquidity',
+      'Executing Position',
+      'Monitoring Trade',
+      'Trailing Stop Active',
+      'Evaluating Exit',
+    ];
+    final activeIndex = stages.indexOf(stage);
+    return SizedBox(
+      height: 34,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: stages.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (context, index) {
+          final active = index == activeIndex;
+          final complete = activeIndex >= 0 && index < activeIndex;
+          final color = active
+              ? TradingPalette.electricBlue
+              : complete
+                  ? TradingPalette.neonGreen
+                  : TradingPalette.panelBorder;
+          return AnimatedContainer(
+            duration: const Duration(milliseconds: 220),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            decoration: BoxDecoration(
+              color: color.withOpacity(active ? 0.16 : 0.08),
+              borderRadius: BorderRadius.circular(999),
+              border:
+                  Border.all(color: color.withOpacity(active ? 0.42 : 0.22)),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Icon(
+                  complete
+                      ? Icons.check_rounded
+                      : active
+                          ? Icons.sync_rounded
+                          : Icons.circle_outlined,
+                  size: 14,
+                  color: color,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  stages[index],
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: active || complete
+                            ? TradingPalette.textPrimary
+                            : TradingPalette.textMuted,
+                        fontWeight: FontWeight.w800,
+                      ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _LiveConfidenceDelta extends StatelessWidget {
+  const _LiveConfidenceDelta({required this.chart, required this.evaluation});
+
+  final MarketChartModel chart;
+  final TradeEvaluationModel? evaluation;
+
+  @override
+  Widget build(BuildContext context) {
+    final current = _normalizedConfidence(
+      evaluation?.confidenceScore ?? chart.opportunity.confidence,
+    );
+    final previous = _previousConfidence(chart) ?? current;
+    final delta = current - previous;
+    final color = delta >= 0
+        ? TradingPalette.neonGreen
+        : delta <= -1
+            ? TradingPalette.neonRed
+            : TradingPalette.amber;
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 220),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.10),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withOpacity(0.26)),
+      ),
+      child: Row(
+        children: <Widget>[
+          Icon(
+            delta >= 0 ? Icons.north_east_rounded : Icons.south_east_rounded,
+            color: color,
+            size: 18,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  'AI confidence ${previous.toStringAsFixed(0)}% -> ${current.toStringAsFixed(0)}%',
+                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                        fontWeight: FontWeight.w900,
+                      ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  _confidenceReason(chart: chart, delta: delta),
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: TradingPalette.textMuted,
+                      ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StickyExecutionBar extends StatelessWidget {
+  const _StickyExecutionBar({
+    required this.disabled,
+    required this.activeSide,
+    required this.websocketState,
+    required this.onBuy,
+    required this.onSell,
+    required this.onAskAi,
+    required this.onAuto,
+  });
+
+  final bool disabled;
+  final String activeSide;
+  final WsState websocketState;
+  final VoidCallback onBuy;
+  final VoidCallback onSell;
+  final VoidCallback onAskAi;
+  final VoidCallback onAuto;
+
+  @override
+  Widget build(BuildContext context) {
+    final connected = websocketState == WsState.connected;
+    return GlassPanel(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+      radius: 18,
+      glowColor: connected ? TradingPalette.electricBlue : TradingPalette.amber,
+      child: Row(
+        children: <Widget>[
+          _StickyAction(
+            label: 'BUY',
+            icon: Icons.trending_up_rounded,
+            color: TradingPalette.neonGreen,
+            selected: activeSide == 'BUY',
+            onTap: disabled ? null : onBuy,
+          ),
+          const SizedBox(width: 8),
+          _StickyAction(
+            label: 'SELL',
+            icon: Icons.trending_down_rounded,
+            color: TradingPalette.neonRed,
+            selected: activeSide == 'SELL',
+            onTap: disabled ? null : onSell,
+          ),
+          const SizedBox(width: 8),
+          _StickyAction(
+            label: 'ASK AI',
+            icon: Icons.psychology_alt_rounded,
+            color: TradingPalette.electricBlue,
+            selected: false,
+            onTap: onAskAi,
+          ),
+          const SizedBox(width: 8),
+          _StickyAction(
+            label: 'AUTO',
+            icon: Icons.auto_mode_rounded,
+            color: TradingPalette.amber,
+            selected: false,
+            onTap: onAuto,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StickyAction extends StatelessWidget {
+  const _StickyAction({
+    required this.label,
+    required this.icon,
+    required this.color,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final IconData icon;
+  final Color color;
+  final bool selected;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(14),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 11),
+          decoration: BoxDecoration(
+            color: selected
+                ? color.withOpacity(0.18)
+                : Colors.white.withOpacity(0.045),
+            borderRadius: BorderRadius.circular(14),
+            border:
+                Border.all(color: color.withOpacity(selected ? 0.48 : 0.22)),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Icon(icon,
+                  size: 17,
+                  color: onTap == null ? TradingPalette.textFaint : color),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: onTap == null
+                            ? TradingPalette.textFaint
+                            : TradingPalette.textPrimary,
+                        fontWeight: FontWeight.w900,
+                      ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ExecutionLiveStateCard extends StatelessWidget {
+  const _ExecutionLiveStateCard({
+    required this.state,
+    required this.evaluation,
+    required this.chart,
+  });
+
+  final TradeExecutionState state;
+  final TradeEvaluationModel? evaluation;
+  final MarketChartModel? chart;
+
+  @override
+  Widget build(BuildContext context) {
+    final response = state.lastResponse;
+    final accepted = response != null;
+    final color = accepted ? TradingPalette.neonGreen : TradingPalette.amber;
+    final liquidity = chart?.orderbookDepth.pressureScore;
+    final riskApproved = evaluation?.allowTrade == true;
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 260),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.10),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: color.withOpacity(0.30)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              Icon(
+                accepted
+                    ? Icons.task_alt_rounded
+                    : Icons.motion_photos_on_rounded,
+                color: color,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 220),
+                  child: Text(
+                    accepted ? 'Position activating' : 'Execution mode',
+                    key: ValueKey<bool>(accepted),
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w900,
+                        ),
+                  ),
+                ),
+              ),
+              StatusBadge(
+                label: accepted ? response.status.toUpperCase() : 'VALIDATING',
+                color: color,
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          if (!accepted)
+            ClipRRect(
+              borderRadius: BorderRadius.circular(999),
+              child: const LinearProgressIndicator(minHeight: 5),
+            )
+          else
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 240),
+              child: Text(
+                '${response.symbol} ${response.side} at ${response.executedPrice.toStringAsFixed(response.executedPrice >= 100 ? 2 : 4)} | SL ${response.stopLoss.toStringAsFixed(response.stopLoss >= 100 ? 2 : 4)} | TP ${response.takeProfit.toStringAsFixed(response.takeProfit >= 100 ? 2 : 4)}',
+                key: ValueKey<String>(response.tradeId),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: TradingPalette.textMuted,
+                    ),
+              ),
+            ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: <Widget>[
+              _ExecutionStepPill(
+                label: 'AI validation',
+                complete: riskApproved,
+              ),
+              _ExecutionStepPill(
+                label: liquidity == null
+                    ? 'Liquidity checking'
+                    : 'Liquidity ${liquidity.toStringAsFixed(0)}',
+                complete: accepted || (liquidity ?? 0) >= 45,
+              ),
+              _ExecutionStepPill(
+                label: accepted ? 'Accepted' : 'Awaiting broker',
+                complete: accepted,
+              ),
+              _ExecutionStepPill(
+                label: accepted ? 'Portfolio updating' : 'Risk recap ready',
+                complete: accepted,
+              ),
+            ],
+          ),
+          if (evaluation != null) ...<Widget>[
+            const SizedBox(height: 12),
+            _CompactRiskRecap(evaluation: evaluation!),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _ExecutionStepPill extends StatelessWidget {
+  const _ExecutionStepPill({
+    required this.label,
+    required this.complete,
+  });
+
+  final String label;
+  final bool complete;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = complete ? TradingPalette.neonGreen : TradingPalette.amber;
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 180),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.10),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withOpacity(0.28)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Icon(
+            complete
+                ? Icons.check_circle_rounded
+                : Icons.radio_button_checked_rounded,
+            size: 14,
+            color: color,
+          ),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: TradingPalette.textPrimary,
+                  fontWeight: FontWeight.w800,
+                ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CompactRiskRecap extends StatelessWidget {
+  const _CompactRiskRecap({required this.evaluation});
+
+  final TradeEvaluationModel evaluation;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: TradingPalette.panelSoft,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: TradingPalette.panelBorder),
+      ),
+      child: Row(
+        children: <Widget>[
+          Expanded(
+            child: _RiskRecapMetric(
+              label: 'Alpha',
+              value: evaluation.alphaScore.toStringAsFixed(0),
+            ),
+          ),
+          Expanded(
+            child: _RiskRecapMetric(
+              label: 'Daily Risk',
+              value: evaluation.riskBudget.toStringAsFixed(3),
+            ),
+          ),
+          Expanded(
+            child: _RiskRecapMetric(
+              label: 'Rollout',
+              value:
+                  '${(evaluation.rolloutCapitalFraction * 100).toStringAsFixed(0)}%',
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RiskRecapMetric extends StatelessWidget {
+  const _RiskRecapMetric({
+    required this.label,
+    required this.value,
+  });
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Text(label, style: Theme.of(context).textTheme.labelSmall),
+        const SizedBox(height: 3),
+        Text(
+          value,
+          style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.w900,
+              ),
+        ),
+      ],
+    );
+  }
+}
+
+class _AutoModeDashboard extends StatelessWidget {
+  const _AutoModeDashboard({
+    required this.autopilot,
+    required this.safety,
+    required this.chart,
+    required this.evaluation,
+  });
+
+  final AutopilotIntelligenceRead autopilot;
+  final AutopilotSafetyRead safety;
+  final MarketChartModel? chart;
+  final TradeEvaluationModel? evaluation;
+
+  @override
+  Widget build(BuildContext context) {
+    final protectionColor = safety.safetyScore >= 80
+        ? TradingPalette.neonGreen
+        : safety.safetyScore >= 60
+            ? TradingPalette.amber
+            : TradingPalette.neonRed;
+    final strategy = _strategyLabel(
+      evaluation?.strategy ?? chart?.strategyState.activeStrategy,
+    );
+    final trailingStop = chart?.trailingStop.currentStop ?? 0;
+    final projectedStop = chart?.trailingStop.projectedStop ?? 0;
+    final volatility = chart?.opportunity.volatilityScore ?? 0;
+    final liquidity = chart?.orderbookDepth.pressureScore ??
+        chart?.liquidityHeatmap.pressureScore ??
+        0;
+    final confidence = _normalizedConfidence(
+      evaluation?.confidenceScore ?? chart?.opportunity.confidence ?? 0,
+    );
+    final feed = chart?.aiFeed
+            .where((item) => item.detail.trim().isNotEmpty)
+            .take(3)
+            .map((item) => item.detail.trim())
+            .toList(growable: false) ??
+        const <String>[];
+    final reasoning = feed.isNotEmpty
+        ? feed
+        : <String>[
+            autopilot.reason,
+            safety.confidenceStable
+                ? 'Confidence stable; AI is monitoring invalidation quality.'
+                : 'Confidence unstable; AI keeps exposure defensive.',
+          ];
+    return GlassPanel(
+      glowColor: protectionColor,
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              Expanded(
+                child: Text(
+                  'AI Auto Mode',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w900,
+                      ),
+                ),
+              ),
+              StatusBadge(label: safety.verdict, color: protectionColor),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: <Widget>[
+              _MetricPill(
+                label: 'Strategy',
+                value: strategy,
+                accent: TradingPalette.electricBlue,
+              ),
+              _MetricPill(
+                label: 'Confidence',
+                value: '${confidence.toStringAsFixed(0)}%',
+                accent: protectionColor,
+              ),
+              _MetricPill(
+                label: 'Trailing SL',
+                value: trailingStop > 0 ? _formatPrice(trailingStop) : 'Armed',
+                accent: TradingPalette.amber,
+              ),
+              _MetricPill(
+                label: 'Projected',
+                value:
+                    projectedStop > 0 ? _formatPrice(projectedStop) : 'Watch',
+                accent: TradingPalette.violet,
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          _AutoStateLine(
+            label: 'Volatility adaptation',
+            value: volatility >= 70
+                ? 'Defensive exits'
+                : volatility >= 45
+                    ? 'Normal exits'
+                    : 'Patient entries',
+            active: safety.volatilityAcceptable,
+          ),
+          _AutoStateLine(
+            label: 'Liquidity adaptation',
+            value: liquidity >= 60
+                ? 'Supportive'
+                : liquidity >= 40
+                    ? 'Selective'
+                    : 'Weak',
+            active: safety.liquidityAcceptable,
+          ),
+          _AutoStateLine(
+            label: 'Position protection',
+            value:
+                trailingStop > 0 ? 'Trailing stop active' : 'Risk gates armed',
+            active: safety.safetyScore >= 60,
+          ),
+          const SizedBox(height: 10),
+          ...reasoning.map(
+            (line) => _AutoReasoningLine(text: _traderFacingReason(line)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AutoStateLine extends StatelessWidget {
+  const _AutoStateLine({
+    required this.label,
+    required this.value,
+    required this.active,
+  });
+
+  final String label;
+  final String value;
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = active ? TradingPalette.neonGreen : TradingPalette.amber;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        children: <Widget>[
+          Icon(Icons.shield_rounded, size: 16, color: color),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              label,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: TradingPalette.textMuted,
+                  ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            value,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: TradingPalette.textPrimary,
+                  fontWeight: FontWeight.w800,
+                ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AutoReasoningLine extends StatelessWidget {
+  const _AutoReasoningLine({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Container(
+            width: 6,
+            height: 6,
+            margin: const EdgeInsets.only(top: 7),
+            decoration: const BoxDecoration(
+              color: TradingPalette.electricBlue,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Text(
+              text,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: TradingPalette.textPrimary,
+                  ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _TradeExecutionPanel extends StatelessWidget {
   const _TradeExecutionPanel({
     required this.selectedSymbol,
     required this.tradeIntent,
     required this.tradeEvaluationAsync,
     required this.chart,
-    required this.portfolioRead,
-    required this.websocketState,
     required this.executionState,
     required this.paperState,
     required this.authDegraded,
@@ -539,8 +1452,6 @@ class _TradeExecutionPanel extends StatelessWidget {
   final TradeIntent? tradeIntent;
   final AsyncValue<TradeEvaluationModel> tradeEvaluationAsync;
   final MarketChartModel? chart;
-  final PortfolioIntelligenceRead portfolioRead;
-  final WsState websocketState;
   final TradeExecutionState executionState;
   final LocalPaperPortfolioState paperState;
   final bool authDegraded;
@@ -557,28 +1468,17 @@ class _TradeExecutionPanel extends StatelessWidget {
     final evaluation = tradeEvaluationAsync.valueOrNull;
     const institutionalEngine = InstitutionalIntelligenceEngine();
     const adaptiveEngine = AdaptiveAiIntelligenceEngine();
-    const edgeEngine = EdgeValidationEngine();
     final planSignal = _signalFromTradeIntent(
       tradeIntent: tradeIntent,
       fallbackSide: executionState.side,
       evaluation: evaluation,
     );
-    final outcomeReports = edgeEngine.signalOutcomes(
-      planSignal == null ? const <SignalModel>[] : <SignalModel>[planSignal],
-      chart: chart,
-    );
-    final outcomeReport = outcomeReports.isEmpty ? null : outcomeReports.first;
     final briefing = institutionalEngine.executionBriefing(
       symbol: selectedSymbol,
       side: executionState.side,
       notional: executionState.amount,
       evaluation: evaluation,
       signal: planSignal,
-      chart: chart,
-    );
-    final precision = adaptiveEngine.executionPrecision(
-      signal: planSignal,
-      evaluation: evaluation,
       chart: chart,
     );
     final autopilot = adaptiveEngine.autopilot(
@@ -590,41 +1490,6 @@ class _TradeExecutionPanel extends StatelessWidget {
       signal: planSignal,
       evaluation: evaluation,
       chart: chart,
-    );
-    final executionOutcome = edgeEngine.executionOutcome(
-      outcomeReport,
-      chart: chart,
-    );
-    final replayMetadata = edgeEngine.replayMetadata(
-      outcomeReports,
-      chart: chart,
-    );
-    const infrastructureEngine = ProductionInfrastructureEngine();
-    final realtimeResilience = infrastructureEngine.realtimeResilience(
-      websocketState: websocketState,
-    );
-    final dataIntegrity = infrastructureEngine.marketDataIntegrity(
-      chart: chart,
-    );
-    final reconciliation = infrastructureEngine.executionReconciliation(
-      requestedSide: executionState.side,
-      requestedAmount: executionState.amount,
-      submitting: executionState.isSubmitting,
-      evaluation: evaluation,
-    );
-    final failsafe = infrastructureEngine.failsafe(
-      realtime: realtimeResilience,
-      data: dataIntegrity,
-      execution: reconciliation,
-    );
-    final failureHandling = infrastructureEngine.failureHandling(
-      realtime: realtimeResilience,
-      failsafe: failsafe,
-    );
-    final workspace = const TradingOperatingSystemEngine().executionWorkspace(
-      portfolio: portfolioRead,
-      signal: planSignal,
-      evaluation: evaluation,
     );
     final executionReady = _canExecuteTrade(
       state: executionState,
@@ -660,42 +1525,24 @@ class _TradeExecutionPanel extends StatelessWidget {
             evaluationAsync: tradeEvaluationAsync,
             authDegraded: authDegraded,
           ),
+          if (executionState.isSubmitting ||
+              executionState.lastResponse != null) ...<Widget>[
+            const SizedBox(height: 18),
+            _ExecutionLiveStateCard(
+              state: executionState,
+              evaluation: evaluation,
+              chart: chart,
+            ),
+          ],
           const SizedBox(height: 18),
           ExecutionBriefingPanel(briefing: briefing),
           const SizedBox(height: 18),
-          ExecutionPrecisionPanel(precision: precision),
-          const SizedBox(height: 18),
-          AutopilotPanel(autopilot: autopilot, safety: safety),
-          const SizedBox(height: 18),
-          ExecutionWorkspacePanel(read: workspace),
-          const SizedBox(height: 18),
-          FailsafeExecutionPanel(read: failsafe),
-          if (failsafe.advisoryOnly) ...<Widget>[
-            const SizedBox(height: 18),
-            FailureHandlingPanel(read: failureHandling),
-          ],
-          const SizedBox(height: 18),
-          ExecutionReconciliationPanel(read: reconciliation),
-          const SizedBox(height: 18),
-          ExecutionOutcomePanel(read: executionOutcome),
-          if (planSignal != null) ...<Widget>[
-            const SizedBox(height: 18),
-            AiDecisionJournalPanel(
-              entry: edgeEngine.decisionJournal(planSignal, outcomeReport),
-            ),
-          ],
-          const SizedBox(height: 18),
-          ReplayMetadataPanel(read: replayMetadata),
-          if (chart != null) ...<Widget>[
-            const SizedBox(height: 18),
-            MicrostructurePanel(
-              read: institutionalEngine.microstructureForChart(chart!),
-            ),
-            const SizedBox(height: 18),
-            MarketContextPanel(
-              contextRead: institutionalEngine.marketContextForChart(chart),
-            ),
-          ],
+          _AutoModeDashboard(
+            autopilot: autopilot,
+            safety: safety,
+            chart: chart,
+            evaluation: evaluation,
+          ),
           const SizedBox(height: 18),
           Text(
             'Side',
@@ -1482,79 +2329,161 @@ class _TradeConfirmSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 20, 20, 28),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          Text(
-            'Confirm Trade',
-            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                  fontWeight: FontWeight.w800,
+    final confidence = evaluation?.confidenceScore ?? signal?.confidence;
+    final confidencePct =
+        confidence == null ? null : _normalizedConfidence(confidence);
+    final validated = evaluation?.allowTrade == true;
+    final sideAligned = evaluation == null || evaluation!.approvedSide == side;
+    return SafeArea(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: Text(
+                    'Execution Review',
+                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                          fontWeight: FontWeight.w900,
+                        ),
+                  ),
                 ),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            '$side $symbol for \$${amount.toStringAsFixed(2)}',
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  color: _sideColor(side),
-                  fontWeight: FontWeight.w800,
+                StatusBadge(
+                  label: validated ? 'RISK APPROVED' : 'CHECKING RISK',
+                  color: validated
+                      ? TradingPalette.neonGreen
+                      : TradingPalette.amber,
                 ),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            _traderFacingReason(
-              evaluation?.reason ?? signal?.reason,
-              fallback:
-                  'This request will be sent to the backend execution pipeline for final risk validation and order placement.',
+              ],
             ),
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-          const SizedBox(height: 16),
-          Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            children: <Widget>[
-              if (signal?.strategy != null && signal!.strategy!.isNotEmpty)
-                StatusBadge(
-                  label: signal!.strategy!,
-                  color: TradingPalette.electricBlue,
-                ),
-              if (signal?.confidence != null)
-                StatusBadge(
-                  label:
-                      'Confidence ${((evaluation?.confidenceScore ?? signal!.confidence!) * 100).toStringAsFixed(0)}%',
-                  color:
-                      (evaluation?.allowTrade == false || signal!.lowConfidence)
-                          ? TradingPalette.amber
-                          : TradingPalette.neonGreen,
-                ),
-              StatusBadge(
-                label: evaluation?.allowTrade == true
-                    ? 'Backend validated'
-                    : 'Risk checked',
-                color: TradingPalette.violet,
+            const SizedBox(height: 12),
+            Text(
+              '$side $symbol',
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    color: _sideColor(side),
+                    fontWeight: FontWeight.w900,
+                  ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Notional \$${amount.toStringAsFixed(2)}',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: TradingPalette.textMuted,
+                  ),
+            ),
+            const SizedBox(height: 14),
+            Text(
+              _traderFacingReason(
+                evaluation?.reason ?? signal?.reason,
+                fallback:
+                    'Order will pass through meta approval, risk validation, and backend execution before capital is deployed.',
               ),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: TradingPalette.textPrimary,
+                  ),
+            ),
+            const SizedBox(height: 16),
+            _ConfirmationCheckRow(
+              label: 'Meta strategy',
+              value: _strategyLabel(evaluation?.strategy ?? signal?.strategy),
+              approved: evaluation != null || signal != null,
+            ),
+            _ConfirmationCheckRow(
+              label: 'Risk validation',
+              value: validated ? 'Approved' : 'Awaiting backend approval',
+              approved: validated,
+            ),
+            _ConfirmationCheckRow(
+              label: 'Direction alignment',
+              value: sideAligned
+                  ? side
+                  : 'Backend wants ${evaluation?.approvedSide ?? 'HOLD'}',
+              approved: sideAligned && evaluation != null,
+            ),
+            _ConfirmationCheckRow(
+              label: 'AI confidence',
+              value: confidencePct == null
+                  ? 'Pending'
+                  : '${confidencePct.toStringAsFixed(0)}%',
+              approved: confidencePct != null && confidencePct >= 60,
+            ),
+            if (evaluation != null) ...<Widget>[
+              const SizedBox(height: 8),
+              _CompactRiskRecap(evaluation: evaluation!),
             ],
+            const SizedBox(height: 18),
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.of(context).pop(false),
+                    child: const Text('Cancel'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: () => Navigator.of(context).pop(true),
+                    icon: const Icon(Icons.verified_rounded),
+                    label: const Text('Execute'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ConfirmationCheckRow extends StatelessWidget {
+  const _ConfirmationCheckRow({
+    required this.label,
+    required this.value,
+    required this.approved,
+  });
+
+  final String label;
+  final String value;
+  final bool approved;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = approved ? TradingPalette.neonGreen : TradingPalette.amber;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        children: <Widget>[
+          Icon(
+            approved ? Icons.check_circle_rounded : Icons.pending_rounded,
+            size: 18,
+            color: color,
           ),
-          const SizedBox(height: 20),
-          Row(
-            children: <Widget>[
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: () => Navigator.of(context).pop(false),
-                  child: const Text('Cancel'),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: FilledButton(
-                  onPressed: () => Navigator.of(context).pop(true),
-                  child: const Text('Execute'),
-                ),
-              ),
-            ],
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              label,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: TradingPalette.textMuted,
+                  ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Flexible(
+            child: Text(
+              value,
+              textAlign: TextAlign.right,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: TradingPalette.textPrimary,
+                    fontWeight: FontWeight.w800,
+                  ),
+            ),
           ),
         ],
       ),
@@ -1577,6 +2506,7 @@ class _MetricPill extends StatelessWidget {
   Widget build(BuildContext context) {
     final resolvedAccent = accent ?? TradingPalette.textPrimary;
     return Container(
+      constraints: const BoxConstraints(minWidth: 96, maxWidth: 180),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
         color: TradingPalette.panelSoft,
@@ -1590,6 +2520,8 @@ class _MetricPill extends StatelessWidget {
           const SizedBox(height: 4),
           Text(
             value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
                   color: resolvedAccent,
                   fontWeight: FontWeight.w800,
@@ -1607,8 +2539,7 @@ Widget _buildActiveTradesPanel({
 }) {
   return SectionCard(
     title: 'Open Positions',
-    subtitle:
-        'Positions refresh after execution so the portfolio and trade tab stay in sync.',
+    subtitle: 'Live positions with protected exits and active risk state.',
     trailing: const StatusBadge(label: 'PORTFOLIO'),
     glowColor: TradingPalette.violet,
     child: activeTradesAsync.when(
@@ -1627,79 +2558,113 @@ Widget _buildActiveTradesPanel({
         final visible =
             filtered.isNotEmpty ? filtered : trades.take(4).toList();
 
-        return Column(
-          children: visible
-              .map(
-                (trade) => Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: TradingPalette.overlay,
-                      borderRadius: BorderRadius.circular(18),
-                      border: Border.all(color: TradingPalette.panelBorder),
-                    ),
-                    child: Row(
-                      children: <Widget>[
-                        Container(
-                          width: 44,
-                          height: 44,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: _sideColor(trade.side).withOpacity(0.16),
-                          ),
-                          child: Icon(
-                            trade.side.toUpperCase() == 'BUY'
-                                ? Icons.arrow_upward_rounded
-                                : Icons.arrow_downward_rounded,
-                            color: _sideColor(trade.side),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: <Widget>[
-                              Text(
-                                '${trade.symbol} | ${trade.side}',
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                'Qty ${trade.executedQuantity.toStringAsFixed(6)} | Entry ${trade.entry.toStringAsFixed(4)}',
-                                style: const TextStyle(
-                                  color: TradingPalette.textMuted,
-                                ),
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                'SL ${trade.stopLoss.toStringAsFixed(4)} | TP ${trade.takeProfit.toStringAsFixed(4)}',
-                                style: const TextStyle(
-                                  color: TradingPalette.textFaint,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        StatusBadge(
-                          label: trade.status,
-                          color: TradingPalette.electricBlue,
-                        ),
-                      ],
-                    ),
+        return AnimatedSize(
+          duration: const Duration(milliseconds: 240),
+          curve: Curves.easeOutCubic,
+          child: Column(
+            children: visible
+                .map(
+                  (trade) => _ActivePositionTile(
+                    key: ValueKey<String>(trade.tradeId),
+                    trade: trade,
                   ),
-                ),
-              )
-              .toList(),
+                )
+                .toList(),
+          ),
         );
       },
       loading: () => const LoadingState(label: 'Loading open positions'),
       error: (error, _) => ErrorState(message: userMessageForError(error)),
     ),
   );
+}
+
+class _ActivePositionTile extends StatelessWidget {
+  const _ActivePositionTile({
+    super.key,
+    required this.trade,
+  });
+
+  final ActiveTradeModel trade;
+
+  @override
+  Widget build(BuildContext context) {
+    final sideColor = _sideColor(trade.side);
+    final riskPct = (trade.riskFraction * 100).clamp(0, 100).toDouble();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: TradingPalette.overlay,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: sideColor.withOpacity(0.26)),
+        ),
+        child: Row(
+          children: <Widget>[
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: sideColor.withOpacity(0.16),
+              ),
+              child: Icon(
+                trade.side.toUpperCase() == 'BUY'
+                    ? Icons.arrow_upward_rounded
+                    : Icons.arrow_downward_rounded,
+                color: sideColor,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Row(
+                    children: <Widget>[
+                      Expanded(
+                        child: Text(
+                          '${trade.symbol} | ${trade.side}',
+                          style: const TextStyle(fontWeight: FontWeight.w900),
+                        ),
+                      ),
+                      StatusBadge(
+                        label: trade.status,
+                        color: TradingPalette.electricBlue,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 5),
+                  Text(
+                    'Entry ${_formatPrice(trade.entry)} | Qty ${trade.executedQuantity.toStringAsFixed(6)}',
+                    style: const TextStyle(color: TradingPalette.textMuted),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Protected by SL ${_formatPrice(trade.stopLoss)} | TP ${_formatPrice(trade.takeProfit)}',
+                    style: const TextStyle(color: TradingPalette.textFaint),
+                  ),
+                  const SizedBox(height: 8),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(999),
+                    child: LinearProgressIndicator(
+                      value: (riskPct / 100).clamp(0.0, 1.0),
+                      minHeight: 5,
+                      backgroundColor: TradingPalette.panelSoft,
+                      valueColor: AlwaysStoppedAnimation<Color>(sideColor),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _PaperPortfolioPanel extends StatelessWidget {
@@ -1959,6 +2924,187 @@ double _latestChartPrice(MarketChartModel? chart) {
     return chart.candles.last.close;
   }
   return 0;
+}
+
+List<String> _reasoningLines({
+  required String symbol,
+  required MarketChartModel? chart,
+  required SignalModel? signal,
+  required TradeEvaluationModel? evaluation,
+  required ActiveTradeModel? activeTrade,
+}) {
+  if (chart == null || chart.candles.isEmpty) {
+    return <String>[
+      'Live candles are not verified for $symbol yet. AI is waiting instead of inventing a trade.',
+      'Execution remains blocked until backend market data and risk validation recover.',
+    ];
+  }
+  final guide = chart.executionGuide;
+  final rr = guide.riskReward;
+  final lines = <String>[];
+  if (activeTrade != null) {
+    lines.add(
+      'Position is open. AI is monitoring candle structure, volatility, and profit protection around SL ${_formatPrice(activeTrade.stopLoss)} and TP ${_formatPrice(activeTrade.takeProfit)}.',
+    );
+    if (chart.trailingStop.path.isNotEmpty) {
+      lines.add(
+        'Trailing stop path is active with ${chart.trailingStop.path.length} recalculation points.',
+      );
+    }
+  } else if (evaluation?.allowTrade == true) {
+    lines.add(
+      '${evaluation!.approvedSide} passed meta and risk validation with alpha ${evaluation.alphaScore.toStringAsFixed(0)} and confidence ${(evaluation.confidenceScore * 100).toStringAsFixed(0)}%.',
+    );
+  } else {
+    lines.add(
+      '${signal?.action ?? guide.side} is not a live order yet. AI is waiting for risk/reward, trend, and liquidity alignment.',
+    );
+    lines.add(
+        _waitingReason(chart: chart, signal: signal, evaluation: evaluation));
+  }
+  lines.add(
+    'Market regime is ${chart.marketRegime.state}; AI confidence ${chart.marketRegime.confidence.toStringAsFixed(0)}%, trend strength ${chart.opportunity.trendStrength.toStringAsFixed(0)}%.',
+  );
+  lines.add(
+    rr > 0
+        ? 'Execution map: entry ${_formatPrice(guide.entryLow)}-${_formatPrice(guide.entryHigh)}, stop ${_formatPrice(guide.stopLoss)}, TP2 ${_formatPrice(guide.tp2)}, R:R ${rr.toStringAsFixed(2)}.'
+        : 'No complete RR map yet. Waiting is preferred until entry, stop, and target are all valid.',
+  );
+  final reason = evaluation?.reason.trim().isNotEmpty == true
+      ? evaluation!.reason
+      : signal?.reasons.firstOrNull;
+  if (reason != null && reason.trim().isNotEmpty) {
+    lines.add(reason.trim());
+  } else if (chart.opportunity.volatilityScore >= 72) {
+    lines.add(
+      'Volatility is elevated; AI will reduce chase behavior and prioritize invalidation quality.',
+    );
+  } else {
+    lines.add(
+        'No forced setup. AI will only act when the validation stack improves.');
+  }
+  return lines;
+}
+
+String _aiStage({
+  required MarketChartModel? chart,
+  required SignalModel? signal,
+  required TradeEvaluationModel? evaluation,
+  required TradeExecutionState executionState,
+  required ActiveTradeModel? activeTrade,
+}) {
+  if (executionState.isSubmitting) {
+    return 'Executing Position';
+  }
+  if (activeTrade != null && (chart?.trailingStop.path.isNotEmpty ?? false)) {
+    return 'Trailing Stop Active';
+  }
+  if (activeTrade != null) {
+    return 'Monitoring Trade';
+  }
+  if (chart == null || chart.candles.isEmpty) {
+    return 'Scanning Market';
+  }
+  if (signal == null) {
+    return 'Ranking Opportunities';
+  }
+  if (evaluation == null) {
+    return 'Validating Risk';
+  }
+  if (evaluation.allowTrade) {
+    return 'Confirming Liquidity';
+  }
+  return 'Evaluating Exit';
+}
+
+String _waitingReason({
+  required MarketChartModel chart,
+  required SignalModel? signal,
+  required TradeEvaluationModel? evaluation,
+}) {
+  final reason = evaluation?.reason.trim().isNotEmpty == true
+      ? evaluation!.reason
+      : signal?.rejectionReason ?? signal?.qualityReasons.firstOrNull;
+  if (reason != null && reason.trim().isNotEmpty) {
+    return 'Why waiting: ${_traderFacingReason(reason)}';
+  }
+  if (chart.executionGuide.riskReward > 0 &&
+      chart.executionGuide.riskReward < 1.5) {
+    return 'Why waiting: RR below threshold.';
+  }
+  if (chart.orderbookDepth.pressureScore < 40) {
+    return 'Why waiting: liquidity weak.';
+  }
+  if (chart.opportunity.volatilityScore >= 72) {
+    return 'Why waiting: volatility unstable.';
+  }
+  if (chart.opportunity.trendStrength < 45) {
+    return 'Why waiting: higher-timeframe trend conflict.';
+  }
+  if (chart.opportunity.confidence < 60) {
+    return 'Why waiting: AI confidence too low.';
+  }
+  return 'Why waiting: setup is incomplete, so capital stays protected.';
+}
+
+double _normalizedConfidence(double value) {
+  if (value <= 1) {
+    return (value * 100).clamp(0, 100);
+  }
+  return value.clamp(0, 100);
+}
+
+double? _previousConfidence(MarketChartModel chart) {
+  if (chart.confidenceHistory.length >= 2) {
+    return _normalizedConfidence(
+        chart.confidenceHistory[chart.confidenceHistory.length - 2].score);
+  }
+  if (chart.confidenceHistory.length == 1) {
+    return _normalizedConfidence(chart.confidenceHistory.first.score);
+  }
+  if (chart.candles.length < 8) {
+    return null;
+  }
+  final latest = chart.opportunity.confidence;
+  final recent =
+      chart.candles.last.close - chart.candles[chart.candles.length - 4].close;
+  final prior = chart.candles[chart.candles.length - 4].close -
+      chart.candles[chart.candles.length - 8].close;
+  final weakening = recent.abs() < prior.abs();
+  final adjusted = latest + (weakening ? 6 : -4);
+  return _normalizedConfidence(adjusted);
+}
+
+String _confidenceReason({
+  required MarketChartModel chart,
+  required double delta,
+}) {
+  if (delta <= -1) {
+    if (chart.opportunity.momentumScore < 55) {
+      return 'Momentum weakening near resistance.';
+    }
+    if (chart.opportunity.volatilityScore >= 72) {
+      return 'Volatility expanding; false-breakout risk is higher.';
+    }
+    if (chart.orderbookDepth.pressureScore < 45) {
+      return 'Liquidity support is weakening.';
+    }
+    return 'Structure quality declined on the latest candle.';
+  }
+  if (delta >= 1) {
+    if (chart.executionGuide.riskReward >= 2) {
+      return 'RR improved while validation remains aligned.';
+    }
+    return 'Momentum and market structure are improving.';
+  }
+  return 'Confidence is stable; AI is monitoring for invalidation.';
+}
+
+String _formatPrice(double value) {
+  if (value <= 0) {
+    return 'pending';
+  }
+  return value >= 100 ? value.toStringAsFixed(2) : value.toStringAsFixed(4);
 }
 
 bool _canExecuteTrade({

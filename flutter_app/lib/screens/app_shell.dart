@@ -9,11 +9,12 @@ import '../models/signal.dart';
 import '../widgets/live_pulse_indicator.dart';
 import 'ai_copilot_screen.dart';
 import 'ai_trade_center_screen.dart';
+import 'market_screen.dart';
 import 'onboarding_screen.dart';
 import 'portfolio_screen.dart';
 import 'trade_screen.dart';
 
-enum AppDestination { tradeCenter, chart, portfolio, copilot }
+enum AppDestination { tradeCenter, market, chart, portfolio, copilot }
 
 class AppShell extends ConsumerStatefulWidget {
   const AppShell({super.key});
@@ -128,6 +129,11 @@ class _AppShellState extends ConsumerState<AppShell> {
                 label: 'AI Trade',
               ),
               NavigationDestination(
+                icon: Icon(Icons.query_stats_rounded),
+                selectedIcon: Icon(Icons.query_stats),
+                label: 'Market',
+              ),
+              NavigationDestination(
                 icon: Icon(Icons.candlestick_chart_outlined),
                 selectedIcon: Icon(Icons.candlestick_chart),
                 label: 'Chart',
@@ -156,6 +162,10 @@ class _AppShellState extends ConsumerState<AppShell> {
           onOpenChart: () => _selectDestination(AppDestination.chart),
           onOpenTradeSignal: _openTradeWithSignal,
         );
+      case AppDestination.market:
+        return MarketScreen(
+          onOpenChart: (_) => _selectDestination(AppDestination.chart),
+        );
       case AppDestination.chart:
         return const TradeScreen();
       case AppDestination.portfolio:
@@ -183,6 +193,7 @@ class _AppShellState extends ConsumerState<AppShell> {
   String _titleFor(AppDestination destination) {
     return switch (destination) {
       AppDestination.tradeCenter => 'AI Trade Center',
+      AppDestination.market => 'Market',
       AppDestination.chart => 'Advanced Chart',
       AppDestination.portfolio => 'Portfolio',
       AppDestination.copilot => 'AI Copilot',
@@ -193,6 +204,8 @@ class _AppShellState extends ConsumerState<AppShell> {
     return switch (destination) {
       AppDestination.tradeCenter =>
         'Best verified setup, entry plan, risk, and AI reasoning in one view.',
+      AppDestination.market =>
+        'Live market discovery, opportunity scores, volume, and watchlist.',
       AppDestination.chart =>
         'Live candles, execution guide, market structure, and orderflow context.',
       AppDestination.portfolio =>
@@ -220,6 +233,7 @@ class _DesktopSidebar extends StatelessWidget {
         icon: Icons.auto_awesome,
         label: 'AI Trade Center'
       ),
+      (value: AppDestination.market, icon: Icons.query_stats, label: 'Market'),
       (
         value: AppDestination.chart,
         icon: Icons.candlestick_chart,

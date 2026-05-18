@@ -277,7 +277,11 @@ class TradingRepository {
         }
       } catch (error, stackTrace) {
         if (!controller.isClosed) {
-          controller.addError(error, stackTrace);
+          if (latestTrades.isEmpty) {
+            controller.addError(error, stackTrace);
+          } else {
+            controller.add(latestTrades);
+          }
         }
       } finally {
         refreshInFlight = false;
@@ -299,7 +303,16 @@ class TradingRepository {
         }
         scheduleRefresh();
       },
-      onError: controller.addError,
+      onError: (Object error, StackTrace stackTrace) {
+        if (controller.isClosed) {
+          return;
+        }
+        if (latestTrades.isEmpty) {
+          controller.addError(error, stackTrace);
+        } else {
+          controller.add(latestTrades);
+        }
+      },
     );
     fallbackTimer = Timer.periodic(
       AppConstants.realtimeFallbackPollingInterval,
@@ -365,7 +378,8 @@ class TradingRepository {
 
   Stream<Map<String, dynamic>> watchRecoveryRequests() {
     return _webSocketService.connectEvents().where(
-          (event) => event['type'] == 'replay_response' &&
+          (event) =>
+              event['type'] == 'replay_response' &&
               event['recovery'] == 'snapshot_required',
         );
   }

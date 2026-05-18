@@ -184,8 +184,6 @@ async def get_live_signals(
                         },
                     },
                 )
-        if not signals:
-            signals = _fallback_live_signals(container, limit=target)
         ordered = sorted(signals, key=lambda item: item.published_at, reverse=True)[:limit]
         response = LiveSignalsResponse(count=len(ordered), items=ordered)
         if response_cache_ttl_seconds > 0:
@@ -777,8 +775,6 @@ async def _generate_live_signals(container: ServiceContainer, limit: int = 3) ->
         return []
     for signal in await trading_orchestrator.generate_live_signals(limit=target):
         generated.append(_live_signal_from_response(container, signal))
-    if len(generated) < target:
-        generated.extend(_fallback_live_signals(container, limit=target - len(generated), existing_symbols={item.symbol for item in generated}))
     return generated[:target]
 
 
@@ -843,55 +839,6 @@ def _live_signal_from_response(container: ServiceContainer, signal: SignalRespon
         market_data_stale=False,
         market_data_sources={},
     )
-
-
-def _fallback_live_signals(
-    container: ServiceContainer,
-    limit: int = 3,
-    existing_symbols: set[str] | None = None,
-) -> list[LiveSignalItem]:
-    existing_symbols = existing_symbols or set()
-    settings = getattr(container, "settings", None)
-    websocket_symbols = getattr(settings, "websocket_symbols", None)
-    signal_min_publish_confidence = float(getattr(settings, "signal_min_publish_confidence", 0.2))
-    alpha_trade_threshold = float(getattr(settings, "alpha_trade_threshold", 5.0))
-    candidates = list(websocket_symbols or ["BTCUSDT", "ETHUSDT", "SOLUSDT"])
-    now = datetime.now(timezone.utc)
-    items: list[LiveSignalItem] = []
-    for index, symbol in enumerate(candidates):
-        normalized = str(symbol).upper()
-        if normalized in existing_symbols:
-            continue
-        action = "BUY" if index % 2 == 0 else "SELL"
-        items.append(
-            LiveSignalItem(
-                signal_id=f"{normalized}:fallback:{int(now.timestamp())}:{index}",
-                symbol=normalized,
-                action=action,
-                strategy="LOW_CONFIDENCE_WATCHLIST",
-                confidence=max(0.2, signal_min_publish_confidence),
-                alpha_score=max(0.0, alpha_trade_threshold - 5.0),
-                regime="RANGING",
-                price=0.0,
-                signal_version=0,
-                published_at=now,
-                decision_reason="Fallback watchlist signal generated to preserve visibility while live evaluation is unavailable.",
-                degraded_mode=True,
-                required_tier="free",
-                min_balance=0.0,
-                rejection_reason="live_generation_unavailable",
-                low_confidence=True,
-                quality="degraded",
-                quality_score=0.0,
-                quality_reasons=["live_generation_unavailable"],
-                execution_allowed=False,
-                market_data_stale=True,
-                market_data_sources={},
-            )
-        )
-        if len(items) >= max(1, limit):
-            break
-    return items
 
 
 def _signal_quality_fields_from_payload(payload: dict) -> dict:

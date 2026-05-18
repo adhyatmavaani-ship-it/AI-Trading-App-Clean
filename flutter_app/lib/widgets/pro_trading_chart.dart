@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import '../core/chart_spatial_index.dart';
 import '../core/chart_render_scheduler.dart';
 import '../core/trading_palette.dart';
+import '../models/active_trade.dart';
 import '../models/market_chart.dart';
 import 'live_energy_widgets.dart';
 import 'status_badge.dart';
@@ -15,10 +16,16 @@ class ProTradingChart extends StatefulWidget {
     super.key,
     required this.chart,
     required this.onAssistantModeChanged,
+    this.fullscreenActionBar,
+    this.height = 400,
+    this.activeTrades = const <ActiveTradeModel>[],
   });
 
   final MarketChartModel chart;
   final ValueChanged<String> onAssistantModeChanged;
+  final Widget? fullscreenActionBar;
+  final double height;
+  final List<ActiveTradeModel> activeTrades;
 
   @override
   State<ProTradingChart> createState() => _ProTradingChartState();
@@ -31,6 +38,7 @@ class _ProTradingChartState extends State<ProTradingChart>
   Offset? _crosshair;
   double _baseZoom = 1.0;
   bool _replayMode = false;
+  bool _interacting = false;
   final ChartRenderScheduler _crosshairScheduler = ChartRenderScheduler();
   late final AnimationController _chartEnergyController;
 
@@ -86,11 +94,12 @@ class _ProTradingChartState extends State<ProTradingChart>
         ),
         const SizedBox(height: 12),
         SizedBox(
-          height: 400,
+          height: widget.height,
           child: LayoutBuilder(
             builder: (context, constraints) {
               final geometry = _ProChartGeometry(
                 chart: chart,
+                activeTrades: widget.activeTrades,
                 size: constraints.biggest,
                 zoomX: _zoomX,
                 windowPosition: _windowPosition,
@@ -103,6 +112,7 @@ class _ProTradingChartState extends State<ProTradingChart>
                       child: GestureDetector(
                         behavior: HitTestBehavior.opaque,
                         onScaleStart: (details) {
+                          _pauseChartMotion();
                           _baseZoom = _zoomX;
                           _updateCrosshair(geometry, details.localFocalPoint);
                         },
@@ -121,6 +131,8 @@ class _ProTradingChartState extends State<ProTradingChart>
                           }
                           _updateCrosshair(geometry, details.localFocalPoint);
                         },
+                        onScaleEnd: (_) => _resumeChartMotion(),
+                        onHorizontalDragStart: (_) => _pauseChartMotion(),
                         onHorizontalDragUpdate: (details) {
                           setState(() {
                             _windowPosition = (_windowPosition -
@@ -130,6 +142,8 @@ class _ProTradingChartState extends State<ProTradingChart>
                                 .clamp(0.0, 1.0);
                           });
                         },
+                        onHorizontalDragEnd: (_) => _resumeChartMotion(),
+                        onHorizontalDragCancel: _resumeChartMotion,
                         onDoubleTap: _resetView,
                         onLongPressStart: (details) =>
                             _updateCrosshair(geometry, details.localPosition),
@@ -147,6 +161,7 @@ class _ProTradingChartState extends State<ProTradingChart>
                                   return CustomPaint(
                                     painter: _ProTradingChartPainter(
                                       chart: chart,
+                                      activeTrades: widget.activeTrades,
                                       geometry: geometry,
                                       pulse: _chartEnergyController.value,
                                       replayMode: _replayMode,
@@ -246,8 +261,12 @@ class _ProTradingChartState extends State<ProTradingChart>
     if (!_crosshairScheduler.shouldRender()) {
       return;
     }
+    final next = geometry.clampPoint(position);
+    if (_crosshair != null && (_crosshair! - next).distance < 1.2) {
+      return;
+    }
     setState(() {
-      _crosshair = geometry.clampPoint(position);
+      _crosshair = next;
     });
   }
 
@@ -258,6 +277,24 @@ class _ProTradingChartState extends State<ProTradingChart>
       _windowPosition = 1.0;
       _crosshair = null;
     });
+  }
+
+  void _pauseChartMotion() {
+    if (_interacting) {
+      return;
+    }
+    _interacting = true;
+    _chartEnergyController.stop();
+  }
+
+  void _resumeChartMotion() {
+    if (!_interacting) {
+      return;
+    }
+    _interacting = false;
+    if (mounted) {
+      _chartEnergyController.repeat();
+    }
   }
 
   Future<void> _openFullscreen(BuildContext context) async {
@@ -286,9 +323,29 @@ class _ProTradingChartState extends State<ProTradingChart>
                     ),
                     const SizedBox(height: 12),
                     Expanded(
-                      child: ProTradingChart(
-                        chart: widget.chart,
-                        onAssistantModeChanged: widget.onAssistantModeChanged,
+                      child: Stack(
+                        children: <Widget>[
+                          Positioned.fill(
+                            child: ProTradingChart(
+                              chart: widget.chart,
+                              activeTrades: widget.activeTrades,
+                              onAssistantModeChanged:
+                                  widget.onAssistantModeChanged,
+                              fullscreenActionBar: widget.fullscreenActionBar,
+                              height: math.max(
+                                420,
+                                MediaQuery.sizeOf(context).height - 260,
+                              ),
+                            ),
+                          ),
+                          if (widget.fullscreenActionBar != null)
+                            Positioned(
+                              left: 0,
+                              right: 0,
+                              bottom: 0,
+                              child: widget.fullscreenActionBar!,
+                            ),
+                        ],
                       ),
                     ),
                   ],
@@ -769,12 +826,14 @@ class _CrosshairHud extends StatelessWidget {
 class _ProTradingChartPainter extends CustomPainter {
   const _ProTradingChartPainter({
     required this.chart,
+    required this.activeTrades,
     required this.geometry,
     required this.pulse,
     required this.replayMode,
   });
 
   final MarketChartModel chart;
+  final List<ActiveTradeModel> activeTrades;
   final _ProChartGeometry geometry;
   final double pulse;
   final bool replayMode;
@@ -804,8 +863,10 @@ class _ProTradingChartPainter extends CustomPainter {
     _paintVolatilityCone(canvas);
     _paintVolume(canvas);
     _paintCandles(canvas);
+    _paintConfidenceBands(canvas);
     _paintMarkers(canvas);
     _paintExecutionGuide(canvas);
+    _paintActiveTrades(canvas);
     _paintAxisLabels(canvas, size);
   }
 
@@ -1066,6 +1127,31 @@ class _ProTradingChartPainter extends CustomPainter {
     }
   }
 
+  void _paintConfidenceBands(Canvas canvas) {
+    for (final interval in chart.confidenceIntervals.take(24)) {
+      final startX = geometry.xForTimestamp(interval.startTs);
+      final endX = geometry.xForTimestamp(interval.endTs);
+      if ((endX - startX).abs() < 2) {
+        continue;
+      }
+      final color = interval.score >= 75
+          ? TradingPalette.neonGreen
+          : interval.score >= 55
+              ? TradingPalette.amber
+              : TradingPalette.neonRed;
+      final rect = Rect.fromLTRB(
+        math.min(startX, endX),
+        geometry.priceTop,
+        math.max(startX, endX),
+        geometry.priceBottom,
+      );
+      canvas.drawRect(
+        rect,
+        Paint()..color = color.withOpacity(0.025 + interval.score / 5000),
+      );
+    }
+  }
+
   void _paintPredictionProjection(Canvas canvas) {
     if (geometry.visiblePoints.length < 4) {
       return;
@@ -1169,6 +1255,11 @@ class _ProTradingChartPainter extends CustomPainter {
           ..strokeWidth = line.width,
       );
     }
+    _drawPriceTag(canvas, 'ENTRY', (entryLowY + entryHighY) / 2,
+        TradingPalette.electricBlue);
+    _drawPriceTag(canvas, 'SL', stopY, TradingPalette.neonRed);
+    _drawPriceTag(canvas, 'TP1', tp1Y, TradingPalette.amber);
+    _drawPriceTag(canvas, 'TP2', tp2Y, TradingPalette.neonGreen);
     final path = chart.trailingStop.path;
     if (path.length >= 2) {
       final trailPath = Path();
@@ -1189,7 +1280,65 @@ class _ProTradingChartPainter extends CustomPainter {
           ..strokeWidth = 1.4
           ..style = PaintingStyle.stroke,
       );
+      _drawPriceTag(
+        canvas,
+        'TRAIL',
+        geometry.yFor(path.last.price),
+        TradingPalette.violet,
+      );
     }
+  }
+
+  void _paintActiveTrades(Canvas canvas) {
+    for (final trade in activeTrades
+        .where(
+            (item) => item.symbol.toUpperCase() == chart.symbol.toUpperCase())
+        .take(3)) {
+      final bullish = trade.side.toUpperCase() != 'SELL';
+      final color = bullish ? TradingPalette.neonGreen : TradingPalette.neonRed;
+      final entryY = geometry.yFor(trade.entry);
+      canvas.drawLine(
+        Offset(0, entryY),
+        Offset(geometry.chartWidth, entryY),
+        Paint()
+          ..color = color.withOpacity(0.58)
+          ..strokeWidth = 1.3,
+      );
+      _drawPriceTag(canvas, 'ACTIVE', entryY, color);
+    }
+  }
+
+  void _drawPriceTag(Canvas canvas, String label, double y, Color color) {
+    if (y.isNaN || y.isInfinite) {
+      return;
+    }
+    final clampedY = y.clamp(geometry.priceTop + 8, geometry.priceBottom - 8);
+    final width = math.max(42.0, label.length * 8.0 + 14.0);
+    final rect = Rect.fromLTWH(
+      math.max(geometry.chartWidth - width - 8, 0),
+      clampedY - 10,
+      width,
+      20,
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect, const Radius.circular(7)),
+      Paint()..color = color.withOpacity(0.18),
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect, const Radius.circular(7)),
+      Paint()
+        ..color = color.withOpacity(0.55)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1,
+    );
+    _drawText(
+      canvas,
+      label,
+      Offset(rect.left + 7, rect.top + 4),
+      color,
+      weight: FontWeight.w900,
+      size: 10,
+    );
   }
 
   void _paintAxisLabels(Canvas canvas, Size size) {
@@ -1254,6 +1403,7 @@ class _ProTradingChartPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _ProTradingChartPainter oldDelegate) {
     return oldDelegate.chart != chart ||
+        oldDelegate.activeTrades != activeTrades ||
         oldDelegate.geometry != geometry ||
         oldDelegate.pulse != pulse ||
         oldDelegate.replayMode != replayMode;
@@ -1296,6 +1446,7 @@ class _CrosshairPainter extends CustomPainter {
 class _ProChartGeometry {
   _ProChartGeometry({
     required MarketChartModel chart,
+    required List<ActiveTradeModel> activeTrades,
     required Size size,
     required double zoomX,
     required double windowPosition,
@@ -1341,6 +1492,12 @@ class _ProChartGeometry {
       chart.executionGuide.tp2,
       chart.executionGuide.entryLow,
       chart.executionGuide.entryHigh,
+      for (final trade in activeTrades.where((item) =>
+          item.symbol.toUpperCase() == chart.symbol.toUpperCase())) ...<double>[
+        trade.entry,
+        trade.stopLoss,
+        trade.takeProfit
+      ],
     ].where((value) => value > 0).toList();
     minPrice = levels.isEmpty ? 0 : levels.reduce(math.min);
     maxPrice = levels.isEmpty ? 1 : levels.reduce(math.max);
