@@ -13,11 +13,11 @@ class AppConstants {
     'MARKET_WS_URL',
     defaultValue: '',
   );
-  static const String productionApiBaseUrl = 'http://69.62.74.7';
+  static const String productionApiBaseUrl = 'https://srv1664694.hstgr.cloud';
   static const String productionSignalsWebSocketUrl =
-      'ws://69.62.74.7/ws/signals';
+      'wss://srv1664694.hstgr.cloud/ws/signals';
   static const String productionMarketWebSocketUrl =
-      'ws://69.62.74.7/ws/market';
+      'wss://srv1664694.hstgr.cloud/ws/market';
   static const String _configuredProductionApiKey = String.fromEnvironment(
     'TRADING_API_KEY',
     defaultValue: '',
