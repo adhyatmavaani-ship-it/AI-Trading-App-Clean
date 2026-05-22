@@ -779,9 +779,9 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.byType(TradingApp), findsOneWidget);
-    expect(find.text('AI Trade Center'), findsOneWidget);
-    expect(find.text('AI Trade'), findsWidgets);
-    expect(find.text('BEST AI TRADE NOW'), findsOneWidget);
+    expect(find.text('AI Crypto'), findsOneWidget);
+    expect(find.text('Home'), findsWidgets);
+    expect(find.text('AI learning profile'), findsOneWidget);
     expect(find.text('Portfolio'), findsWidgets);
   });
 
@@ -803,9 +803,9 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.byType(TradingApp), findsOneWidget);
-    expect(find.text('AI Trade Center'), findsOneWidget);
-    expect(find.text('AI Trade'), findsWidgets);
-    expect(find.text('BEST AI TRADE NOW'), findsOneWidget);
+    expect(find.text('AI Crypto'), findsOneWidget);
+    expect(find.text('Home'), findsWidgets);
+    expect(find.text('AI learning profile'), findsOneWidget);
     expect(find.text('Portfolio'), findsWidgets);
 
     await tester.pumpWidget(const SizedBox.shrink());

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/constants.dart';
@@ -46,6 +48,9 @@ class ActivityFeedNotifier extends StateNotifier<ActivityFeedState> {
   }
 
   void setError(Object error) {
+    if (state.items.isNotEmpty) {
+      return;
+    }
     state = state.copyWith(lastError: error);
   }
 
@@ -114,6 +119,19 @@ final activityStreamProvider = StreamProvider<ActivityItemModel>((ref) {
 final activityFeedProvider =
     StateNotifierProvider<ActivityFeedNotifier, ActivityFeedState>((ref) {
   final notifier = ActivityFeedNotifier();
+  Timer? fallbackTimer;
+
+  Future<void> refreshFromRest() async {
+    try {
+      final activity = await ref
+          .read(tradingRepositoryProvider)
+          .fetchActivityHistory(limit: 40);
+      notifier.hydrate(activity);
+    } catch (error) {
+      notifier.setError(error);
+    }
+  }
+
   ref.listen<AsyncValue<List<ActivityItemModel>>>(
     initialActivityHistoryProvider,
     (previous, next) {
@@ -125,6 +143,13 @@ final activityFeedProvider =
       (previous, next) {
     next.whenData(notifier.ingest);
     next.whenOrNull(error: (error, _) => notifier.setError(error));
+  });
+  fallbackTimer = Timer.periodic(
+    AppConstants.realtimeFallbackPollingInterval,
+    (_) => unawaited(refreshFromRest()),
+  );
+  ref.onDispose(() {
+    fallbackTimer?.cancel();
   });
   return notifier;
 });

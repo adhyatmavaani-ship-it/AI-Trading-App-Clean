@@ -13,11 +13,25 @@ class AppConstants {
     'MARKET_WS_URL',
     defaultValue: '',
   );
-  static const String productionApiBaseUrl = 'https://srv1664694.hstgr.cloud';
+  static const String sandboxApiBaseUrl = 'http://127.0.0.1:8000';
+  static const String sandboxSignalsWebSocketUrl =
+      'ws://127.0.0.1:8000/ws/signals';
+  static const String sandboxMarketWebSocketUrl =
+      'ws://127.0.0.1:8000/ws/market';
+  static const String productionApiBaseUrl = String.fromEnvironment(
+    'PRODUCTION_API_BASE_URL',
+    defaultValue: sandboxApiBaseUrl,
+  );
   static const String productionSignalsWebSocketUrl =
-      'wss://srv1664694.hstgr.cloud/ws/signals';
+      String.fromEnvironment(
+    'PRODUCTION_SIGNALS_WS_URL',
+    defaultValue: sandboxSignalsWebSocketUrl,
+  );
   static const String productionMarketWebSocketUrl =
-      'wss://srv1664694.hstgr.cloud/ws/market';
+      String.fromEnvironment(
+    'PRODUCTION_MARKET_WS_URL',
+    defaultValue: sandboxMarketWebSocketUrl,
+  );
   static const String _configuredProductionApiKey = String.fromEnvironment(
     'TRADING_API_KEY',
     defaultValue: '',
@@ -77,7 +91,7 @@ class AppConstants {
   static const Duration websocketProbeTimeout = Duration(seconds: 10);
   static const Duration websocketPingInterval = Duration(seconds: 20);
   static const Duration websocketReconnectBaseDelay = Duration(seconds: 2);
-  static const Duration websocketReconnectMaxDelay = Duration(seconds: 20);
+  static const Duration websocketReconnectMaxDelay = Duration(seconds: 8);
   static const Duration websocketStaleAfter = Duration(seconds: 45);
   static const Duration websocketIntegrityCheckInterval = Duration(seconds: 10);
 }

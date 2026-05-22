@@ -2,25 +2,33 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from db.database import SQLiteTradeDatabase
+
 from app.core.config import get_settings
 from app.services.adaptive_learning import AdaptiveLearningService
+from app.services.ai_copilot import AICopilotService
 from app.services.ai_engine import AIEngine
 from app.services.alpha_engine import AlphaEngine
 from app.services.analytics_service import AnalyticsService
 from app.services.alerting import AlertingService
 from app.services.allocation_engine import AllocationEngine
+from app.services.automated_journal import AutomatedJournalService
 from app.services.backtest_jobs import BacktestJobService
 from app.services.backtesting import BacktestingEngine
+from app.services.broker_reconciliation import BrokerReconciliationEngine
 from app.services.drawdown_protection import DrawdownProtectionService
 from app.services.dual_track_engine import DualTrackCoordinator
 from app.services.evolution_lab import EvolutionLab
 from app.services.execution_engine import ExecutionEngine
+from app.services.execution_circuit_breaker import ExecutionCircuitBreaker
+from app.services.execution_idempotency import ExecutionIdempotencyService
 from app.services.execution_queue_manager import ExecutionQueueManager
 from app.services.feature_pipeline import FeaturePipeline
 from app.services.firestore_repo import FirestoreRepository
 from app.services.latency_monitor import LatencyMonitor
 from app.services.liquidity_monitor import LiquidityMonitor
 from app.services.market_data import MarketDataService
+from app.services.market_feed_watchdog import MarketFeedWatchdog
 from app.services.market_universe_scanner import MarketUniverseScanner
 from app.services.meta_controller import MetaController
 from app.services.model_stability import ModelStabilityService
@@ -35,6 +43,7 @@ from app.services.performance_tracker import PerformanceTracker
 from app.services.portfolio_manager import PortfolioManager
 from app.services.portfolio_ledger import PortfolioLedgerService
 from app.services.model_registry import ModelRegistry
+from app.services.pro_scanner import ProScannerService
 from app.services.regime_detector import RegimeDetector
 from app.services.redis_cache import RedisCache
 from app.services.redis_state_manager import RedisStateManager
@@ -51,7 +60,9 @@ from app.services.sentiment_engine import SentimentEngine
 from app.services.shadow_liquidity_engine import ShadowLiquiditySentinel
 from app.services.self_healing_ppo import SelfHealingPPOService
 from app.services.simulation_tester import SimulationTester
+from app.services.safety_state import SafetyStateService
 from app.services.strategy_controller import StrategyController
+from app.services.strategy_marketplace import StrategyMarketplaceService
 from app.services.strategy_engine import StrategyEngine
 from app.services.system_monitor import SystemMonitorService
 from app.services.tax_engine import TaxEngine
@@ -62,6 +73,7 @@ from app.services.virtual_order_manager import VirtualOrderManager
 from app.services.whale_tracker import WhaleTracker
 from app.workers.strategy_optimizer_worker import StrategyOptimizerWorker
 from app.workers.trade_monitor_worker import ActiveTradeMonitorWorker
+from app.workers.broker_reconciliation_worker import BrokerReconciliationWorker
 
 
 class ServiceContainer:
@@ -73,6 +85,7 @@ class ServiceContainer:
             raw_credentials_json=settings.google_credentials_json,
             local_training_buffer_path=settings.training_buffer_path,
         )
+        pro_store = SQLiteTradeDatabase(settings.pro_storage_path)
         registry = ModelRegistry(settings)
         market_data = MarketDataService(settings, cache)
         feature_pipeline = FeaturePipeline(RegimeDetector(settings))
@@ -85,6 +98,9 @@ class ServiceContainer:
         strategy_engine = StrategyEngine(probability_engine=trade_probability_engine)
         risk_engine = RiskEngine(settings)
         execution_engine = ExecutionEngine(settings)
+        execution_circuit_breaker = ExecutionCircuitBreaker(settings=settings, cache=cache)
+        execution_idempotency_service = ExecutionIdempotencyService(settings=settings, cache=cache, store=pro_store)
+        execution_engine.execution_store = pro_store
         paper_execution_engine = PaperExecutionEngine(settings, market_data)
         self.alerting_service = AlertingService(settings.alert_webhook_url)
         drawdown_protection = DrawdownProtectionService(settings, cache)
@@ -122,6 +138,8 @@ class ServiceContainer:
         )
         portfolio_manager = PortfolioManager(settings)
         user_experience_engine = UserExperienceEngine(settings=settings, cache=cache)
+        market_feed_watchdog = MarketFeedWatchdog(settings=settings, cache=cache)
+        safety_state_service = SafetyStateService(settings=settings, cache=cache, store=pro_store)
         scanner_service = ScannerService(
             settings=settings,
             cache=cache,
@@ -132,7 +150,17 @@ class ServiceContainer:
             market_data=market_data,
             user_experience_engine=user_experience_engine,
             scanner_service=scanner_service,
+            market_feed_watchdog=market_feed_watchdog,
         )
+        ai_copilot_service = AICopilotService(market_data=market_data, store=pro_store)
+        pro_scanner_service = ProScannerService(
+            market_data=market_data,
+            scanner_service=scanner_service,
+            alerting_service=self.alerting_service,
+            store=pro_store,
+        )
+        strategy_marketplace_service = StrategyMarketplaceService(cache=cache, store=pro_store)
+        automated_journal_service = AutomatedJournalService(cache=cache, store=pro_store)
         analytics_service = AnalyticsService(
             settings=settings,
             cache=cache,
@@ -241,8 +269,20 @@ class ServiceContainer:
             settings=settings,
             strategy_controller=strategy_controller,
         )
+        broker_reconciliation_engine = BrokerReconciliationEngine(
+            settings=settings,
+            execution_engine=execution_engine,
+            redis_state_manager=redis_state_manager,
+            cache=cache,
+            store=pro_store,
+        )
+        broker_reconciliation_worker = BrokerReconciliationWorker(
+            settings=settings,
+            reconciliation_engine=broker_reconciliation_engine,
+        )
         self.trading_orchestrator.active_trade_monitor = active_trade_monitor
         self.trading_orchestrator.reconcile_startup_state()
+        broker_reconciliation_engine.startup_recovery_report()
         self.backtesting_engine = BacktestingEngine(
             settings=settings,
             market_data=market_data,
@@ -260,8 +300,13 @@ class ServiceContainer:
         self.drawdown_protection = drawdown_protection
         self.cache = cache
         self.firestore = firestore
+        self.pro_store = pro_store
         self.settings = settings
         self.market_data = market_data
+        self.market_feed_watchdog = market_feed_watchdog
+        self.execution_circuit_breaker = execution_circuit_breaker
+        self.execution_idempotency_service = execution_idempotency_service
+        self.safety_state_service = safety_state_service
         self.system_monitor = system_monitor
         self.model_stability = model_stability
         self.rollout_manager = rollout_manager
@@ -300,9 +345,15 @@ class ServiceContainer:
         self.user_experience_engine = user_experience_engine
         self.scanner_service = scanner_service
         self.market_universe_scanner = market_universe_scanner
+        self.ai_copilot_service = ai_copilot_service
+        self.pro_scanner_service = pro_scanner_service
+        self.strategy_marketplace_service = strategy_marketplace_service
+        self.automated_journal_service = automated_journal_service
         self.risk_controller = risk_controller
         self.active_trade_monitor = active_trade_monitor
         self.strategy_optimizer = strategy_optimizer
+        self.broker_reconciliation_engine = broker_reconciliation_engine
+        self.broker_reconciliation_worker = broker_reconciliation_worker
         self.simulation_tester = SimulationTester(
             settings=settings,
             orchestrator=self.trading_orchestrator,

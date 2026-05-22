@@ -3,6 +3,7 @@
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import random
 import time
 from uuid import uuid4
 
@@ -37,14 +38,19 @@ class PaperExecutionEngine:
         market_price = await self.market_data.fetch_latest_price(symbol)
         if route["broadcast_delay_ms"]:
             await asyncio.sleep(route["broadcast_delay_ms"] / 1000)
-        half_spread_bps = self.settings.slippage_bps + self.settings.paper_fill_noise_bps
+        half_spread_bps = self.settings.slippage_bps
+        latency_drift_bps = random.uniform(
+            -float(self.settings.paper_fill_noise_bps),
+            float(self.settings.paper_fill_noise_bps),
+        )
+        latency_price = market_price * (1 + (latency_drift_bps / 10_000))
         signed_slippage = half_spread_bps / 10_000
         chunk_count = 1
         if order_book:
             plan = self.slippage_engine.estimate(order_book, side, quantity)
             chunk_count = plan["chunks"]
             half_spread_bps = max(half_spread_bps, plan["estimated_slippage_bps"])
-        executed_price = market_price * (1 + signed_slippage if side == "BUY" else 1 - signed_slippage)
+        executed_price = latency_price * (1 + signed_slippage if side == "BUY" else 1 - signed_slippage)
         if order_type == "LIMIT" and limit_price is not None:
             price_crossed = side == "BUY" and limit_price >= market_price
             price_crossed = price_crossed or (side == "SELL" and limit_price <= market_price)
@@ -61,7 +67,8 @@ class PaperExecutionEngine:
                     "mode": "paper",
                     "filledRatio": 0.0,
                     "feePaid": 0.0,
-                    "slippageBps": float(half_spread_bps),
+                    "slippageBps": float(abs(half_spread_bps) + abs(latency_drift_bps)),
+                    "latencyDriftBps": float(latency_drift_bps),
                     "transactTime": int(datetime.now(timezone.utc).timestamp() * 1000),
                 }
         fee_rate = self.settings.taker_fee_bps / 10_000
@@ -78,7 +85,8 @@ class PaperExecutionEngine:
             "mode": "paper",
             "filledRatio": filled_ratio,
             "feePaid": fee_paid,
-            "slippageBps": float(half_spread_bps),
+            "slippageBps": float(abs(half_spread_bps) + abs(latency_drift_bps)),
+            "latencyDriftBps": float(latency_drift_bps),
             "executionLatencyMs": float(route["broadcast_delay_ms"]),
             "chunkCount": chunk_count,
             "transactTime": int(datetime.now(timezone.utc).timestamp() * 1000),

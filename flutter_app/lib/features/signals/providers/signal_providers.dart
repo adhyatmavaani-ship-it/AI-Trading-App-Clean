@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/constants.dart';
@@ -45,6 +47,9 @@ class SignalFeedNotifier extends StateNotifier<SignalFeedState> {
   }
 
   void setError(Object error) {
+    if (state.items.isNotEmpty) {
+      return;
+    }
     state = state.copyWith(lastError: error);
   }
 
@@ -74,6 +79,18 @@ final signalStreamProvider = StreamProvider<SignalModel>((ref) {
 final signalFeedProvider =
     StateNotifierProvider<SignalFeedNotifier, SignalFeedState>((ref) {
   final notifier = SignalFeedNotifier();
+  Timer? fallbackTimer;
+
+  Future<void> refreshFromRest() async {
+    try {
+      final signals =
+          await ref.read(tradingRepositoryProvider).fetchSignals(limit: 40);
+      notifier.hydrate(signals);
+    } catch (error) {
+      notifier.setError(error);
+    }
+  }
+
   ref.listen<AsyncValue<List<SignalModel>>>(initialSignalsProvider,
       (previous, next) {
     next.whenData(notifier.hydrate);
@@ -82,6 +99,13 @@ final signalFeedProvider =
   ref.listen<AsyncValue<SignalModel>>(signalStreamProvider, (previous, next) {
     next.whenData(notifier.ingest);
     next.whenOrNull(error: (error, _) => notifier.setError(error));
+  });
+  fallbackTimer = Timer.periodic(
+    AppConstants.realtimeFallbackPollingInterval,
+    (_) => unawaited(refreshFromRest()),
+  );
+  ref.onDispose(() {
+    fallbackTimer?.cancel();
   });
   return notifier;
 });

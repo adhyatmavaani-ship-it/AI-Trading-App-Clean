@@ -5,6 +5,7 @@ from decimal import Decimal, ROUND_DOWN, ROUND_UP
 import logging
 import random
 import time
+from uuid import uuid4
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.core.config import Settings
@@ -26,6 +27,7 @@ class ExecutionEngine:
 
     def __post_init__(self) -> None:
         self.cache = RedisCache(self.settings.redis_url)
+        self.execution_store = None
         self.latency_monitor = LatencyMonitor(self.settings, self.cache)
         self.shard_manager = ShardManager(self.settings)
         self.queue_manager = ExecutionQueueManager(self.settings, self.cache, self.shard_manager)
@@ -98,27 +100,37 @@ class ExecutionEngine:
                             queue_context=queue_context,
                             exchange_id=exchange_id,
                         )
+                execution_request_id = str((queue_context or {}).get("execution_request_id", "") or "")
+                client_order_id = self._client_order_id(symbol, execution_request_id=execution_request_id)
                 if order_type == "LIMIT" and normalized_limit_price is not None:
                     if abs(normalized_limit_price - market_price) > allowed_slippage:
                         raise ValueError("Requested limit price exceeds slippage guardrail")
                     self._throttle_exchange(f"{exchange_id}:create_limit_order")
-                    order = exchange_client.create_order(
+                    order = self._create_exchange_order(
+                        exchange_client,
                         symbol=symbol,
                         side=side,
                         order_type="LIMIT",
                         quantity=normalized_quantity,
                         limit_price=normalized_limit_price,
+                        client_order_id=client_order_id,
+                        execution_request_id=execution_request_id,
+                        exchange_id=exchange_id,
                     )
                     self._remember_order_exchange(order.get("orderId"), exchange_id)
                     if order.get("status") in {"NEW", "PARTIALLY_FILLED"}:
                         order = self.reconcile_order(symbol, str(order["orderId"]), side, normalized_quantity, market_price)
                     return order
                 self._throttle_exchange(f"{exchange_id}:create_market_order")
-                order = exchange_client.create_order(
+                order = self._create_exchange_order(
+                    exchange_client,
                     symbol=symbol,
                     side=side,
                     order_type="MARKET",
                     quantity=normalized_quantity,
+                    client_order_id=client_order_id,
+                    execution_request_id=execution_request_id,
+                    exchange_id=exchange_id,
                 )
                 self._remember_order_exchange(order.get("orderId"), exchange_id)
                 return order
@@ -191,11 +203,18 @@ class ExecutionEngine:
                 exchange_id=exchange_key,
             )
             self._throttle_exchange(f"{exchange_key}:chunk_order")
-            order = exchange_client.create_order(
+            order = self._create_exchange_order(
+                exchange_client,
                 symbol=symbol,
                 side=side,
                 order_type="MARKET",
                 quantity=chunk_qty,
+                client_order_id=self._client_order_id(
+                    symbol,
+                    execution_request_id=self._chunk_execution_request_id(queue_context, chunk_idx),
+                ),
+                execution_request_id=self._chunk_execution_request_id(queue_context, chunk_idx),
+                exchange_id=exchange_key,
             )
             orders.append(order)
             self._remember_order_exchange(order.get("orderId"), exchange_key)
@@ -271,11 +290,15 @@ class ExecutionEngine:
             exchange_id = self._order_exchange(order_id) or self.settings.primary_exchange
             exchange_client = self.exchange_clients[exchange_id]
             self._throttle_exchange(f"{exchange_id}:fallback_market_order")
-            fallback = exchange_client.create_order(
+            fallback = self._create_exchange_order(
+                exchange_client,
                 symbol=symbol,
                 side=side,
                 order_type="MARKET",
                 quantity=remaining_qty,
+                client_order_id=self._client_order_id(symbol),
+                exchange_id=exchange_id,
+                reduce_only=False,
             )
             fallback["filledRatio"] = 1.0
             fallback["slippageBps"] = self.settings.slippage_bps
@@ -397,6 +420,213 @@ class ExecutionEngine:
             if normalized and normalized not in unique:
                 unique.append(normalized)
         return unique
+
+    def fetch_live_positions(self) -> list[dict]:
+        positions: list[dict] = []
+        for exchange_id, exchange_client in self.exchange_clients.items():
+            if not hasattr(exchange_client, "fetch_positions"):
+                continue
+            for position in exchange_client.fetch_positions():
+                payload = dict(position)
+                payload.setdefault("exchange", exchange_id)
+                positions.append(payload)
+        return positions
+
+    def close_all_reduce_only(self, *, reason: str) -> list[dict]:
+        orders: list[dict] = []
+        for position in self.fetch_live_positions():
+            symbol = str(position.get("symbol", "") or "").upper()
+            quantity = abs(float(position.get("quantity", 0.0) or 0.0))
+            if not symbol or quantity <= 0:
+                continue
+            side = "SELL" if str(position.get("side", "BUY")).upper() == "BUY" else "BUY"
+            exchange_id = str(position.get("exchange", self.settings.primary_exchange) or self.settings.primary_exchange)
+            exchange_client = self.exchange_clients.get(exchange_id)
+            if exchange_client is None:
+                continue
+            order = self._create_exchange_order(
+                exchange_client,
+                symbol=symbol,
+                side=side,
+                order_type="MARKET",
+                quantity=quantity,
+                client_order_id=self._client_order_id(symbol),
+                exchange_id=exchange_id,
+                reduce_only=True,
+            )
+            order["emergencyReason"] = reason
+            orders.append(order)
+        return orders
+
+    def _client_order_id(self, symbol: str, *, execution_request_id: str | None = None) -> str:
+        safe_symbol = "".join(ch for ch in str(symbol).upper() if ch.isalnum())[:12] or "ORDER"
+        prefix = str(self.settings.broker_client_order_prefix or "APP_AI_BRK").upper()
+        if execution_request_id:
+            safe_request_id = "".join(ch for ch in str(execution_request_id).upper() if ch.isalnum())[:18]
+            if safe_request_id:
+                return f"{prefix}_{safe_symbol}_{safe_request_id}"
+        return f"{prefix}_{safe_symbol}_{uuid4().hex[:12]}"
+
+    @staticmethod
+    def _chunk_execution_request_id(queue_context: dict | None, chunk_idx: int) -> str | None:
+        execution_request_id = str((queue_context or {}).get("execution_request_id", "") or "")
+        if not execution_request_id:
+            return None
+        return f"{execution_request_id}_{chunk_idx}"
+
+    def _create_exchange_order(
+        self,
+        exchange_client,
+        *,
+        symbol: str,
+        side: str,
+        order_type: str,
+        quantity: float,
+        limit_price: float | None = None,
+        client_order_id: str | None = None,
+        execution_request_id: str | None = None,
+        exchange_id: str | None = None,
+        reduce_only: bool = False,
+    ) -> dict:
+        if client_order_id:
+            durable_ack = self._stored_broker_ack(client_order_id)
+            if durable_ack:
+                self.cache.increment("monitor:duplicate_execution_prevented", ttl=self.settings.monitor_state_ttl_seconds)
+                logger.warning(
+                    "duplicate_client_order_ack_replayed",
+                    extra={
+                        "event": "duplicate_client_order_ack_replayed",
+                        "context": {"client_order_id": client_order_id, "symbol": symbol, "source": "durable_store"},
+                    },
+                )
+                return durable_ack
+            cached = self.cache.get_json(f"execution:client_order:{client_order_id}")
+            if cached:
+                self.cache.increment("monitor:duplicate_execution_prevented", ttl=self.settings.monitor_state_ttl_seconds)
+                logger.warning(
+                    "duplicate_client_order_ack_replayed",
+                    extra={
+                        "event": "duplicate_client_order_ack_replayed",
+                        "context": {"client_order_id": client_order_id, "symbol": symbol},
+                    },
+                )
+                return cached
+            claimed = self.cache.set_if_absent(
+                f"execution:client_order:lock:{client_order_id}",
+                "1",
+                ttl=int(self.settings.execution_idempotency_ttl_seconds),
+            )
+            if not claimed:
+                self.cache.increment("monitor:duplicate_execution_prevented", ttl=self.settings.monitor_state_ttl_seconds)
+                raise RuntimeError("Duplicate live order prevented by idempotency lock")
+        self._mark_execution_status(execution_request_id, "SUBMITTED")
+        try:
+            order = exchange_client.create_order(
+                symbol=symbol,
+                side=side,
+                order_type=order_type,
+                quantity=quantity,
+                limit_price=limit_price,
+                client_order_id=client_order_id,
+                reduce_only=reduce_only,
+            )
+        except TypeError:
+            order = exchange_client.create_order(
+                symbol=symbol,
+                side=side,
+                order_type=order_type,
+                quantity=quantity,
+                limit_price=limit_price,
+            )
+        order["clientOrderId"] = client_order_id or order.get("clientOrderId")
+        order["reduceOnly"] = bool(reduce_only)
+        if client_order_id:
+            order = self._record_broker_ack(
+                client_order_id=client_order_id,
+                execution_request_id=execution_request_id,
+                exchange_id=exchange_id,
+                symbol=symbol,
+                side=side,
+                order=order,
+            )
+        if client_order_id:
+            self.cache.set_json(
+                f"execution:client_order:{client_order_id}",
+                order,
+                ttl=int(self.settings.execution_idempotency_ttl_seconds),
+            )
+        return order
+
+    def _stored_broker_ack(self, client_order_id: str) -> dict | None:
+        if self.execution_store is None:
+            return None
+        row = self.execution_store.broker_acknowledgement_by_client_order_id(client_order_id)
+        if not row:
+            return None
+        return dict(row.get("ack") or {})
+
+    def _record_broker_ack(
+        self,
+        *,
+        client_order_id: str,
+        execution_request_id: str | None,
+        exchange_id: str | None,
+        symbol: str,
+        side: str,
+        order: dict,
+    ) -> dict:
+        if self.execution_store is None:
+            return order
+        ack = self.execution_store.record_broker_acknowledgement(
+            client_order_id=client_order_id,
+            execution_request_id=execution_request_id,
+            broker_order_id=str(order.get("orderId", "")),
+            exchange=exchange_id or str(order.get("exchange", self.settings.primary_exchange) or self.settings.primary_exchange),
+            symbol=symbol,
+            side=side,
+            status=str(order.get("status", "ACKNOWLEDGED")),
+            ack_payload=order,
+        )
+        self._audit_execution_event(
+            execution_request_id,
+            "broker_acknowledgement",
+            {
+                "client_order_id": client_order_id,
+                "broker_order_id": str(order.get("orderId", "")),
+                "exchange": exchange_id,
+                "duplicate": bool(ack.get("duplicate", False)),
+                "status": str(order.get("status", "ACKNOWLEDGED")),
+            },
+        )
+        if execution_request_id:
+            self.execution_store.update_execution_request_status(
+                execution_request_id,
+                status="ACKNOWLEDGED",
+                trade_id=str(order.get("orderId", "")),
+            )
+        if bool(ack.get("duplicate", False)):
+            self.cache.increment("monitor:duplicate_execution_prevented", ttl=self.settings.monitor_state_ttl_seconds)
+        return dict(ack.get("ack") or order)
+
+    def _mark_execution_status(self, execution_request_id: str | None, status: str) -> None:
+        if not execution_request_id or self.execution_store is None:
+            return
+        self.execution_store.update_execution_request_status(execution_request_id, status=status)
+
+    def _audit_execution_event(self, execution_request_id: str | None, event_type: str, payload: dict) -> None:
+        if not execution_request_id or self.execution_store is None:
+            return
+        try:
+            self.execution_store.append_execution_audit_event(execution_request_id, event_type, payload)
+        except Exception:
+            logger.warning(
+                "execution_audit_write_failed",
+                exc_info=True,
+                extra={
+                    "event": "execution_audit_write_failed",
+                    "context": {"execution_request_id": execution_request_id, "event_type": event_type},
+                },
+            )
 
     def _hydrate_exchange_secrets(self) -> None:
         secret_manager = SecretManagerService(self.settings.secret_manager_project_id)

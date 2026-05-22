@@ -15,6 +15,7 @@ ccxt
 google-cloud-firestore
 google-auth
 google-cloud-secret-manager
+cryptography
 tenacity
 websockets
 prometheus-client

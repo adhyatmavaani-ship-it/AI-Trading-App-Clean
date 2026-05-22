@@ -6,6 +6,7 @@ import '../core/error_presenter.dart';
 import '../core/trading_palette.dart';
 import '../features/market/providers/market_providers.dart';
 import '../features/pnl/providers/pnl_providers.dart';
+import '../features/retention/providers/retention_providers.dart';
 import '../features/signals/providers/signal_providers.dart';
 import '../models/active_trade.dart';
 import '../models/market_chart.dart';
@@ -44,6 +45,7 @@ class _AiTradeCenterScreenState extends ConsumerState<AiTradeCenterScreen> {
     final marketUniverse = ref.watch(marketUniverseProvider);
     final activeTrades = ref.watch(activeTradesProvider(userId));
     final pnl = ref.watch(userPnLProvider(userId));
+    final localMemory = ref.watch(localAiMemoryProvider);
     final signals = signalFeed.items.isNotEmpty
         ? signalFeed.items
         : (initialSignals.valueOrNull ?? const <SignalModel>[]);
@@ -63,6 +65,31 @@ class _AiTradeCenterScreenState extends ConsumerState<AiTradeCenterScreen> {
           _TickerTape(
             summary: marketSummary,
             onTapSymbol: _openChartForSymbol,
+          ),
+          const SizedBox(height: 14),
+          _ExchangeHomeHeader(
+            pnl: pnl,
+            summary: marketSummary,
+            memory: localMemory,
+            bestTrade: bestTrade,
+            onBuy: () {
+              if (bestTrade?.action == 'BUY') {
+                widget.onOpenTradeSignal(bestTrade!);
+                return;
+              }
+              widget.onOpenChart();
+            },
+            onSell: () {
+              if (bestTrade?.action == 'SELL') {
+                widget.onOpenTradeSignal(bestTrade!);
+                return;
+              }
+              widget.onOpenChart();
+            },
+            onWatchlist: widget.onOpenChart,
+            onLearn: bestTrade == null
+                ? widget.onOpenChart
+                : () => _showExplanation(context, bestTrade),
           ),
           const SizedBox(height: 14),
           _MarketMovers(
@@ -109,10 +136,7 @@ class _AiTradeCenterScreenState extends ConsumerState<AiTradeCenterScreen> {
           ),
           const SizedBox(height: 10),
           _OpportunityList(
-            signals: signals
-                .where((item) => item.signalId != bestTrade?.signalId)
-                .take(4)
-                .toList(growable: false),
+            signals: _secondaryOpportunities(signals, bestTrade),
             onTap: widget.onOpenTradeSignal,
           ),
           const SizedBox(height: 18),
@@ -176,6 +200,25 @@ SignalModel? _bestVerifiedTrade(List<SignalModel> signals) {
       return b.confidence.compareTo(a.confidence);
     });
   return verified.isEmpty ? null : verified.first;
+}
+
+List<SignalModel> _secondaryOpportunities(
+  List<SignalModel> signals,
+  SignalModel? bestTrade,
+) {
+  final seen = <String>{};
+  final items = signals
+      .where((item) => item.signalId != bestTrade?.signalId)
+      .where((item) => seen.add(item.symbol.toUpperCase()))
+      .toList()
+    ..sort((a, b) {
+      final quality = b.qualityScore.compareTo(a.qualityScore);
+      if (quality != 0) {
+        return quality;
+      }
+      return b.confidence.compareTo(a.confidence);
+    });
+  return items.take(4).toList(growable: false);
 }
 
 class _MarketBrief extends StatelessWidget {
@@ -274,16 +317,20 @@ class _TickerTapeState extends State<_TickerTape>
           const <MarketTickerItemModel>[])
         _displayAsset(item.symbol): item,
     };
-    const ordered = <String>[
+    const preferred = <String>[
       'BTC',
       'ETH',
       'SOL',
       'BNB',
       'XRP',
-      'GOLD',
-      'NASDAQ'
     ];
-    final cells = ordered
+    final ordered = <String>[
+      ...preferred.where(tickerMap.containsKey),
+      ...tickerMap.keys.where((asset) => !preferred.contains(asset)),
+    ].take(10).toList(growable: false);
+    final visibleAssets =
+        ordered.isEmpty ? preferred.take(3).toList() : ordered;
+    final cells = visibleAssets
         .map((asset) => _TickerCell(
               asset: asset,
               item: tickerMap[asset],
@@ -362,7 +409,7 @@ class _TickerCell extends StatelessWidget {
             const SizedBox(width: 8),
             Text(
               item == null
-                  ? 'No live feed'
+                  ? 'Loading'
                   : '${_priceOrPending(item!.price)} ${change >= 0 ? '+' : ''}${change.toStringAsFixed(2)}%',
               style: Theme.of(context).textTheme.labelSmall?.copyWith(
                     color: color,
@@ -371,6 +418,379 @@ class _TickerCell extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _ExchangeHomeHeader extends StatelessWidget {
+  const _ExchangeHomeHeader({
+    required this.pnl,
+    required this.summary,
+    required this.memory,
+    required this.bestTrade,
+    required this.onBuy,
+    required this.onSell,
+    required this.onWatchlist,
+    required this.onLearn,
+  });
+
+  final AsyncValue<UserPnLModel> pnl;
+  final AsyncValue<MarketSummaryModel> summary;
+  final LocalAiMemoryState memory;
+  final SignalModel? bestTrade;
+  final VoidCallback onBuy;
+  final VoidCallback onSell;
+  final VoidCallback onWatchlist;
+  final VoidCallback onLearn;
+
+  @override
+  Widget build(BuildContext context) {
+    final pnlSnapshot = pnl.valueOrNull;
+    final market = summary.valueOrNull;
+    final positive = (pnlSnapshot?.absolutePnl ?? 0) >= 0;
+    final pnlColor =
+        positive ? TradingPalette.neonGreen : TradingPalette.neonRed;
+    final sentiment = market?.sentimentLabel.toUpperCase() ?? 'SYNCING';
+    final bestAsset = bestTrade?.symbol ??
+        memory.preferredAssets.firstOrNull ??
+        market?.ticker.firstOrNull?.symbol ??
+        'BTCUSDT';
+
+    return GlassPanel(
+      padding: const EdgeInsets.all(18),
+      glowColor: TradingPalette.electricBlue,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      'Portfolio',
+                      style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                            color: TradingPalette.textMuted,
+                            fontWeight: FontWeight.w800,
+                          ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      pnlSnapshot == null
+                          ? 'Syncing balance'
+                          : _money(pnlSnapshot.currentEquity),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style:
+                          Theme.of(context).textTheme.headlineMedium?.copyWith(
+                                color: TradingPalette.textPrimary,
+                                fontWeight: FontWeight.w900,
+                                letterSpacing: 0,
+                              ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      pnlSnapshot == null
+                          ? 'Risk guard is checking account state'
+                          : '${positive ? '+' : ''}${_money(pnlSnapshot.absolutePnl)} (${positive ? '+' : ''}${pnlSnapshot.pnlPct.toStringAsFixed(2)}%)',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: pnlSnapshot == null ? null : pnlColor,
+                            fontWeight: FontWeight.w800,
+                          ),
+                    ),
+                  ],
+                ),
+              ),
+              _ExchangeStatusPill(
+                label: sentiment,
+                value: market == null
+                    ? 'Market'
+                    : '${market.confidenceScore.toStringAsFixed(0)} AI',
+                color: _sentimentColor(sentiment),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: <Widget>[
+              const _ModeChip(
+                label: 'Spot',
+                value: 'Live prices',
+                color: TradingPalette.electricBlue,
+              ),
+              const _ModeChip(
+                label: 'Paper',
+                value: 'Safe trial',
+                color: TradingPalette.amber,
+              ),
+              _ModeChip(
+                label: 'AI Learn',
+                value: memory.viewedSignals == 0
+                    ? 'Building'
+                    : '${memory.viewedSignals} reads',
+                color: TradingPalette.violet,
+              ),
+              _ModeChip(
+                label: 'Risk',
+                value: pnlSnapshot?.protectionState ?? 'Checking',
+                color: TradingPalette.neonGreen,
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: <Widget>[
+              Expanded(
+                child: _QuickAction(
+                  icon: Icons.trending_up_rounded,
+                  label: 'Buy',
+                  color: TradingPalette.neonGreen,
+                  onTap: onBuy,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _QuickAction(
+                  icon: Icons.trending_down_rounded,
+                  label: 'Sell',
+                  color: TradingPalette.neonRed,
+                  onTap: onSell,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _QuickAction(
+                  icon: Icons.star_rounded,
+                  label: 'Watch',
+                  color: TradingPalette.amber,
+                  onTap: onWatchlist,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _QuickAction(
+                  icon: Icons.psychology_alt_rounded,
+                  label: 'Learn',
+                  color: TradingPalette.violet,
+                  onTap: onLearn,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          _AiLearningStrip(memory: memory, symbol: bestAsset),
+        ],
+      ),
+    );
+  }
+}
+
+class _ExchangeStatusPill extends StatelessWidget {
+  const _ExchangeStatusPill({
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  final String label;
+  final String value;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      constraints: const BoxConstraints(minWidth: 86),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.14),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: color.withOpacity(0.34)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: <Widget>[
+          Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: color,
+                  fontWeight: FontWeight.w900,
+                ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: TradingPalette.textMuted,
+                  fontWeight: FontWeight.w800,
+                ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ModeChip extends StatelessWidget {
+  const _ModeChip({
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  final String label;
+  final String value;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.035),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withOpacity(0.24)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          _SignalDot(color: color, size: 7),
+          const SizedBox(width: 7),
+          Text(
+            label,
+            style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  fontWeight: FontWeight.w900,
+                ),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            value,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: TradingPalette.textMuted,
+                  fontWeight: FontWeight.w700,
+                ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _QuickAction extends StatelessWidget {
+  const _QuickAction({
+    required this.icon,
+    required this.label,
+    required this.color,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final Color color;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(18),
+      child: Container(
+        constraints: const BoxConstraints(minHeight: 74),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.12),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: color.withOpacity(0.30)),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: <Widget>[
+            Icon(icon, color: color, size: 24),
+            const SizedBox(height: 7),
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(
+                label,
+                style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                      color: TradingPalette.textPrimary,
+                      fontWeight: FontWeight.w900,
+                    ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AiLearningStrip extends StatelessWidget {
+  const _AiLearningStrip({required this.memory, required this.symbol});
+
+  final LocalAiMemoryState memory;
+  final String symbol;
+
+  @override
+  Widget build(BuildContext context) {
+    final assetText = memory.preferredAssets.isEmpty
+        ? symbol
+        : memory.preferredAssets.take(3).join(', ');
+    final modeText = memory.preferredModes.isEmpty
+        ? 'Balanced risk-first setups'
+        : memory.preferredModes.first.replaceAll('_', ' ');
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: TradingPalette.midnight.withOpacity(0.45),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: TradingPalette.panelBorder),
+      ),
+      child: Row(
+        children: <Widget>[
+          Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              color: TradingPalette.violet.withOpacity(0.18),
+              shape: BoxShape.circle,
+              border:
+                  Border.all(color: TradingPalette.violet.withOpacity(0.35)),
+            ),
+            child: const Icon(
+              Icons.model_training_rounded,
+              color: TradingPalette.violet,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  'AI learning profile',
+                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                        fontWeight: FontWeight.w900,
+                      ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  '$assetText | $modeText',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -898,6 +1318,11 @@ class _OpportunityTile extends StatelessWidget {
         !signal.marketDataStale &&
         signal.price > 0 &&
         !signal.lowConfidence;
+    final score = signal.qualityScore > 0
+        ? signal.qualityScore
+        : (signal.confidence <= 1
+            ? signal.confidence * 100
+            : signal.confidence);
     return InkWell(
       borderRadius: BorderRadius.circular(18),
       onTap: approved ? () => onTap(signal) : null,
@@ -929,7 +1354,7 @@ class _OpportunityTile extends StatelessWidget {
                   Text(
                     approved
                         ? '${signal.strategy.replaceAll('_', ' ')} | ${signal.price.toStringAsFixed(signal.price >= 100 ? 2 : 4)}'
-                        : 'Watchlist only | waiting for verified market data',
+                        : 'Watchlist only | confidence ${score.toStringAsFixed(0)}%',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.bodySmall,
@@ -938,7 +1363,7 @@ class _OpportunityTile extends StatelessWidget {
               ),
             ),
             Text(
-              signal.qualityScore.toStringAsFixed(0),
+              score.toStringAsFixed(0),
               style: Theme.of(context).textTheme.titleLarge?.copyWith(
                     fontWeight: FontWeight.w900,
                   ),
@@ -1469,6 +1894,26 @@ String _priceOrPending(double? value) {
     return 'Plan pending';
   }
   return price >= 100 ? price.toStringAsFixed(2) : price.toStringAsFixed(4);
+}
+
+String _money(double value) {
+  final sign = value < 0 ? '-' : '';
+  final amount = value.abs();
+  return '$sign\$${amount.toStringAsFixed(2)}';
+}
+
+Color _sentimentColor(String sentiment) {
+  final normalized = sentiment.toUpperCase();
+  if (normalized.contains('BULL') || normalized.contains('RISK_ON')) {
+    return TradingPalette.neonGreen;
+  }
+  if (normalized.contains('BEAR') || normalized.contains('RISK_OFF')) {
+    return TradingPalette.neonRed;
+  }
+  if (normalized.contains('SYNC')) {
+    return TradingPalette.electricBlue;
+  }
+  return TradingPalette.amber;
 }
 
 String _riskLabel(SignalModel signal, ChartExecutionGuideModel? guide) {

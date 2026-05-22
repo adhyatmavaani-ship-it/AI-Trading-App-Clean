@@ -11,6 +11,7 @@ import time
 
 from app.core.exceptions import AuthenticationError
 from app.middleware.auth import get_user_id
+from app.services.portfolio_intelligence import PortfolioIntelligenceService
 from app.schemas.frontend_api import (
     LiveSignalItem,
     LiveSignalsResponse,
@@ -46,6 +47,40 @@ class MarketSummaryRequest(BaseModel):
 
 class AssistantModeRequest(BaseModel):
     mode: str = Field(..., description="Requested trade assistant mode.")
+
+
+class CopilotChatRequest(BaseModel):
+    prompt: str = Field(..., min_length=3, max_length=1000, description="User question for the market-data grounded AI copilot.")
+    symbol: str = Field(default="BTCUSDT", min_length=1, max_length=24, description="Market symbol to inspect.")
+    timeframe: str | None = Field(default=None, description="Optional timeframe such as 1h or 4h.")
+    session_id: str | None = Field(default=None, max_length=80, description="Optional durable copilot chat session id.")
+
+
+class ProScannerCriterion(BaseModel):
+    field: str = Field(..., min_length=1, max_length=40, description="Metric field such as rsi, volume_ratio, or macd_crossover.")
+    operator: str = Field(default="above", max_length=20, description="above, below, >=, <=, or exact match for string fields.")
+    value: float | str = Field(..., description="Threshold or expected categorical value.")
+
+
+class ProScannerRequest(BaseModel):
+    symbols: list[str] | None = Field(default=None, description="Optional symbol list. Omit to use the rotating scanner universe.")
+    timeframe: str = Field(default="1h", description="Scanner timeframe.")
+    criteria: list[ProScannerCriterion] = Field(default_factory=list, description="All criteria must pass for a symbol to match.")
+    webhook_url: str | None = Field(default=None, description="Optional webhook called when scanner matches are found.")
+    limit: int = Field(default=30, ge=1, le=80, description="Maximum symbols to evaluate.")
+
+
+class StrategyPublishRequest(BaseModel):
+    name: str = Field(..., min_length=2, max_length=80)
+    description: str = Field(default="", max_length=500)
+    style: str = Field(default="trend_following", max_length=40)
+    markets: list[str] = Field(default_factory=lambda: ["CRYPTO"])
+    evidence_type: str = Field(..., max_length=40)
+    metrics: dict[str, float | int] = Field(default_factory=dict)
+
+
+class JournalReportRequest(BaseModel):
+    trade: dict[str, object] = Field(..., description="Closed trade payload with entry, exit, timestamps, PnL, and optional AI context.")
 
 
 def _ensure_debug_routes_enabled(container: ServiceContainer) -> None:
@@ -147,13 +182,15 @@ async def get_live_signals(
         signals = list(cached_signals[:limit])
         if len(signals) < target:
             try:
-                async with asyncio.timeout(timeout_seconds):
-                    generated = await _generate_live_signals(container, limit=target)
+                generated = await asyncio.wait_for(
+                    _generate_live_signals(container, limit=target),
+                    timeout=timeout_seconds,
+                )
                 if generated:
                     used_generated = True
                 seen_ids = {item.signal_id for item in signals}
                 signals.extend(item for item in generated if item.signal_id not in seen_ids)
-            except TimeoutError:
+            except (TimeoutError, asyncio.TimeoutError):
                 logger.warning(
                     "live_signals_generation_timed_out",
                     extra={
@@ -389,6 +426,237 @@ async def set_market_assistant_mode(
         raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post(
+    "/pro/copilot/chat",
+    tags=["Pro"],
+    summary="Ask the market-data grounded AI copilot",
+    description="Answers pro user questions using current OHLCV, support/resistance, MACD, volume, and chart intelligence facts.",
+)
+async def post_pro_copilot_chat(
+    payload: CopilotChatRequest,
+    request: Request = ...,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    try:
+        user_id = get_user_id(request)
+        service = getattr(container, "ai_copilot_service", None)
+        if service is None:
+            raise HTTPException(status_code=503, detail="AI copilot service is not available")
+        return await service.answer(
+            user_id=user_id,
+            prompt=payload.prompt,
+            symbol=payload.symbol,
+            timeframe=payload.timeframe,
+            session_id=payload.session_id,
+        )
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post(
+    "/pro/scanner/run",
+    tags=["Pro"],
+    summary="Run a custom multi-exchange AI scanner",
+    description="Evaluates user-defined criteria such as RSI below 30 and volume above 2x average against live scanner candidates.",
+)
+async def post_pro_scanner_run(
+    payload: ProScannerRequest,
+    request: Request = ...,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    try:
+        user_id = get_user_id(request)
+        service = getattr(container, "pro_scanner_service", None)
+        if service is None:
+            raise HTTPException(status_code=503, detail="Pro scanner service is not available")
+        return await service.run(
+            user_id=user_id,
+            symbols=payload.symbols,
+            timeframe=payload.timeframe,
+            criteria=[_model_to_dict(criterion) for criterion in payload.criteria],
+            webhook_url=payload.webhook_url,
+            limit=payload.limit,
+        )
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get(
+    "/pro/scanner/rules",
+    tags=["Pro"],
+    summary="List saved pro scanner rules",
+    description="Returns durable scanner criteria and webhook targets saved for the authenticated user.",
+)
+async def get_pro_scanner_rules(
+    request: Request = ...,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    try:
+        user_id = get_user_id(request)
+        store = getattr(container, "pro_store", None)
+        rules = store.list_pro_scanner_rules(user_id=user_id) if store is not None else []
+        return {"count": len(rules), "items": rules}
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get(
+    "/pro/copilot/history",
+    tags=["Pro"],
+    summary="List AI copilot chat history",
+    description="Returns durable copilot chat entries for one authenticated user session.",
+)
+async def get_pro_copilot_history(
+    session_id: str = Query(..., min_length=1, max_length=80, description="Copilot session id to load."),
+    limit: int = Query(default=50, ge=1, le=200, description="Maximum history rows to return."),
+    request: Request = ...,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    try:
+        user_id = get_user_id(request)
+        store = getattr(container, "pro_store", None)
+        items = store.list_ai_copilot_history(user_id=user_id, session_id=session_id, limit=limit) if store is not None else []
+        return {"count": len(items), "items": items}
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post(
+    "/pro/marketplace/strategies",
+    tags=["Pro"],
+    summary="Publish a verified strategy",
+    description="Accepts only ledger-backed strategy performance. Screenshots are rejected as non-verifiable evidence.",
+)
+async def post_pro_marketplace_strategy(
+    payload: StrategyPublishRequest,
+    request: Request = ...,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    try:
+        user_id = get_user_id(request)
+        service = getattr(container, "strategy_marketplace_service", None)
+        if service is None:
+            raise HTTPException(status_code=503, detail="Strategy marketplace service is not available")
+        return service.publish(user_id=user_id, payload=_model_to_dict(payload))
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get(
+    "/pro/marketplace/strategies",
+    tags=["Pro"],
+    summary="List verified marketplace strategies",
+    description="Returns strategies with ledger-backed verification records.",
+)
+async def get_pro_marketplace_strategies(
+    request: Request = ...,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    try:
+        get_user_id(request)
+        service = getattr(container, "strategy_marketplace_service", None)
+        if service is None:
+            raise HTTPException(status_code=503, detail="Strategy marketplace service is not available")
+        strategies = service.list()
+        return {"count": len(strategies), "items": strategies}
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get(
+    "/pro/marketplace/weights",
+    tags=["Pro"],
+    summary="Get regime-aware strategy auto-weights",
+    description="Allocates capital across verified strategies using performance records and current market regime fit.",
+)
+async def get_pro_marketplace_weights(
+    regime: str = Query(default="TRENDING", description="Current market regime."),
+    request: Request = ...,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    try:
+        get_user_id(request)
+        service = getattr(container, "strategy_marketplace_service", None)
+        if service is None:
+            raise HTTPException(status_code=503, detail="Strategy marketplace service is not available")
+        return service.auto_weights(regime=regime)
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post(
+    "/pro/journal/report",
+    tags=["Pro"],
+    summary="Generate automated trade journal report",
+    description="Creates chart annotations, an SVG snapshot image, and psychology tags when a paper or live trade closes.",
+)
+async def post_pro_journal_report(
+    payload: JournalReportRequest,
+    request: Request = ...,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    try:
+        user_id = get_user_id(request)
+        service = getattr(container, "automated_journal_service", None)
+        if service is None:
+            raise HTTPException(status_code=503, detail="Automated journal service is not available")
+        return service.report(user_id=user_id, trade=dict(payload.trade))
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get(
+    "/pro/journal/reports",
+    tags=["Pro"],
+    summary="List automated journal reports",
+    description="Returns durable automated journal reports with psychology tags and snapshot references.",
+)
+async def get_pro_journal_reports(
+    limit: int = Query(default=50, ge=1, le=200, description="Maximum journal reports to return."),
+    request: Request = ...,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    try:
+        user_id = get_user_id(request)
+        store = getattr(container, "pro_store", None)
+        reports = store.list_automated_journal_reports(user_id=user_id, limit=limit) if store is not None else []
+        return {"count": len(reports), "items": reports}
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -1005,6 +1273,17 @@ async def get_user_pnl(
         _ensure_user_access(authenticated_user_id, user_id)
         ledger_snapshot = await container.portfolio_ledger.portfolio_snapshot(user_id)
         drawdown = container.drawdown_protection.load(user_id)
+        strategy_performance = {}
+        if getattr(container, "meta_controller", None) is not None:
+            strategy_performance = dict(
+                container.meta_controller.analytics_snapshot().get("strategy_performance", {})
+            )
+        intelligence = PortfolioIntelligenceService(container.settings).build(
+            ledger_snapshot=ledger_snapshot,
+            strategy_performance=strategy_performance,
+        )
+        if bool(intelligence["drawdown_alert"]) and getattr(container, "risk_controller", None) is not None:
+            container.risk_controller.set_profile(user_id, "low")
         return UserPnLResponse(
             user_id=user_id,
             starting_equity=ledger_snapshot["starting_equity"],
@@ -1026,6 +1305,7 @@ async def get_user_pnl(
             closed_trades=ledger_snapshot["closed_trades"],
             fees_paid=ledger_snapshot["fees_paid"],
             positions=ledger_snapshot["positions"],
+            **intelligence,
         )
     except AuthenticationError as exc:
         raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
@@ -1369,6 +1649,12 @@ def _ensure_user_access(authenticated_user_id: str, requested_user_id: str) -> N
             "Cannot access another user's data",
             error_code="UNAUTHORIZED_RESOURCE_ACCESS",
         )
+
+
+def _model_to_dict(model: BaseModel) -> dict:
+    if hasattr(model, "model_dump"):
+        return model.model_dump()
+    return model.dict()
 
 
 def _normalize_marker_timestamp(value: object) -> str:

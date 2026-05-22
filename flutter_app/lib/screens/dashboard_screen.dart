@@ -1757,6 +1757,118 @@ class _BalanceHeroCard extends StatelessWidget {
                 ),
             ],
           ),
+          const SizedBox(height: 16),
+          _PortfolioMirrorPanel(pnl: pnl),
+        ],
+      ),
+    );
+  }
+}
+
+class _PortfolioMirrorPanel extends StatelessWidget {
+  const _PortfolioMirrorPanel({required this.pnl});
+
+  final UserPnLModel pnl;
+
+  @override
+  Widget build(BuildContext context) {
+    final concentrationColor = pnl.concentrationWarning.isEmpty
+        ? TradingPalette.neonGreen
+        : TradingPalette.neonRed;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: TradingPalette.overlay,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: (pnl.drawdownAlert
+                  ? TradingPalette.neonRed
+                  : TradingPalette.panelBorder)
+              .withOpacity(0.55),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              Expanded(
+                child: Text(
+                  'Portfolio Mirror',
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w900,
+                      ),
+                ),
+              ),
+              StatusBadge(
+                label: pnl.strategyHealthTag,
+                color: pnl.profitFactor > 1.5
+                    ? TradingPalette.neonGreen
+                    : TradingPalette.amber,
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: <Widget>[
+              _InfoPill(
+                label: 'Profit Factor',
+                value: pnl.profitFactor <= 0
+                    ? 'No losses yet'
+                    : pnl.profitFactor.toStringAsFixed(2),
+              ),
+              _InfoPill(
+                label: 'Drawdown',
+                value: '${(pnl.rollingDrawdown * 100).toStringAsFixed(1)}%',
+              ),
+              _InfoPill(
+                label: 'Risk Mode',
+                value: pnl.riskProfileMode,
+              ),
+              _InfoPill(
+                label: 'Largest Asset',
+                value: pnl.largestPositionSymbol.isEmpty
+                    ? 'Balanced'
+                    : '${pnl.largestPositionSymbol} ${(pnl.largestPositionPct * 100).toStringAsFixed(0)}%',
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            pnl.drawdownExplanation.isEmpty
+                ? 'AI is tracking peak-to-current capital drawdown.'
+                : pnl.drawdownExplanation,
+            style: const TextStyle(color: TradingPalette.textMuted),
+          ),
+          if (pnl.concentrationWarning.isNotEmpty) ...<Widget>[
+            const SizedBox(height: 8),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Icon(Icons.warning_amber_rounded, color: concentrationColor),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    pnl.concentrationWarning,
+                    style: TextStyle(
+                      color: concentrationColor,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+          if (pnl.strategyScoreSummary.isNotEmpty) ...<Widget>[
+            const SizedBox(height: 8),
+            Text(
+              pnl.strategyScoreSummary,
+              style: const TextStyle(color: TradingPalette.textPrimary),
+            ),
+          ],
         ],
       ),
     );

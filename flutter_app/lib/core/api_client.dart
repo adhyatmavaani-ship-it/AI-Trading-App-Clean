@@ -16,6 +16,7 @@ import '../models/infrastructure_snapshot.dart';
 import '../models/meta_analytics.dart';
 import '../models/meta_decision.dart';
 import '../models/portfolio_concentration.dart';
+import '../models/pro_features.dart';
 import '../models/public_dashboard.dart';
 import '../models/signal.dart';
 import '../models/system_diagnostics.dart';
@@ -206,6 +207,105 @@ class ApiClient {
       data: <String, dynamic>{'mode': mode},
     );
     return payload['mode'] as String? ?? mode;
+  }
+
+  Future<ProCopilotResponseModel> askProCopilot(
+    ProCopilotRequestModel request,
+  ) async {
+    final payload = await postJson(
+      '/v1/pro/copilot/chat',
+      data: request.toJson(),
+    );
+    return ProCopilotResponseModel.fromJson(payload);
+  }
+
+  Future<ProScannerResponseModel> runProScanner(
+    ProScannerRunRequestModel request,
+  ) async {
+    final payload = await postJson(
+      '/v1/pro/scanner/run',
+      data: request.toJson(),
+    );
+    return ProScannerResponseModel.fromJson(payload);
+  }
+
+  Future<List<Map<String, dynamic>>> getProScannerRules() async {
+    final payload = await getJson('/v1/pro/scanner/rules');
+    final items =
+        _requireList(payload['items'], path: '/v1/pro/scanner/rules.items');
+    return items
+        .map((item) => _mapItem(item, '/v1/pro/scanner/rules'))
+        .toList(growable: false);
+  }
+
+  Future<List<Map<String, dynamic>>> getProCopilotHistory({
+    required String sessionId,
+    int limit = 50,
+  }) async {
+    final payload = await getJson(
+      '/v1/pro/copilot/history',
+      queryParameters: <String, dynamic>{
+        'session_id': sessionId,
+        'limit': limit,
+      },
+    );
+    final items =
+        _requireList(payload['items'], path: '/v1/pro/copilot/history.items');
+    return items
+        .map((item) => _mapItem(item, '/v1/pro/copilot/history'))
+        .toList(growable: false);
+  }
+
+  Future<Map<String, dynamic>> publishMarketplaceStrategy(
+    StrategyPublishRequestModel request,
+  ) {
+    return postJson(
+      '/v1/pro/marketplace/strategies',
+      data: request.toJson(),
+    );
+  }
+
+  Future<StrategyMarketplaceResponseModel> getMarketplaceStrategies() async {
+    final payload = await getJson('/v1/pro/marketplace/strategies');
+    return StrategyMarketplaceResponseModel.fromJson(payload);
+  }
+
+  Future<StrategyWeightsResponseModel> getMarketplaceWeights({
+    String regime = 'TRENDING',
+  }) async {
+    final payload = await getJson(
+      '/v1/pro/marketplace/weights',
+      queryParameters: <String, dynamic>{'regime': regime},
+    );
+    return StrategyWeightsResponseModel.fromJson(payload);
+  }
+
+  Future<JournalReportResponseModel> generateJournalReport(
+    JournalReportRequestModel request,
+  ) async {
+    final payload = await postJson(
+      '/v1/pro/journal/report',
+      data: request.toJson(),
+    );
+    return JournalReportResponseModel.fromJson(payload);
+  }
+
+  Future<List<JournalReportResponseModel>> getJournalReports({
+    int limit = 50,
+  }) async {
+    final payload = await getJson(
+      '/v1/pro/journal/reports',
+      queryParameters: <String, dynamic>{'limit': limit},
+    );
+    final items =
+        _requireList(payload['items'], path: '/v1/pro/journal/reports.items');
+    return items
+        .map(
+          (item) => JournalReportResponseModel.fromJson(
+            _mapItem(item, '/v1/pro/journal/reports'),
+          ),
+        )
+        .toList(growable: false);
   }
 
   Future<RiskCoachOhlcResponse> getRiskCoachOhlc({

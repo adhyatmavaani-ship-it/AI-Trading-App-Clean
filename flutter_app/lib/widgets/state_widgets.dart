@@ -46,9 +46,8 @@ class LoadingState extends StatelessWidget {
         final resolvedLabel = switch (warmupState) {
           BackendWarmupState.waking => 'Server waking up...',
           BackendWarmupState.retrying => 'Retrying connection...',
-          BackendWarmupState.connecting ||
-          BackendWarmupState.idle =>
-            'Server waking up...',
+          BackendWarmupState.connecting => 'Connecting to live backend...',
+          BackendWarmupState.idle => label,
           BackendWarmupState.slow => 'Retrying connection...',
           BackendWarmupState.ready => label,
         };
@@ -114,7 +113,7 @@ class ErrorState extends StatelessWidget {
                         AppErrorType.server => 'Backend Reconnecting',
                         AppErrorType.timeout => 'Backend Reconnecting',
                         AppErrorType.network => 'Backend Reconnecting',
-                        AppErrorType.unknown => 'Something Went Wrong',
+                        AppErrorType.unknown => 'Request Failed',
                       };
         final resolvedIcon = waking || retrying
             ? Icons.hourglass_top_rounded

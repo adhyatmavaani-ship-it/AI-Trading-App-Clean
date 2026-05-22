@@ -14,6 +14,16 @@ class UserPnLModel {
     this.unrealizedPnl = 0,
     this.grossExposure = 0,
     this.openNotional = 0,
+    this.profitFactor = 0,
+    this.strategyHealthTag = 'Needs Improvement',
+    this.drawdownAlert = false,
+    this.riskProfileMode = 'normal',
+    this.drawdownExplanation = '',
+    this.concentrationWarning = '',
+    this.largestPositionSymbol = '',
+    this.largestPositionPct = 0,
+    this.strategyScoreSummary = '',
+    this.strategyScores = const <String, StrategyScoreModel>{},
   });
 
   final String userId;
@@ -30,6 +40,16 @@ class UserPnLModel {
   final double unrealizedPnl;
   final double grossExposure;
   final double openNotional;
+  final double profitFactor;
+  final String strategyHealthTag;
+  final bool drawdownAlert;
+  final String riskProfileMode;
+  final String drawdownExplanation;
+  final String concentrationWarning;
+  final String largestPositionSymbol;
+  final double largestPositionPct;
+  final String strategyScoreSummary;
+  final Map<String, StrategyScoreModel> strategyScores;
 
   factory UserPnLModel.fromJson(Map<String, dynamic> json) {
     return UserPnLModel(
@@ -47,6 +67,26 @@ class UserPnLModel {
       unrealizedPnl: (json['unrealized_pnl'] ?? 0).toDouble(),
       grossExposure: (json['gross_exposure'] ?? 0).toDouble(),
       openNotional: (json['open_notional'] ?? 0).toDouble(),
+      profitFactor: (json['profit_factor'] ?? 0).toDouble(),
+      strategyHealthTag:
+          json['strategy_health_tag'] as String? ?? 'Needs Improvement',
+      drawdownAlert: json['drawdown_alert'] as bool? ?? false,
+      riskProfileMode: json['risk_profile_mode'] as String? ?? 'normal',
+      drawdownExplanation: json['drawdown_explanation'] as String? ?? '',
+      concentrationWarning: json['concentration_warning'] as String? ?? '',
+      largestPositionSymbol: json['largest_position_symbol'] as String? ?? '',
+      largestPositionPct: (json['largest_position_pct'] ?? 0).toDouble(),
+      strategyScoreSummary: json['strategy_score_summary'] as String? ?? '',
+      strategyScores:
+          (json['strategy_scores'] as Map? ?? const <String, dynamic>{}).map(
+        (key, value) => MapEntry(
+          key.toString(),
+          StrategyScoreModel.fromJson(
+            Map<String, dynamic>.from(
+                value as Map? ?? const <String, dynamic>{}),
+          ),
+        ),
+      ),
     );
   }
 
@@ -65,6 +105,16 @@ class UserPnLModel {
     double? unrealizedPnl,
     double? grossExposure,
     double? openNotional,
+    double? profitFactor,
+    String? strategyHealthTag,
+    bool? drawdownAlert,
+    String? riskProfileMode,
+    String? drawdownExplanation,
+    String? concentrationWarning,
+    String? largestPositionSymbol,
+    double? largestPositionPct,
+    String? strategyScoreSummary,
+    Map<String, StrategyScoreModel>? strategyScores,
   }) {
     return UserPnLModel(
       userId: userId ?? this.userId,
@@ -81,6 +131,17 @@ class UserPnLModel {
       unrealizedPnl: unrealizedPnl ?? this.unrealizedPnl,
       grossExposure: grossExposure ?? this.grossExposure,
       openNotional: openNotional ?? this.openNotional,
+      profitFactor: profitFactor ?? this.profitFactor,
+      strategyHealthTag: strategyHealthTag ?? this.strategyHealthTag,
+      drawdownAlert: drawdownAlert ?? this.drawdownAlert,
+      riskProfileMode: riskProfileMode ?? this.riskProfileMode,
+      drawdownExplanation: drawdownExplanation ?? this.drawdownExplanation,
+      concentrationWarning: concentrationWarning ?? this.concentrationWarning,
+      largestPositionSymbol:
+          largestPositionSymbol ?? this.largestPositionSymbol,
+      largestPositionPct: largestPositionPct ?? this.largestPositionPct,
+      strategyScoreSummary: strategyScoreSummary ?? this.strategyScoreSummary,
+      strategyScores: strategyScores ?? this.strategyScores,
     );
   }
 
@@ -95,5 +156,28 @@ class UserPnLModel {
       peakEquity,
       currentEquity,
     ];
+  }
+}
+
+class StrategyScoreModel {
+  const StrategyScoreModel({
+    required this.trades,
+    required this.winRate,
+    required this.pnl,
+    required this.tag,
+  });
+
+  final int trades;
+  final double winRate;
+  final double pnl;
+  final String tag;
+
+  factory StrategyScoreModel.fromJson(Map<String, dynamic> json) {
+    return StrategyScoreModel(
+      trades: (json['trades'] as num?)?.toInt() ?? 0,
+      winRate: (json['win_rate'] as num?)?.toDouble() ?? 0,
+      pnl: (json['pnl'] as num?)?.toDouble() ?? 0,
+      tag: json['tag'] as String? ?? 'Needs More Data',
+    );
   }
 }

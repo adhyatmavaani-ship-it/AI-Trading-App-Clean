@@ -12,9 +12,12 @@ except ModuleNotFoundError:
     FASTAPI_AVAILABLE = False
 
 if FASTAPI_AVAILABLE:
+    from app.core.config import Settings
     from app.api.routes import trading
     from app.middleware.auth import AuthMiddleware
     from app.services.container import get_container
+    from app.services.execution_idempotency import ExecutionIdempotencyService
+    from app.services.redis_cache import RedisCache
 
 
 class StubTradingOrchestrator:
@@ -52,10 +55,37 @@ class StubAlertingService:
         return None
 
 
+class StubCircuitDecision:
+    def __init__(self, allowed: bool, reasons: list[str] | None = None):
+        self.allowed = allowed
+        self.reasons = reasons or []
+        self.details = {"source": "test"}
+
+
+class StubExecutionCircuitBreaker:
+    def __init__(self, decision: StubCircuitDecision):
+        self.decision = decision
+
+    def evaluate(self, *, trading_mode: str, symbol: str):
+        return self.decision
+
+
 class StubContainer:
-    def __init__(self, failure: Exception | None = None):
+    def __init__(
+        self,
+        failure: Exception | None = None,
+        circuit_decision: StubCircuitDecision | None = None,
+        idempotency_service: object | None = None,
+        trading_mode: str = "paper",
+    ):
         self.trading_orchestrator = StubTradingOrchestrator(failure=failure)
         self.alerting_service = StubAlertingService()
+        self.settings = type("Settings", (), {"trading_mode": trading_mode})()
+        if idempotency_service is not None:
+            self.execution_idempotency_service = idempotency_service
+        if circuit_decision is not None:
+            self.execution_circuit_breaker = StubExecutionCircuitBreaker(circuit_decision)
+            self.settings = type("Settings", (), {"trading_mode": "live"})()
 
 
 @unittest.skipUnless(FASTAPI_AVAILABLE, "fastapi is not installed")
@@ -124,6 +154,32 @@ class TradingRoutesTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["trade_id"], "trade-1")
+
+    def test_execute_trade_blocks_shield_size_override(self):
+        response = self.client.post(
+            "/v1/trading/execute",
+            headers={"X-API-Key": "route-token"},
+            json={
+                "user_id": "alice",
+                "symbol": "BTCUSDT",
+                "side": "BUY",
+                "requested_notional": 20001.0,
+                "confidence": 0.8,
+                "reason": "test",
+                "feature_snapshot": {
+                    "shield_required": 1.0,
+                    "shield_account_balance": 100000.0,
+                    "shield_entry_price": 100.0,
+                    "shield_stop_loss": 95.0,
+                    "shield_take_profit": 110.0,
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 403)
+        payload = response.json()["detail"]
+        self.assertEqual(payload["error_code"], "POSITION_SIZE_EXCEEDS_RISK_LIMIT")
+        self.assertEqual(payload["details"]["auto_quantity"], 200.0)
 
     def test_execute_trade_accepts_system_executor_for_other_user(self):
         response = self.client.post(
@@ -214,6 +270,69 @@ class TradingRoutesTest(unittest.TestCase):
         payload = response.json()["detail"]
         self.assertEqual(payload["error_code"], "BROKER_UNAVAILABLE")
         self.assertEqual(payload["details"]["symbol"], "BTCUSDT")
+
+    def test_execute_trade_returns_graceful_circuit_breaker_state(self):
+        self.app.dependency_overrides[get_container] = lambda: StubContainer(
+            circuit_decision=StubCircuitDecision(
+                allowed=False,
+                reasons=["market feed stale", "broker reconciliation mismatch"],
+            )
+        )
+
+        response = self.client.post(
+            "/v1/trading/execute",
+            headers={"X-API-Key": "route-token"},
+            json={
+                "user_id": "alice",
+                "symbol": "BTCUSDT",
+                "side": "BUY",
+                "quantity": 1.0,
+                "confidence": 0.8,
+                "reason": "test",
+            },
+        )
+
+        self.assertEqual(response.status_code, 409)
+        payload = response.json()["detail"]
+        self.assertEqual(payload["error_code"], "EXECUTION_CIRCUIT_OPEN")
+        self.assertEqual(payload["message"], "Execution temporarily paused while safety checks complete")
+        self.assertEqual(payload["details"]["state"], "execution temporarily paused")
+        self.assertIn("market feed stale", payload["details"]["reasons"])
+
+    def test_execute_trade_replays_duplicate_idempotency_key(self):
+        cache = RedisCache("")
+        service = ExecutionIdempotencyService(
+            settings=Settings(redis_url="", execution_idempotency_ttl_seconds=60),
+            cache=cache,
+        )
+        self.app.dependency_overrides[get_container] = lambda: StubContainer(
+            idempotency_service=service,
+            trading_mode="live",
+        )
+        payload = {
+            "user_id": "alice",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "quantity": 1.0,
+            "confidence": 0.8,
+            "reason": "test",
+        }
+
+        first = self.client.post(
+            "/v1/trading/execute",
+            headers={"X-API-Key": "route-token", "X-Idempotency-Key": "retry-key-1"},
+            json=payload,
+        )
+        second = self.client.post(
+            "/v1/trading/execute",
+            headers={"X-API-Key": "route-token", "X-Idempotency-Key": "retry-key-1"},
+            json=payload,
+        )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.json()["trade_id"], "trade-1")
+        self.assertTrue(second.json()["duplicate_signal"])
 
 
 if __name__ == "__main__":

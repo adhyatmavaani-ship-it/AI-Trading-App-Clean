@@ -53,6 +53,43 @@ async def system_health(
 
 
 @router.get(
+    "/safety-state",
+    summary="Get execution safety state",
+    description="Returns non-secret runtime state used by clients to render graceful execution availability.",
+)
+async def safety_state(
+    request: Request,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    try:
+        get_user_id(request)
+        service = getattr(container, "safety_state_service", None)
+        if service is None:
+            service = getattr(container, "execution_circuit_breaker", None)
+        if service is None or not hasattr(service, "snapshot"):
+            return {
+                "execution_available": False,
+                "health_reason": "safety state service unavailable",
+                "components": {},
+            }
+        return service.snapshot(trading_mode=getattr(container.settings, "trading_mode", "paper"))
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get(
+    "/operational-health",
+    summary="Get unified operational health snapshot",
+    description="Returns Flutter-safe non-secret execution, feed, latency, reconciliation, DB pressure, and recovery state.",
+)
+async def operational_health(
+    request: Request,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    return await safety_state(request=request, container=container)
+
+
+@router.get(
     "/concentration",
     response_model=PortfolioConcentrationHistoryResponse,
     summary="Get portfolio concentration drift history",

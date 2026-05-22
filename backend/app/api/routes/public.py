@@ -48,12 +48,14 @@ async def get_public_performance(
             container.cache.set_json(cache_key, response.model_dump(mode="json"), ttl=PUBLIC_CACHE_TTL_SECONDS)
             return response
 
-        async with asyncio.timeout(timeout_seconds):
-            summary = await asyncio.to_thread(container.firestore.load_public_performance_summary)
+        summary = await asyncio.wait_for(
+            asyncio.to_thread(container.firestore.load_public_performance_summary),
+            timeout=timeout_seconds,
+        )
         response = _build_public_performance_response(summary)
         container.cache.set_json(cache_key, response.model_dump(mode="json"), ttl=PUBLIC_CACHE_TTL_SECONDS)
         return response
-    except TimeoutError:
+    except (TimeoutError, asyncio.TimeoutError):
         logger.warning(
             "public_performance_endpoint_timed_out",
             extra={

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 
 import websockets
 
@@ -27,10 +28,12 @@ async def stream_trades() -> None:
     )
     url = f"wss://stream.binance.com:9443/stream?streams={streams}"
     async with websockets.connect(url) as socket:
+        _record_websocket_health(cache, connected=True)
         async for message in socket:
             payload = json.loads(message)
             stream = payload["stream"]
             data = payload["data"]
+            _record_websocket_health(cache, connected=True)
             cache.set_json(f"stream:{stream}", data, ttl=30)
             if stream.endswith("@bookTicker"):
                 symbol = str(data.get("s", "")).upper()
@@ -45,6 +48,13 @@ async def stream_trades() -> None:
                     },
                     ttl=30,
                 )
+
+
+def _record_websocket_health(cache: RedisCache, *, connected: bool) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    ttl = int(get_settings().monitor_state_ttl_seconds)
+    cache.set("monitor:websocket_connected", "1" if connected else "0", ttl=ttl)
+    cache.set("monitor:websocket_connected:last_seen_ts", now, ttl=ttl)
 
 
 def run() -> None:

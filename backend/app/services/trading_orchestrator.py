@@ -1588,6 +1588,8 @@ class TradingOrchestrator:
                     "shard_id": shard_id,
                     "priority": execution_priority,
                     "scheduled_delay_ms": scheduled_delay_ms,
+                    "execution_request_id": request.signal_id,
+                    "execution_origin": request.feature_snapshot.get("execution_origin", "orchestrator"),
                 },
             )
             executed_price = float(
@@ -2448,6 +2450,8 @@ class TradingOrchestrator:
                 "book_key": book_key,
                 "aggregate_id": book.get("aggregate_id"),
                 "virtual_child_count": len(intents),
+                "execution_request_id": book.get("aggregate_id"),
+                "execution_origin": "virtual_order_manager",
             }
             if self.settings.trading_mode == "paper":
                 order = await self._submit_order(

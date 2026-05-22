@@ -8,11 +8,13 @@ import '../core/adaptive_ai_intelligence_engine.dart';
 import '../core/ai_opportunity_engine.dart';
 import '../core/error_presenter.dart';
 import '../core/institutional_intelligence_engine.dart';
+import '../core/technical_analysis_engine.dart';
 import '../core/trading_palette.dart';
 import '../core/websocket_service.dart';
 import '../features/auth/providers/auth_provider.dart';
 import '../features/market/providers/market_providers.dart';
 import '../features/pnl/providers/pnl_providers.dart';
+import '../features/retention/providers/retention_providers.dart';
 import '../features/signals/providers/signal_providers.dart';
 import '../features/trade/providers/trade_providers.dart';
 import '../models/active_trade.dart';
@@ -37,16 +39,40 @@ class TradeScreen extends ConsumerStatefulWidget {
 
 class _TradeScreenState extends ConsumerState<TradeScreen> {
   late final TextEditingController _amountController;
+  late final ScrollController _scrollController;
 
   @override
   void initState() {
     super.initState();
     _amountController = TextEditingController(text: '100');
+    _scrollController = ScrollController(keepScrollOffset: false);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scrollController.hasClients) {
+        return;
+      }
+      _scrollController.jumpTo(0);
+    });
+    ref.listenManual<String>(
+      selectedMarketSymbolProvider,
+      (_, __) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted || !_scrollController.hasClients) {
+            return;
+          }
+          _scrollController.animateTo(
+            0,
+            duration: const Duration(milliseconds: 260),
+            curve: Curves.easeOutCubic,
+          );
+        });
+      },
+    );
   }
 
   @override
   void dispose() {
     _amountController.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -63,11 +89,16 @@ class _TradeScreenState extends ConsumerState<TradeScreen> {
     final executionController =
         ref.read(tradeExecutionControllerProvider.notifier);
     final marketChartAsync = ref.watch(marketChartProvider);
+    final technicalReport = marketChartAsync.valueOrNull == null
+        ? null
+        : const TechnicalAnalysisEngine()
+            .analyze(marketChartAsync.valueOrNull!);
     final socketState =
         ref.watch(webSocketServiceProvider).stateListenable.value;
     final marketUniverseAsync = ref.watch(marketUniverseProvider);
     final activeTradesAsync = ref.watch(activeTradesProvider(userId));
     final signalFeed = ref.watch(signalFeedProvider);
+    final localMemory = ref.watch(localAiMemoryProvider);
     final signalItems = signalFeed.items;
     final symbolOptions = _buildSymbolOptions(
       selectedSymbol: selectedSymbol,
@@ -78,7 +109,16 @@ class _TradeScreenState extends ConsumerState<TradeScreen> {
       chart: marketChartAsync.valueOrNull,
       universe: marketUniverseAsync.valueOrNull,
     );
+    final riskShield = _riskShieldPreview(
+      side: executionState.side,
+      amount: executionState.amount,
+      paperState: paperState,
+      chart: marketChartAsync.valueOrNull,
+      evaluation: tradeEvaluationAsync.valueOrNull,
+      intent: tradeIntent,
+    );
     final executionBlocked = executionState.isSubmitting ||
+        !paperState.liveUnlocked ||
         !_canExecuteTrade(
           state: executionState,
           evaluation: tradeEvaluationAsync.valueOrNull,
@@ -97,6 +137,7 @@ class _TradeScreenState extends ConsumerState<TradeScreen> {
             chart: marketChartAsync.valueOrNull,
             executionState: executionState,
             paperState: paperState,
+            riskShield: riskShield,
             authDegraded: authState.isDegraded,
             amountController: _amountController,
             onSideChanged: executionController.setSide,
@@ -119,10 +160,12 @@ class _TradeScreenState extends ConsumerState<TradeScreen> {
                       evaluation: tradeEvaluationAsync.valueOrNull,
                     ),
             onPaperExecute: () => _executePaperTrade(
+              userId: userId,
               symbol: selectedSymbol,
               intent: tradeIntent,
               evaluation: tradeEvaluationAsync.valueOrNull,
               chart: marketChartAsync.valueOrNull,
+              riskShield: riskShield,
             ),
             onDismissFeedback: executionController.clearFeedback,
           );
@@ -179,9 +222,9 @@ class _TradeScreenState extends ConsumerState<TradeScreen> {
           }
 
           final chartPanel = SectionCard(
-            title: 'Execution Chart',
+            title: 'TradingView-style Live Chart',
             subtitle:
-                'Live candles for $selectedSymbol with direct symbol and timeframe switching.',
+                'Full candle view for $selectedSymbol with timeframe, symbol, and fullscreen controls.',
             trailing: const LivePulseIndicator(
               label: 'MARKET',
               color: TradingPalette.electricBlue,
@@ -225,7 +268,10 @@ class _TradeScreenState extends ConsumerState<TradeScreen> {
                     activeTrades: activeTradesAsync.valueOrNull ??
                         const <ActiveTradeModel>[],
                     fullscreenActionBar: buildStickyExecutionBar(),
-                    height: isWide ? 520 : 430,
+                    height: isWide
+                        ? 520
+                        : math.max(
+                            520, MediaQuery.sizeOf(context).height * 0.56),
                     onAssistantModeChanged: (mode) async {
                       await ref
                           .read(tradingRepositoryProvider)
@@ -254,9 +300,41 @@ class _TradeScreenState extends ConsumerState<TradeScreen> {
           return Stack(
             children: <Widget>[
               ListView(
+                controller: _scrollController,
                 physics: const AlwaysScrollableScrollPhysics(),
                 padding: const EdgeInsets.fromLTRB(20, 6, 20, 112),
                 children: <Widget>[
+                  if (isWide)
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Expanded(flex: 7, child: chartPanel),
+                        const SizedBox(width: 18),
+                        Expanded(flex: 5, child: executionPanel),
+                      ],
+                    )
+                  else ...<Widget>[
+                    chartPanel,
+                    const SizedBox(height: 18),
+                    _BeginnerAiCoachPanel(report: technicalReport),
+                    const SizedBox(height: 18),
+                    _TechnicalAiReportPanel(
+                      report: technicalReport,
+                      localMemory: localMemory,
+                    ),
+                    const SizedBox(height: 18),
+                    executionPanel,
+                  ],
+                  if (isWide) ...<Widget>[
+                    const SizedBox(height: 18),
+                    _BeginnerAiCoachPanel(report: technicalReport),
+                    const SizedBox(height: 18),
+                    _TechnicalAiReportPanel(
+                      report: technicalReport,
+                      localMemory: localMemory,
+                    ),
+                  ],
+                  const SizedBox(height: 18),
                   _TradeHeroCard(
                     selectedSymbol: selectedSymbol,
                     tradeIntent: tradeIntent,
@@ -274,21 +352,6 @@ class _TradeScreenState extends ConsumerState<TradeScreen> {
                         const <ActiveTradeModel>[],
                   ),
                   const SizedBox(height: 18),
-                  if (isWide)
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: <Widget>[
-                        Expanded(flex: 7, child: chartPanel),
-                        const SizedBox(width: 18),
-                        Expanded(flex: 5, child: executionPanel),
-                      ],
-                    )
-                  else ...<Widget>[
-                    chartPanel,
-                    const SizedBox(height: 18),
-                    executionPanel,
-                  ],
-                  const SizedBox(height: 18),
                   activeTradesPanel,
                   const SizedBox(height: 18),
                   _PaperPortfolioPanel(
@@ -297,6 +360,19 @@ class _TradeScreenState extends ConsumerState<TradeScreen> {
                       ref
                           .read(localPaperTradingProvider.notifier)
                           .close(tradeId);
+                    },
+                    onAcknowledgeLesson: ({
+                      required tradeId,
+                      required lesson,
+                      required acknowledged,
+                    }) {
+                      ref
+                          .read(localPaperTradingProvider.notifier)
+                          .acknowledgeLesson(
+                            tradeId: tradeId,
+                            lesson: lesson,
+                            acknowledged: acknowledged,
+                          );
                     },
                   ),
                 ],
@@ -377,41 +453,52 @@ class _TradeScreenState extends ConsumerState<TradeScreen> {
     );
   }
 
-  void _executePaperTrade({
+  Future<void> _executePaperTrade({
+    required String userId,
     required String symbol,
     required TradeIntent? intent,
     required TradeEvaluationModel? evaluation,
     required MarketChartModel? chart,
-  }) {
+    required RiskShieldPreview riskShield,
+  }) async {
+    final executionController =
+        ref.read(tradeExecutionControllerProvider.notifier);
     final executionState = ref.read(tradeExecutionControllerProvider);
     final amount =
         double.tryParse(_amountController.text.trim()) ?? executionState.amount;
+    if (amount <= 0) {
+      executionController.setAmount(0);
+      return;
+    }
+    executionController.setAmount(amount);
     final price = _paperMarketPrice(
       chart: chart,
       intent: intent,
       evaluation: evaluation,
     );
-    final reason = _traderFacingReason(
-      evaluation?.reason.trim().isNotEmpty == true
-          ? evaluation!.reason
-          : intent?.reason?.trim().isNotEmpty == true
-              ? intent!.reason!
-              : null,
-      fallback:
-          'Local paper fill created while live execution remains backend-authoritative.',
+    final response = await executionController.executePaperSandbox(
+      userId: userId,
+      symbol: symbol,
+      intent: intent,
+      evaluation: evaluation,
+      paperState: ref.read(localPaperTradingProvider),
+      riskShield: riskShield,
+      selectedPrice: price,
     );
-    final position = ref.read(localPaperTradingProvider.notifier).execute(
-          symbol: symbol,
-          side: executionState.side,
-          notional: amount,
-          price: price,
-          reason: reason,
+    if (!mounted || response == null) {
+      return;
+    }
+    ref.read(localPaperTradingProvider.notifier).mirrorBackendFill(
+          response: response,
+          reason: response.explanation.isNotEmpty
+              ? response.explanation
+              : 'Backend paper sandbox fill',
         );
     HapticFeedback.mediumImpact();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          'Paper ${position.side} opened on ${position.symbol} at ${position.entry.toStringAsFixed(4)}',
+          'Paper ${response.side} submitted on ${response.symbol} at ${response.executedPrice.toStringAsFixed(4)}',
         ),
       ),
     );
@@ -870,6 +957,634 @@ class _LiveConfidenceDelta extends StatelessWidget {
                       ),
                 ),
               ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TechnicalAiReportPanel extends StatelessWidget {
+  const _TechnicalAiReportPanel({
+    required this.report,
+    required this.localMemory,
+  });
+
+  final TechnicalAnalysisReport? report;
+  final LocalAiMemoryState localMemory;
+
+  @override
+  Widget build(BuildContext context) {
+    final report = this.report;
+    if (report == null) {
+      return const SectionCard(
+        title: 'AI Technical Report',
+        subtitle: 'Reading live candles, RSI, MACD, pivots, SMA, and EMA.',
+        trailing: StatusBadge(label: 'LOADING'),
+        glowColor: TradingPalette.electricBlue,
+        child: LoadingState(label: 'AI is reading candles...'),
+      );
+    }
+
+    final color = report.side == 'BUY'
+        ? TradingPalette.neonGreen
+        : report.side == 'SELL'
+            ? TradingPalette.neonRed
+            : TradingPalette.amber;
+    return SectionCard(
+      title: 'AI Trend View',
+      subtitle:
+          '${report.regime} | ${report.confidence.toStringAsFixed(0)}% confidence',
+      trailing: StatusBadge(label: report.side, color: color),
+      glowColor: color,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              Container(
+                width: 54,
+                height: 54,
+                decoration: BoxDecoration(
+                  color: color.withOpacity(0.14),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: color.withOpacity(0.35)),
+                ),
+                child: Icon(
+                  report.side == 'SELL'
+                      ? Icons.trending_down_rounded
+                      : report.side == 'BUY'
+                          ? Icons.trending_up_rounded
+                          : Icons.pause_circle_filled_rounded,
+                  color: color,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      '${report.symbol} ${report.side == 'BUY' ? 'BULLISH' : report.side == 'SELL' ? 'BEARISH' : 'WAIT'}',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w900,
+                          ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      report.summary,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: TradingPalette.textMuted,
+                            height: 1.25,
+                          ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          _AiWhyCard(
+            report: report,
+            color: color,
+            personalizedNote: _personalizedNote(localMemory, report),
+          ),
+          const SizedBox(height: 14),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: <Widget>[
+              _TechnicalMetricTile(
+                label: 'Confidence',
+                value: '${report.confidence.toStringAsFixed(0)}%',
+                color: color,
+              ),
+              _TechnicalMetricTile(
+                label: 'RSI 14',
+                value: report.rsi14.toStringAsFixed(1),
+                color: _rsiColor(report.rsi14),
+              ),
+              _TechnicalMetricTile(
+                label: 'MACD Hist',
+                value: report.macdHistogram.toStringAsFixed(4),
+                color: report.macdHistogram >= 0
+                    ? TradingPalette.neonGreen
+                    : TradingPalette.neonRed,
+              ),
+              _TechnicalMetricTile(
+                label: 'ADX 14',
+                value: report.adx14.toStringAsFixed(1),
+                color: TradingPalette.electricBlue,
+              ),
+              _TechnicalMetricTile(
+                label: 'Volume',
+                value: '${report.volumeRatio.toStringAsFixed(2)}x',
+                color: report.volumeRatio >= 2
+                    ? TradingPalette.neonGreen
+                    : TradingPalette.amber,
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          _TechnicalPlanRow(
+            label: 'Entry zone',
+            value:
+                '${_formatPrice(report.entryLow)} - ${_formatPrice(report.entryHigh)}',
+            color: color,
+          ),
+          _TechnicalPlanRow(
+            label: 'Stop loss',
+            value: report.stopLoss <= 0
+                ? 'No trade until setup confirms'
+                : _formatPrice(report.stopLoss),
+            color: TradingPalette.neonRed,
+          ),
+          _TechnicalPlanRow(
+            label: 'Targets',
+            value: report.takeProfit1 <= 0
+                ? 'Pending'
+                : '${_formatPrice(report.takeProfit1)} / ${_formatPrice(report.takeProfit2)}',
+            color: TradingPalette.neonGreen,
+          ),
+          _TechnicalPlanRow(
+            label: 'Pivot map',
+            value:
+                'P ${_formatPrice(report.pivot)} | S1 ${_formatPrice(report.support1)} | R1 ${_formatPrice(report.resistance1)}',
+            color: TradingPalette.amber,
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: <Widget>[
+              _TechnicalMetricTile(
+                label: 'Scalp score',
+                value: '${report.scalpScore.toStringAsFixed(0)}%',
+                color: TradingPalette.neonGreen,
+              ),
+              _TechnicalMetricTile(
+                label: 'Swing score',
+                value: '${report.swingScore.toStringAsFixed(0)}%',
+                color: TradingPalette.electricBlue,
+              ),
+              _TechnicalMetricTile(
+                label: 'SMA 20',
+                value: _formatPrice(report.sma20),
+                color: TradingPalette.electricBlue,
+              ),
+              _TechnicalMetricTile(
+                label: 'SMA 50',
+                value: _formatPrice(report.sma50),
+                color: TradingPalette.violet,
+              ),
+              _TechnicalMetricTile(
+                label: 'EMA 9',
+                value: _formatPrice(report.ema9),
+                color: TradingPalette.neonGreen,
+              ),
+              _TechnicalMetricTile(
+                label: 'EMA 21',
+                value: _formatPrice(report.ema21),
+                color: TradingPalette.amber,
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          for (final bullet in report.bullets)
+            _AnalysisBullet(text: bullet, color: color),
+          const SizedBox(height: 10),
+          Text(
+            'Live trade can still execute only after backend risk validation approves the side, size, and stop loss.',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: TradingPalette.textFaint,
+                  fontWeight: FontWeight.w700,
+                ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AiWhyCard extends StatelessWidget {
+  const _AiWhyCard({
+    required this.report,
+    required this.color,
+    required this.personalizedNote,
+  });
+
+  final TechnicalAnalysisReport report;
+  final Color color;
+  final String personalizedNote;
+
+  @override
+  Widget build(BuildContext context) {
+    final warning = report.warning.trim();
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: (warning.isEmpty ? color : TradingPalette.neonRed)
+            .withOpacity(0.10),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: (warning.isEmpty ? color : TradingPalette.neonRed)
+              .withOpacity(0.24),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              Icon(
+                warning.isEmpty
+                    ? Icons.psychology_alt_rounded
+                    : Icons.warning_amber_rounded,
+                color: warning.isEmpty ? color : TradingPalette.neonRed,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  warning.isEmpty ? report.whyTitle : warning,
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w900,
+                        color: TradingPalette.textPrimary,
+                      ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          for (final bullet in report.bullets.take(2))
+            _AnalysisBullet(text: bullet, color: color),
+          const SizedBox(height: 10),
+          Text(
+            'Personalized for you',
+            style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: TradingPalette.textMuted,
+                  fontWeight: FontWeight.w900,
+                ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            personalizedNote,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: TradingPalette.textPrimary,
+                  height: 1.25,
+                ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _BeginnerAiCoachPanel extends StatelessWidget {
+  const _BeginnerAiCoachPanel({required this.report});
+
+  final TechnicalAnalysisReport? report;
+
+  @override
+  Widget build(BuildContext context) {
+    final report = this.report;
+    if (report == null) {
+      return const SectionCard(
+        title: 'Beginner AI Guide',
+        subtitle: 'Simple market read for safe decision making.',
+        trailing: StatusBadge(label: 'READING'),
+        glowColor: TradingPalette.electricBlue,
+        child: LoadingState(label: 'AI is preparing beginner guidance...'),
+      );
+    }
+
+    final color = report.side == 'BUY'
+        ? TradingPalette.neonGreen
+        : report.side == 'SELL'
+            ? TradingPalette.neonRed
+            : TradingPalette.amber;
+    return SectionCard(
+      title: 'Beginner AI Guide',
+      subtitle:
+          'Simple trade view: sentiment, action, entry, stop-loss, target.',
+      trailing: StatusBadge(label: report.marketSentiment, color: color),
+      glowColor: color,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              Container(
+                width: 58,
+                height: 58,
+                decoration: BoxDecoration(
+                  color: color.withOpacity(0.14),
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: color.withOpacity(0.32)),
+                ),
+                child: Icon(
+                  report.side == 'BUY'
+                      ? Icons.arrow_upward_rounded
+                      : report.side == 'SELL'
+                          ? Icons.arrow_downward_rounded
+                          : Icons.pause_rounded,
+                  color: color,
+                  size: 30,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      report.beginnerAction,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            color: TradingPalette.textPrimary,
+                            fontWeight: FontWeight.w900,
+                            height: 1.18,
+                          ),
+                    ),
+                    const SizedBox(height: 5),
+                    Text(
+                      'Market sentiment: ${report.marketSentiment}. Risk: ${report.riskLabel}. AI confidence: ${report.confidence.toStringAsFixed(0)}%.',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: TradingPalette.textMuted,
+                            height: 1.25,
+                          ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: <Widget>[
+              _BeginnerStepTile(
+                icon: Icons.login_rounded,
+                label: 'Entry',
+                value:
+                    '${_formatPrice(report.entryLow)} - ${_formatPrice(report.entryHigh)}',
+                color: color,
+              ),
+              _BeginnerStepTile(
+                icon: Icons.security_rounded,
+                label: 'Stop-loss',
+                value: report.stopLoss <= 0
+                    ? 'No trade'
+                    : _formatPrice(report.stopLoss),
+                color: TradingPalette.neonRed,
+              ),
+              _BeginnerStepTile(
+                icon: Icons.flag_rounded,
+                label: 'Target',
+                value: report.takeProfit1 <= 0
+                    ? 'Wait'
+                    : _formatPrice(report.takeProfit1),
+                color: TradingPalette.neonGreen,
+              ),
+              _BeginnerStepTile(
+                icon: Icons.balance_rounded,
+                label: 'R:R',
+                value: report.riskReward <= 0
+                    ? 'Pending'
+                    : report.riskReward.toStringAsFixed(2),
+                color: TradingPalette.amber,
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          const _BeginnerPlainLine(
+            icon: Icons.candlestick_chart_rounded,
+            text:
+                'AI reads every candle update and refreshes this view with RSI, MACD, pivot, SMA, EMA, and volatility context.',
+          ),
+          const _BeginnerPlainLine(
+            icon: Icons.verified_user_rounded,
+            text:
+                'For beginners, no live order should be placed until price reaches the entry zone and backend risk approval is green.',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _BeginnerStepTile extends StatelessWidget {
+  const _BeginnerStepTile({
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      constraints: const BoxConstraints(minWidth: 148, maxWidth: 220),
+      padding: const EdgeInsets.all(13),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.09),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withOpacity(0.24)),
+      ),
+      child: Row(
+        children: <Widget>[
+          Icon(icon, color: color, size: 20),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  label,
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: TradingPalette.textMuted,
+                        fontWeight: FontWeight.w800,
+                      ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  value,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        color: TradingPalette.textPrimary,
+                        fontWeight: FontWeight.w900,
+                      ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _BeginnerPlainLine extends StatelessWidget {
+  const _BeginnerPlainLine({required this.icon, required this.text});
+
+  final IconData icon;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Icon(icon, color: TradingPalette.electricBlue, size: 18),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Text(
+              text,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: TradingPalette.textMuted,
+                    height: 1.25,
+                  ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TechnicalMetricTile extends StatelessWidget {
+  const _TechnicalMetricTile({
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  final String label;
+  final String value;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      constraints: const BoxConstraints(minWidth: 96, maxWidth: 150),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.10),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withOpacity(0.25)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text(
+            label,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: TradingPalette.textMuted,
+                  fontWeight: FontWeight.w800,
+                ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  color: TradingPalette.textPrimary,
+                  fontWeight: FontWeight.w900,
+                ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TechnicalPlanRow extends StatelessWidget {
+  const _TechnicalPlanRow({
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  final String label;
+  final String value;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        children: <Widget>[
+          SizedBox(
+            width: 92,
+            child: Text(
+              label,
+              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                    color: TradingPalette.textMuted,
+                    fontWeight: FontWeight.w800,
+                  ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: color.withOpacity(0.22)),
+              ),
+              child: Text(
+                value,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AnalysisBullet extends StatelessWidget {
+  const _AnalysisBullet({required this.text, required this.color});
+
+  final String text;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 7),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Padding(
+            padding: const EdgeInsets.only(top: 7),
+            child: Icon(Icons.circle, size: 6, color: color),
+          ),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Text(
+              text,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: TradingPalette.textMuted,
+                    height: 1.25,
+                  ),
             ),
           ),
         ],
@@ -1438,6 +2153,7 @@ class _TradeExecutionPanel extends StatelessWidget {
     required this.chart,
     required this.executionState,
     required this.paperState,
+    required this.riskShield,
     required this.authDegraded,
     required this.amountController,
     required this.onSideChanged,
@@ -1454,6 +2170,7 @@ class _TradeExecutionPanel extends StatelessWidget {
   final MarketChartModel? chart;
   final TradeExecutionState executionState;
   final LocalPaperPortfolioState paperState;
+  final RiskShieldPreview riskShield;
   final bool authDegraded;
   final TextEditingController amountController;
   final ValueChanged<String> onSideChanged;
@@ -1492,29 +2209,29 @@ class _TradeExecutionPanel extends StatelessWidget {
       chart: chart,
     );
     final executionReady = _canExecuteTrade(
-      state: executionState,
-      evaluation: evaluation,
-    );
+          state: executionState,
+          evaluation: evaluation,
+        ) &&
+        paperState.liveUnlocked;
+    final paperReady = !executionState.isSubmitting && riskShield.approved;
     return SectionCard(
-      title: 'Execution Flow',
+      title: 'Order Execution',
       subtitle:
-          'Plan the entry instantly. Capital only deploys after backend meta and risk validation.',
+          'Paper mode is active. Live mode stays locked until the rookie challenge is cleared.',
       trailing: StatusBadge(
-        label: executionState.isSubmitting
-            ? 'SUBMITTING'
-            : executionReady
-                ? 'TRADE READY'
-                : 'PLAN MODE',
+        label: paperState.licenseStatus.toUpperCase(),
         color: executionState.isSubmitting
             ? TradingPalette.amber
-            : executionReady
+            : paperState.liveUnlocked
                 ? TradingPalette.neonGreen
-                : TradingPalette.neonRed,
+                : TradingPalette.amber,
       ),
       glowColor: TradingPalette.neonGreen,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
+          _ModeLockStrip(paperState: paperState),
+          const SizedBox(height: 14),
           if (tradeIntent != null) ...<Widget>[
             _LiveSignalContextCard(tradeIntent: tradeIntent!),
             const SizedBox(height: 16),
@@ -1618,6 +2335,8 @@ class _TradeExecutionPanel extends StatelessWidget {
             amount: executionState.amount,
             tradeIntent: tradeIntent,
             evaluation: evaluation,
+            paperState: paperState,
+            riskShield: riskShield,
           ),
           if (executionState.errorMessage != null) ...<Widget>[
             const SizedBox(height: 16),
@@ -1664,18 +2383,20 @@ class _TradeExecutionPanel extends StatelessWidget {
           SizedBox(
             width: double.infinity,
             child: OutlinedButton.icon(
-              onPressed: executionState.isSubmitting ? null : onPaperExecute,
+              onPressed: paperReady ? onPaperExecute : null,
               icon: const Icon(Icons.account_balance_wallet_rounded),
               label: Text(
-                'Paper trade now - Balance \$${paperState.cashBalance.toStringAsFixed(0)}',
+                riskShield.approved
+                    ? 'Place paper trade - Qty ${riskShield.autoQuantity.toStringAsFixed(5)}'
+                    : 'Paper trade locked by risk shield',
               ),
             ),
           ),
           const SizedBox(height: 8),
           Text(
             authDegraded
-                ? 'Production auth is reconnecting. Local paper fills stay active; live orders remain disabled until backend authority returns.'
-                : 'Paper mode is always available for practice. Live execution still requires backend meta and risk approval.',
+                ? 'Production auth is reconnecting. Paper submission will wait for backend authority before the ledger changes.'
+                : 'Paper mode submits to the backend sandbox ledger. Live execution still requires meta and risk approval.',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: TradingPalette.textMuted,
                 ),
@@ -2145,8 +2866,8 @@ class _DegradedApprovalCard extends StatelessWidget {
           const SizedBox(height: 8),
           Text(
             authDegraded
-                ? 'Realtime auth is reconnecting. The app stays open in advisory mode; use paper trade while live execution remains protected.'
-                : 'Backend validation is still building. You can open a local paper position now without touching live execution.',
+                ? 'Realtime auth is reconnecting. The app stays open in advisory mode; paper submit remains backend-authoritative.'
+                : 'Backend validation is still building. You can submit a paper sandbox request without touching live execution.',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: TradingPalette.textPrimary,
                 ),
@@ -2164,6 +2885,8 @@ class _ExecutionGuardrailCard extends StatelessWidget {
     required this.amount,
     required this.tradeIntent,
     required this.evaluation,
+    required this.paperState,
+    required this.riskShield,
   });
 
   final String symbol;
@@ -2171,6 +2894,8 @@ class _ExecutionGuardrailCard extends StatelessWidget {
   final double amount;
   final TradeIntent? tradeIntent;
   final TradeEvaluationModel? evaluation;
+  final LocalPaperPortfolioState paperState;
+  final RiskShieldPreview riskShield;
 
   @override
   Widget build(BuildContext context) {
@@ -2183,6 +2908,8 @@ class _ExecutionGuardrailCard extends StatelessWidget {
             ? 'Approved $side $symbol using ${resolvedEvaluation.strategy} at ${(signalConfidence! * 100).toStringAsFixed(0)}% confidence.'
             : 'Capital is protected for this setup. Use paper/shadow tracking or switch to the next stronger symbol.';
 
+    final shieldColor =
+        riskShield.approved ? TradingPalette.neonGreen : TradingPalette.neonRed;
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -2194,35 +2921,112 @@ class _ExecutionGuardrailCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           Text(
-            'Trade plan summary',
+            'Risk engine status',
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
                   fontWeight: FontWeight.w700,
                 ),
           ),
           const SizedBox(height: 10),
-          Text(
-            '$side $symbol for \$${amount.toStringAsFixed(2)}',
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  color: _sideColor(side),
-                  fontWeight: FontWeight.w800,
+          Row(
+            children: <Widget>[
+              Icon(
+                riskShield.approved
+                    ? Icons.verified_user_rounded
+                    : Icons.block_rounded,
+                color: shieldColor,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  riskShield.approved ? 'APPROVED' : 'BLOCKED',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        color: shieldColor,
+                        fontWeight: FontWeight.w900,
+                      ),
                 ),
+              ),
+            ],
           ),
           const SizedBox(height: 8),
           Text(
-            confidenceText,
+            riskShield.approved
+                ? 'Your daily loss is currently \$${riskShield.dailyLoss.abs().toStringAsFixed(0)}. Safe to execute inside the auto-size cap.'
+                : riskShield.reason,
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 12),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: <Widget>[
+              _MetricPill(
+                label: 'Auto-Qty',
+                value: riskShield.autoQuantity <= 0
+                    ? 'Pending'
+                    : riskShield.autoQuantity.toStringAsFixed(5),
+                accent: TradingPalette.neonGreen,
+              ),
+              _MetricPill(
+                label: 'Max size',
+                value: '\$${riskShield.maxNotional.toStringAsFixed(0)}',
+                accent: TradingPalette.electricBlue,
+              ),
+              _MetricPill(
+                label: 'Stop-Loss',
+                value: _formatPrice(riskShield.stopLoss),
+                accent: TradingPalette.neonRed,
+              ),
+              _MetricPill(
+                label: 'Target',
+                value: _formatPrice(riskShield.takeProfit),
+                accent: TradingPalette.neonGreen,
+              ),
+              _MetricPill(
+                label: 'R:R',
+                value: '1:${riskShield.riskReward.toStringAsFixed(2)}',
+                accent: TradingPalette.amber,
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
           Text(
-            resolvedEvaluation == null
-                ? 'The app stays active with chart, plan, and watch progression while risk validation finishes.'
-                : resolvedEvaluation.allowTrade
-                    ? 'Risk budget ${resolvedEvaluation.riskBudget.toStringAsFixed(4)} | rollout ${(resolvedEvaluation.rolloutCapitalFraction * 100).toStringAsFixed(0)}% | regime ${resolvedEvaluation.snapshot.regime}'
-                    : 'Unsafe capital deployment is stopped before it reaches execution. Paper tracking remains available.',
+            '$side $symbol request \$${amount.toStringAsFixed(2)}. $confidenceText',
             style: const TextStyle(color: TradingPalette.textMuted),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Challenge: ${paperState.closedTradeCount}/10 trades | Win rate ${(paperState.winRate * 100).toStringAsFixed(0)}% | Avg R:R ${paperState.averageRiskReward.toStringAsFixed(2)}',
+            style: const TextStyle(color: TradingPalette.textFaint),
           ),
         ],
       ),
+    );
+  }
+}
+
+class _ModeLockStrip extends StatelessWidget {
+  const _ModeLockStrip({required this.paperState});
+
+  final LocalPaperPortfolioState paperState;
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      spacing: 10,
+      runSpacing: 10,
+      children: <Widget>[
+        const StatusBadge(
+          label: 'Paper Mode',
+          color: TradingPalette.neonGreen,
+        ),
+        StatusBadge(
+          label:
+              paperState.liveUnlocked ? 'Live Mode Ready' : 'Live Mode Locked',
+          color: paperState.liveUnlocked
+              ? TradingPalette.neonGreen
+              : TradingPalette.neonRed,
+        ),
+      ],
     );
   }
 }
@@ -2671,17 +3475,19 @@ class _PaperPortfolioPanel extends StatelessWidget {
   const _PaperPortfolioPanel({
     required this.state,
     required this.onClose,
+    required this.onAcknowledgeLesson,
   });
 
   final LocalPaperPortfolioState state;
   final ValueChanged<String> onClose;
+  final LessonAcknowledgementChanged onAcknowledgeLesson;
 
   @override
   Widget build(BuildContext context) {
     return SectionCard(
       title: 'Paper Portfolio',
       subtitle:
-          'Local simulated fills are marked to live market data with TP/SL and PnL. Live execution is separate.',
+          'Backend sandbox fills are mirrored here when available; live execution is separate.',
       trailing: StatusBadge(
         label: '${state.positions.length} PAPER',
         color: TradingPalette.amber,
@@ -2717,7 +3523,30 @@ class _PaperPortfolioPanel extends StatelessWidget {
                     ? TradingPalette.neonGreen
                     : TradingPalette.neonRed,
               ),
+              _MetricPill(
+                label: 'License',
+                value: state.licenseStatus,
+                accent: state.liveUnlocked
+                    ? TradingPalette.neonGreen
+                    : TradingPalette.amber,
+              ),
             ],
+          ),
+          const SizedBox(height: 12),
+          LinearProgressIndicator(
+            value: (state.closedTradeCount / 10).clamp(0.0, 1.0),
+            minHeight: 6,
+            backgroundColor: TradingPalette.panelSoft,
+            valueColor: AlwaysStoppedAnimation<Color>(
+              state.liveUnlocked
+                  ? TradingPalette.neonGreen
+                  : TradingPalette.amber,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Rookie Challenge: ${state.closedTradeCount}/10 paper trades, win rate ${(state.winRate * 100).toStringAsFixed(0)}%, avg R:R ${state.averageRiskReward.toStringAsFixed(2)}.',
+            style: const TextStyle(color: TradingPalette.textMuted),
           ),
           const SizedBox(height: 14),
           if (state.positions.isEmpty)
@@ -2809,6 +3638,123 @@ class _PaperPortfolioPanel extends StatelessWidget {
                   ),
                 ),
               ),
+            ),
+          if (state.closedTrades.isNotEmpty) ...<Widget>[
+            const SizedBox(height: 16),
+            Text(
+              'Trade post-mortem report',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w900,
+                  ),
+            ),
+            const SizedBox(height: 10),
+            _PostMortemCard(
+              trade: state.closedTrades.first,
+              onAcknowledgeLesson: onAcknowledgeLesson,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+typedef LessonAcknowledgementChanged = void Function({
+  required String tradeId,
+  required String lesson,
+  required bool acknowledged,
+});
+
+class _PostMortemCard extends StatelessWidget {
+  const _PostMortemCard({
+    required this.trade,
+    required this.onAcknowledgeLesson,
+  });
+
+  final LocalPaperClosedTrade trade;
+  final LessonAcknowledgementChanged onAcknowledgeLesson;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = trade.realizedPnl >= 0
+        ? TradingPalette.neonGreen
+        : TradingPalette.neonRed;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.10),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withOpacity(0.28)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              Icon(
+                trade.realizedPnl >= 0
+                    ? Icons.check_circle_rounded
+                    : Icons.error_rounded,
+                color: color,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  '${trade.symbol} ${trade.side} Trade',
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w900,
+                      ),
+                ),
+              ),
+              StatusBadge(label: trade.result, color: color),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            'Result: ${trade.result} (${trade.realizedPnl >= 0 ? '+' : ''}\$${trade.realizedPnl.toStringAsFixed(2)} Virtual)',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: TradingPalette.textPrimary,
+                  fontWeight: FontWeight.w800,
+                ),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            'AI analysis',
+            style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: TradingPalette.textMuted,
+                  fontWeight: FontWeight.w900,
+                ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            trade.aiAnalysis,
+            style: const TextStyle(
+              color: TradingPalette.textPrimary,
+              height: 1.25,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            'Lesson learned tagged',
+            style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: TradingPalette.textMuted,
+                  fontWeight: FontWeight.w900,
+                ),
+          ),
+          const SizedBox(height: 6),
+          for (final lesson in trade.lessonTags)
+            CheckboxListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              controlAffinity: ListTileControlAffinity.leading,
+              value: trade.acknowledgedLessons.contains(lesson),
+              onChanged: (value) => onAcknowledgeLesson(
+                tradeId: trade.tradeId,
+                lesson: lesson,
+                acknowledged: value ?? false,
+              ),
+              title: Text(lesson),
             ),
         ],
       ),
@@ -2913,6 +3859,142 @@ double _paperMarketPrice({
   return 0;
 }
 
+RiskShieldPreview _riskShieldPreview({
+  required String side,
+  required double amount,
+  required LocalPaperPortfolioState paperState,
+  required MarketChartModel? chart,
+  required TradeEvaluationModel? evaluation,
+  required TradeIntent? intent,
+}) {
+  final normalizedSide = side.toUpperCase() == 'SELL' ? 'SELL' : 'BUY';
+  final entry = _paperMarketPrice(
+    chart: chart,
+    intent: intent,
+    evaluation: evaluation,
+  );
+  final guide = chart?.executionGuide;
+  var stopLoss = guide?.stopLoss ?? 0.0;
+  var takeProfit = guide?.tp2 ?? guide?.tp1 ?? 0.0;
+  if (entry > 0 && (stopLoss <= 0 || takeProfit <= 0)) {
+    stopLoss = normalizedSide == 'SELL' ? entry * 1.015 : entry * 0.985;
+    takeProfit = normalizedSide == 'SELL' ? entry * 0.97 : entry * 1.03;
+  }
+  final riskPerUnit =
+      normalizedSide == 'SELL' ? stopLoss - entry : entry - stopLoss;
+  final rewardPerUnit =
+      normalizedSide == 'SELL' ? entry - takeProfit : takeProfit - entry;
+  final riskReward = riskPerUnit <= 0 ? 0.0 : rewardPerUnit / riskPerUnit;
+  final riskAmount = paperState.equity * 0.01;
+  final autoQuantity = riskPerUnit <= 0 ? 0.0 : riskAmount / riskPerUnit;
+  final maxNotional = autoQuantity * entry;
+  final dailyLoss = paperState.realizedPnl < 0 ? paperState.realizedPnl : 0.0;
+  if (entry <= 0 || stopLoss <= 0 || takeProfit <= 0) {
+    return RiskShieldPreview(
+      approved: false,
+      reason: 'Entry, stop-loss, and target are mandatory before execution.',
+      reasonCode: 'MANDATORY_BRACKET_MISSING',
+      autoQuantity: 0,
+      maxNotional: 0,
+      riskAmount: riskAmount,
+      riskReward: 0,
+      entry: entry,
+      stopLoss: stopLoss,
+      takeProfit: takeProfit,
+      dailyLoss: dailyLoss,
+    );
+  }
+  if (riskPerUnit <= 0 || rewardPerUnit <= 0) {
+    return RiskShieldPreview(
+      approved: false,
+      reason: 'Stop-loss and target must be on the protective side of entry.',
+      reasonCode: 'INVALID_BRACKET_DIRECTION',
+      autoQuantity: 0,
+      maxNotional: 0,
+      riskAmount: riskAmount,
+      riskReward: riskReward,
+      entry: entry,
+      stopLoss: stopLoss,
+      takeProfit: takeProfit,
+      dailyLoss: dailyLoss,
+    );
+  }
+  if (dailyLoss <= -(paperState.startingBalance * 0.03)) {
+    return RiskShieldPreview(
+      approved: false,
+      reason: 'Daily loss protection is active until midnight.',
+      reasonCode: 'DAILY_LOSS_LIMIT_REACHED',
+      autoQuantity: autoQuantity,
+      maxNotional: maxNotional,
+      riskAmount: riskAmount,
+      riskReward: riskReward,
+      entry: entry,
+      stopLoss: stopLoss,
+      takeProfit: takeProfit,
+      dailyLoss: dailyLoss,
+    );
+  }
+  if (paperState.consecutiveLosses >= 3) {
+    return RiskShieldPreview(
+      approved: false,
+      reason: 'Three consecutive losses triggered the 2-hour cooldown.',
+      reasonCode: 'CONSECUTIVE_LOSS_LOCK',
+      autoQuantity: autoQuantity,
+      maxNotional: maxNotional,
+      riskAmount: riskAmount,
+      riskReward: riskReward,
+      entry: entry,
+      stopLoss: stopLoss,
+      takeProfit: takeProfit,
+      dailyLoss: dailyLoss,
+    );
+  }
+  if (riskReward < 1.5) {
+    return RiskShieldPreview(
+      approved: false,
+      reason: 'Risk-reward must be at least 1:1.5.',
+      reasonCode: 'RISK_REWARD_TOO_LOW',
+      autoQuantity: autoQuantity,
+      maxNotional: maxNotional,
+      riskAmount: riskAmount,
+      riskReward: riskReward,
+      entry: entry,
+      stopLoss: stopLoss,
+      takeProfit: takeProfit,
+      dailyLoss: dailyLoss,
+    );
+  }
+  if (amount > maxNotional * 1.000001) {
+    return RiskShieldPreview(
+      approved: false,
+      reason:
+          'Requested amount is above AI auto-sizing. User override cannot increase risk.',
+      reasonCode: 'POSITION_SIZE_EXCEEDS_RISK_LIMIT',
+      autoQuantity: autoQuantity,
+      maxNotional: maxNotional,
+      riskAmount: riskAmount,
+      riskReward: riskReward,
+      entry: entry,
+      stopLoss: stopLoss,
+      takeProfit: takeProfit,
+      dailyLoss: dailyLoss,
+    );
+  }
+  return RiskShieldPreview(
+    approved: true,
+    reason: 'Risk shield approved.',
+    reasonCode: 'APPROVED',
+    autoQuantity: autoQuantity,
+    maxNotional: maxNotional,
+    riskAmount: riskAmount,
+    riskReward: riskReward,
+    entry: entry,
+    stopLoss: stopLoss,
+    takeProfit: takeProfit,
+    dailyLoss: dailyLoss,
+  );
+}
+
 double _latestChartPrice(MarketChartModel? chart) {
   if (chart == null) {
     return 0;
@@ -2935,8 +4017,8 @@ List<String> _reasoningLines({
 }) {
   if (chart == null || chart.candles.isEmpty) {
     return <String>[
-      'Live candles are not verified for $symbol yet. AI is waiting instead of inventing a trade.',
-      'Execution remains blocked until backend market data and risk validation recover.',
+      'Loading verified live candles for $symbol. AI is waiting instead of inventing a trade.',
+      'Execution stays paused until the backend returns a complete market snapshot and risk check.',
     ];
   }
   final guide = chart.executionGuide;
@@ -3105,6 +4187,48 @@ String _formatPrice(double value) {
     return 'pending';
   }
   return value >= 100 ? value.toStringAsFixed(2) : value.toStringAsFixed(4);
+}
+
+Color _rsiColor(double value) {
+  if (value >= 70) {
+    return TradingPalette.neonRed;
+  }
+  if (value <= 30) {
+    return TradingPalette.amber;
+  }
+  if (value >= 52) {
+    return TradingPalette.neonGreen;
+  }
+  if (value <= 48) {
+    return TradingPalette.neonRed;
+  }
+  return TradingPalette.electricBlue;
+}
+
+String _personalizedNote(
+  LocalAiMemoryState memory,
+  TechnicalAnalysisReport report,
+) {
+  final style = memory.favoriteStyle.toLowerCase();
+  final preferredAsset = memory.preferredAssets.isEmpty
+      ? report.symbol
+      : memory.preferredAssets.first;
+  final isScalper = style.contains('scalp') ||
+      style.contains('short') ||
+      memory.preferredModes.any((mode) => mode.toLowerCase().contains('scalp'));
+  final isSwing = style.contains('swing') ||
+      style.contains('conservative') ||
+      memory.preferredModes.any((mode) => mode.toLowerCase().contains('swing'));
+  if (isScalper) {
+    return 'Since you prefer short-term scalping around $preferredAsset, this setup is ranked by scalp score ${report.scalpScore.toStringAsFixed(0)}% and quick ${report.riskReward.toStringAsFixed(1)} R:R fit.';
+  }
+  if (isSwing) {
+    return 'Since you behave like a swing trader, AI prioritizes EMA 20/50 trend quality and swing score ${report.swingScore.toStringAsFixed(0)}% before suggesting a hold.';
+  }
+  if (memory.viewedSignals > 0) {
+    return 'Your recent watch history favors $preferredAsset, so AI compares this setup against your saved asset affinity before surfacing it.';
+  }
+  return 'No strong preference is saved yet; AI is using balanced risk-first scoring until your paper-trade behavior builds a profile.';
 }
 
 bool _canExecuteTrade({

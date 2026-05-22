@@ -137,6 +137,16 @@ class UserPnLResponse(BaseModel):
     closed_trades: int = Field(description="Number of closed trades recorded in the cached ledger summary.", examples=[11])
     fees_paid: float = Field(description="Cumulative fees recorded by the portfolio ledger.", examples=[22.4])
     positions: list[dict[str, str | float | int]] = Field(default_factory=list, description="Aggregated open positions by symbol and side.")
+    profit_factor: float = Field(default=0.0, description="Gross profit divided by gross loss.", examples=[1.72])
+    strategy_health_tag: str = Field(default="Needs Improvement", description="Human-readable profit factor status.", examples=["Healthy Strategy"])
+    drawdown_alert: bool = Field(default=False, description="True when max drawdown crosses the conservative-mode threshold.")
+    risk_profile_mode: str = Field(default="normal", description="Effective dashboard risk posture.", examples=["conservative"])
+    drawdown_explanation: str = Field(default="", description="Plain-language drawdown explanation.")
+    concentration_warning: str = Field(default="", description="Over-concentration warning when one symbol dominates capital.")
+    largest_position_symbol: str = Field(default="", description="Symbol with the highest current market value.")
+    largest_position_pct: float = Field(default=0.0, description="Largest single-symbol exposure as a fraction of equity.")
+    strategy_scores: dict[str, dict[str, str | float | int]] = Field(default_factory=dict, description="Strategy-wise win-rate and PnL scorecards.")
+    strategy_score_summary: str = Field(default="", description="Plain-language best/worst strategy summary.")
 
     model_config = {
         "json_schema_extra": {

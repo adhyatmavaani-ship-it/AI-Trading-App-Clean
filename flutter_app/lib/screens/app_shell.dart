@@ -90,6 +90,17 @@ class _AppShellState extends ConsumerState<AppShell> {
         return Scaffold(
           appBar: AppBar(
             title: Text(_titleFor(_destination)),
+            actions: const <Widget>[
+              Padding(
+                padding: EdgeInsets.only(right: 12),
+                child: Center(
+                  child: LivePulseIndicator(
+                    label: 'LIVE',
+                    color: TradingPalette.neonGreen,
+                  ),
+                ),
+              ),
+            ],
             bottom: PreferredSize(
               preferredSize: const Size.fromHeight(24),
               child: Padding(
@@ -126,17 +137,17 @@ class _AppShellState extends ConsumerState<AppShell> {
               NavigationDestination(
                 icon: Icon(Icons.auto_awesome_outlined),
                 selectedIcon: Icon(Icons.auto_awesome),
-                label: 'AI Trade',
+                label: 'Home',
               ),
               NavigationDestination(
                 icon: Icon(Icons.query_stats_rounded),
                 selectedIcon: Icon(Icons.query_stats),
-                label: 'Market',
+                label: 'Markets',
               ),
               NavigationDestination(
                 icon: Icon(Icons.candlestick_chart_outlined),
                 selectedIcon: Icon(Icons.candlestick_chart),
-                label: 'Chart',
+                label: 'Trade',
               ),
               NavigationDestination(
                 icon: Icon(Icons.account_balance_wallet_outlined),
@@ -146,7 +157,7 @@ class _AppShellState extends ConsumerState<AppShell> {
               NavigationDestination(
                 icon: Icon(Icons.psychology_alt_outlined),
                 selectedIcon: Icon(Icons.psychology_alt),
-                label: 'Copilot',
+                label: 'AI',
               ),
             ],
           ),
@@ -192,26 +203,26 @@ class _AppShellState extends ConsumerState<AppShell> {
 
   String _titleFor(AppDestination destination) {
     return switch (destination) {
-      AppDestination.tradeCenter => 'AI Trade Center',
-      AppDestination.market => 'Market',
-      AppDestination.chart => 'Advanced Chart',
+      AppDestination.tradeCenter => 'AI Crypto',
+      AppDestination.market => 'Markets',
+      AppDestination.chart => 'Trade',
       AppDestination.portfolio => 'Portfolio',
-      AppDestination.copilot => 'AI Copilot',
+      AppDestination.copilot => 'AI Learn',
     };
   }
 
   String _subtitleFor(AppDestination destination) {
     return switch (destination) {
       AppDestination.tradeCenter =>
-        'Best verified setup, entry plan, risk, and AI reasoning in one view.',
+        'Coin-style crypto dashboard with AI scoring, risk guard, and learning memory.',
       AppDestination.market =>
         'Live market discovery, opportunity scores, volume, and watchlist.',
       AppDestination.chart =>
-        'Live candles, execution guide, market structure, and orderflow context.',
+        'Live candles, guided buy/sell flow, market structure, and orderflow context.',
       AppDestination.portfolio =>
         'Equity, PnL, drawdown, exposure, positions, and trade discipline.',
       AppDestination.copilot =>
-        'Ask market and risk questions in plain language.',
+        'Ask market, risk, and strategy-learning questions in plain language.',
     };
   }
 }
@@ -231,13 +242,13 @@ class _DesktopSidebar extends StatelessWidget {
       (
         value: AppDestination.tradeCenter,
         icon: Icons.auto_awesome,
-        label: 'AI Trade Center'
+        label: 'AI Crypto Home'
       ),
-      (value: AppDestination.market, icon: Icons.query_stats, label: 'Market'),
+      (value: AppDestination.market, icon: Icons.query_stats, label: 'Markets'),
       (
         value: AppDestination.chart,
         icon: Icons.candlestick_chart,
-        label: 'Advanced Chart'
+        label: 'Trade'
       ),
       (
         value: AppDestination.portfolio,
@@ -247,7 +258,7 @@ class _DesktopSidebar extends StatelessWidget {
       (
         value: AppDestination.copilot,
         icon: Icons.psychology_alt,
-        label: 'AI Copilot'
+        label: 'AI Learn'
       ),
     ];
 

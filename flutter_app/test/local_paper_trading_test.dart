@@ -39,5 +39,17 @@ void main() {
     expect(controller.state.positions, isEmpty);
     expect(controller.state.realizedPnl, closeTo(30, 0.0001));
     expect(controller.state.cashBalance, closeTo(10030, 0.0001));
+    expect(controller.state.closedTrades, hasLength(1));
+    expect(controller.state.closedTrades.first.result, 'TARGET HIT');
+    expect(controller.state.closedTradeCount, 1);
+    expect(controller.state.winRate, 1.0);
+
+    controller.acknowledgeLesson(
+      tradeId: controller.state.closedTrades.first.tradeId,
+      lesson: controller.state.closedTrades.first.lessonTags.first,
+      acknowledged: true,
+    );
+
+    expect(controller.state.closedTrades.first.acknowledged, isTrue);
   });
 }

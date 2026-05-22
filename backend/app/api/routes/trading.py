@@ -1,3 +1,6 @@
+from datetime import datetime, timezone
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.core.exceptions import (
@@ -7,11 +10,14 @@ from app.core.exceptions import (
     StateError,
     ValidationError,
 )
+from app.core.config import get_settings
 from app.middleware.auth import can_execute_for_users, get_user_id
 from app.schemas.trading import SignalResponse, TradeCloseRequest, TradeCloseResponse, TradeRequest, TradeResponse
 from app.services.container import ServiceContainer, get_container
+from app.services.risk_shield import RiskShieldBracket, RiskShieldService, UserRiskState
 
 router = APIRouter(prefix="/trading", tags=["Trading"])
+logger = logging.getLogger(__name__)
 
 
 def _http_exception_from_trading_error(exc, *, correlation_id: str) -> HTTPException:
@@ -154,6 +160,177 @@ def _authorize_trade_user(http_request: Request, requested_user_id: str) -> tupl
     return authenticated_user_id, normalized_requested_user_id
 
 
+def _enforce_execution_circuit(container: ServiceContainer, request: TradeRequest) -> None:
+    circuit_breaker = getattr(container, "execution_circuit_breaker", None)
+    if circuit_breaker is None:
+        return
+    settings = getattr(container, "settings", get_settings())
+    decision = circuit_breaker.evaluate(
+        trading_mode=getattr(settings, "trading_mode", "paper"),
+        symbol=request.symbol,
+    )
+    if decision.allowed:
+        return
+    raise StateError(
+        "Execution temporarily paused while safety checks complete",
+        error_code="EXECUTION_CIRCUIT_OPEN",
+        details={
+            "symbol": request.symbol.upper(),
+            "side": request.side.upper(),
+            "reasons": decision.reasons,
+            "state": "execution temporarily paused",
+            "details": decision.details,
+        },
+    )
+
+
+def _idempotency_origin(http_request: Request) -> str:
+    return (
+        http_request.headers.get("X-Execution-Origin")
+        or f"api:{http_request.url.path}"
+    )
+
+
+def _idempotency_key(http_request: Request) -> str | None:
+    return http_request.headers.get("X-Idempotency-Key") or http_request.headers.get("Idempotency-Key")
+
+
+def _mark_idempotency_unknown(container: ServiceContainer, claim, exc: Exception) -> None:
+    idempotency_service = getattr(container, "execution_idempotency_service", None)
+    if idempotency_service is not None and claim is not None:
+        idempotency_service.mark_unknown_failure(claim, exc)
+
+
+def _audit_execution_event(container: ServiceContainer, claim, event_type: str, payload: dict) -> None:
+    if claim is None:
+        return
+    store = getattr(container, "pro_store", None)
+    if store is None or not hasattr(store, "append_execution_audit_event"):
+        return
+    try:
+        store.append_execution_audit_event(claim.execution_request_id, event_type, payload)
+    except Exception:
+        logger.warning(
+            "execution_audit_write_failed",
+            exc_info=True,
+            extra={
+                "event": "execution_audit_write_failed",
+                "context": {"execution_request_id": claim.execution_request_id, "event_type": event_type},
+            },
+        )
+
+
+def _shield_required(request: TradeRequest) -> bool:
+    features = request.feature_snapshot or {}
+    return bool(
+        features.get("shield_required", 0.0) >= 1.0
+        or features.get("paper_sandbox_request", 0.0) >= 1.0
+    )
+
+
+def _shield_bracket_from_request(request: TradeRequest) -> RiskShieldBracket:
+    features = request.feature_snapshot or {}
+    return RiskShieldBracket(
+        entry_price=float(features.get("shield_entry_price", features.get("selected_price", 0.0)) or 0.0),
+        stop_loss=float(features.get("shield_stop_loss", 0.0) or 0.0),
+        take_profit=float(features.get("shield_take_profit", 0.0) or 0.0),
+    )
+
+
+def _cache_float(container: ServiceContainer, key: str, default: float = 0.0) -> float:
+    cache = getattr(getattr(container, "micro_mode_controller", None), "cache", None)
+    if cache is None or not hasattr(cache, "get"):
+        return default
+    try:
+        return float(cache.get(key) or default)
+    except Exception:
+        return default
+
+
+def _risk_state_for_request(container: ServiceContainer, request: TradeRequest) -> UserRiskState:
+    settings = get_settings()
+    summary = {}
+    ledger = getattr(container, "portfolio_ledger", None)
+    if ledger is not None and hasattr(ledger, "load_summary"):
+        try:
+            summary = ledger.load_summary(request.user_id) or {}
+        except Exception:
+            summary = {}
+    features = request.feature_snapshot or {}
+    balance = float(
+        features.get(
+            "shield_account_balance",
+            summary.get("realized_equity", summary.get("starting_equity", settings.default_portfolio_balance)),
+        )
+        or settings.default_portfolio_balance
+    )
+    today = datetime.now(timezone.utc).date().isoformat()
+    daily_pnl = float(
+        features.get(
+            "shield_daily_realized_pnl",
+            _cache_float(container, f"micro:{request.user_id}:{today}:pnl", 0.0),
+        )
+        or 0.0
+    )
+    consecutive_losses = int(
+        features.get(
+            "shield_consecutive_losses",
+            _cache_float(container, f"micro:{request.user_id}:consecutive_losses", 0.0),
+        )
+        or 0
+    )
+    closed_trades = int(features.get("shield_closed_trades", summary.get("closed_trades", 0)) or 0)
+    winning_trades = int(features.get("shield_winning_trades", summary.get("winning_trades", 0)) or 0)
+    avg_rr = float(features.get("shield_average_risk_reward", 0.0) or 0.0)
+    return UserRiskState(
+        account_balance=balance,
+        daily_realized_pnl=daily_pnl,
+        consecutive_losses=consecutive_losses,
+        closed_trades=closed_trades,
+        winning_trades=winning_trades,
+        average_risk_reward=avg_rr,
+    )
+
+
+def _enforce_risk_shield(container: ServiceContainer, request: TradeRequest) -> None:
+    if not _shield_required(request):
+        return
+    decision = RiskShieldService(get_settings()).evaluate_order(
+        side=request.side,
+        requested_notional=float(request.requested_notional or 0.0),
+        bracket=_shield_bracket_from_request(request),
+        user_state=_risk_state_for_request(container, request),
+    )
+    request.feature_snapshot.update(
+        {
+            "risk_shield_approved": 1.0 if decision.approved else 0.0,
+            "risk_shield_auto_quantity": decision.auto_quantity,
+            "risk_shield_max_notional": decision.max_notional,
+            "risk_shield_risk_amount": decision.risk_amount,
+            "risk_shield_risk_reward": decision.risk_reward,
+            "risk_shield_daily_loss_pct": decision.daily_loss_pct,
+            "risk_shield_live_unlocked": 1.0 if decision.live_unlocked else 0.0,
+        }
+    )
+    if not decision.approved:
+        raise RiskLimitExceededError(
+            decision.reason,
+            error_code=decision.reason_code,
+            details={
+                "symbol": request.symbol.upper(),
+                "side": request.side.upper(),
+                "auto_quantity": decision.auto_quantity,
+                "max_notional": decision.max_notional,
+                "risk_amount": decision.risk_amount,
+                "risk_reward": decision.risk_reward,
+                "daily_loss_pct": decision.daily_loss_pct,
+                "locked_until": decision.locked_until,
+                "license_status": decision.license_status,
+                "live_unlocked": decision.live_unlocked,
+            },
+        )
+
+
 @router.post("/evaluate/{symbol}", response_model=SignalResponse)
 async def evaluate_symbol(
     symbol: str,
@@ -193,6 +370,7 @@ async def execute_trade(
     user_id = "unknown"
     executor_user_id = "unknown"
     correlation_id = getattr(http_request.state, "correlation_id", "unknown")
+    idempotency_claim = None
     try:
         executor_user_id, user_id = _authorize_trade_user(http_request, request.user_id)
         # Validate required fields
@@ -203,7 +381,56 @@ async def execute_trade(
         if not request.quantity and not request.requested_notional:
             raise ValidationError("quantity or requested_notional required", error_code="MISSING_QUANTITY")
 
-        return await container.trading_orchestrator.execute_signal(request)
+        idempotency_service = getattr(container, "execution_idempotency_service", None)
+        if idempotency_service is not None:
+            idempotency_claim = idempotency_service.peek_replay(
+                request,
+                idempotency_key=_idempotency_key(http_request),
+                origin=_idempotency_origin(http_request),
+            )
+            request = idempotency_claim.request
+            if idempotency_claim.replay_response is not None:
+                return idempotency_claim.replay_response
+
+        try:
+            _enforce_risk_shield(container, request)
+            _audit_execution_event(
+                container,
+                idempotency_claim,
+                "risk_shield_decision",
+                {"approved": True, "symbol": request.symbol.upper(), "side": request.side.upper()},
+            )
+        except RiskLimitExceededError as exc:
+            _audit_execution_event(
+                container,
+                idempotency_claim,
+                "risk_shield_decision",
+                {
+                    "approved": False,
+                    "symbol": request.symbol.upper(),
+                    "side": request.side.upper(),
+                    "error_code": exc.error_code,
+                    "reason": str(exc),
+                },
+            )
+            raise
+        _enforce_execution_circuit(container, request)
+        if idempotency_service is not None:
+            idempotency_claim = idempotency_service.claim(
+                request,
+                idempotency_key=_idempotency_key(http_request),
+                origin=_idempotency_origin(http_request),
+                trading_mode=getattr(getattr(container, "settings", get_settings()), "trading_mode", "paper"),
+            )
+            request = idempotency_claim.request
+            if idempotency_claim.replay_response is not None:
+                return idempotency_claim.replay_response
+            idempotency_service.mark_validated(idempotency_claim)
+            idempotency_service.mark_submitted(idempotency_claim)
+        response = await container.trading_orchestrator.execute_signal(request)
+        if idempotency_service is not None and idempotency_claim is not None:
+            idempotency_service.complete(idempotency_claim, response)
+        return response
     except AuthenticationError as exc:
         detail = exc.to_dict()
         details = dict(detail.get("details") or {})
@@ -211,20 +438,27 @@ async def execute_trade(
         detail["details"] = details
         raise HTTPException(status_code=403, detail=detail) from exc
     except ValidationError as exc:
+        _mark_idempotency_unknown(container, idempotency_claim, exc)
+        raise _http_exception_from_trading_error(exc, correlation_id=correlation_id) from exc
+    except RiskLimitExceededError as exc:
+        _mark_idempotency_unknown(container, idempotency_claim, exc)
         raise _http_exception_from_trading_error(exc, correlation_id=correlation_id) from exc
     except ValueError as exc:
+        _mark_idempotency_unknown(container, idempotency_claim, exc)
         mapped = _map_execution_value_error(exc, request=request, correlation_id=correlation_id)
         raise _http_exception_from_trading_error(mapped, correlation_id=correlation_id) from exc
-    except RiskLimitExceededError as exc:
-        raise _http_exception_from_trading_error(exc, correlation_id=correlation_id) from exc
     except ExecutionError as exc:
+        _mark_idempotency_unknown(container, idempotency_claim, exc)
         raise _http_exception_from_trading_error(exc, correlation_id=correlation_id) from exc
     except RuntimeError as exc:
+        _mark_idempotency_unknown(container, idempotency_claim, exc)
         mapped = _map_execution_runtime_error(exc, request=request, correlation_id=correlation_id)
         raise _http_exception_from_trading_error(mapped, correlation_id=correlation_id) from exc
     except StateError as exc:
+        _mark_idempotency_unknown(container, idempotency_claim, exc)
         raise _http_exception_from_trading_error(exc, correlation_id=correlation_id) from exc
     except Exception as exc:  # pragma: no cover
+        _mark_idempotency_unknown(container, idempotency_claim, exc)
         await container.alerting_service.send(
             "Trade execution failed",
             f"Symbol={request.symbol} side={request.side} user={user_id} executor={executor_user_id} corr_id={correlation_id} error={exc}",
@@ -246,6 +480,7 @@ async def execute_sniper_trade(
     """Execute sniper trade (coordinated entry)."""
     user_id = "unknown"
     correlation_id = getattr(http_request.state, "correlation_id", "unknown")
+    idempotency_claim = None
     try:
         user_id = get_user_id(http_request)
         request = await container.dual_track_coordinator.build_trade_request(
@@ -263,14 +498,56 @@ async def execute_sniper_trade(
             user_id=user_id,
             symbol=symbol.upper(),
         )
-        return await container.trading_orchestrator.execute_signal(request)
+        try:
+            _enforce_risk_shield(container, request)
+            _audit_execution_event(
+                container,
+                idempotency_claim,
+                "risk_shield_decision",
+                {"approved": True, "symbol": request.symbol.upper(), "side": request.side.upper()},
+            )
+        except RiskLimitExceededError as exc:
+            _audit_execution_event(
+                container,
+                idempotency_claim,
+                "risk_shield_decision",
+                {
+                    "approved": False,
+                    "symbol": request.symbol.upper(),
+                    "side": request.side.upper(),
+                    "error_code": exc.error_code,
+                    "reason": str(exc),
+                },
+            )
+            raise
+        _enforce_execution_circuit(container, request)
+        idempotency_service = getattr(container, "execution_idempotency_service", None)
+        if idempotency_service is not None:
+            idempotency_claim = idempotency_service.claim(
+                request,
+                idempotency_key=_idempotency_key(http_request),
+                origin=_idempotency_origin(http_request),
+                trading_mode=getattr(getattr(container, "settings", get_settings()), "trading_mode", "paper"),
+            )
+            request = idempotency_claim.request
+            if idempotency_claim.replay_response is not None:
+                return idempotency_claim.replay_response
+            idempotency_service.mark_validated(idempotency_claim)
+            idempotency_service.mark_submitted(idempotency_claim)
+        response = await container.trading_orchestrator.execute_signal(request)
+        if idempotency_service is not None and idempotency_claim is not None:
+            idempotency_service.complete(idempotency_claim, response)
+        return response
     except AuthenticationError as exc:
         raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
     except StateError as exc:
+        _mark_idempotency_unknown(container, idempotency_claim, exc)
         raise HTTPException(status_code=409, detail=exc.to_dict()) from exc
     except ValidationError as exc:
+        _mark_idempotency_unknown(container, idempotency_claim, exc)
         raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
     except Exception as exc:  # pragma: no cover
+        _mark_idempotency_unknown(container, idempotency_claim, exc)
         await container.alerting_service.send(
             "Sniper execution failed",
             f"Symbol={symbol.upper()} user={user_id} corr_id={correlation_id} error={exc}",

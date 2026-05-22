@@ -153,18 +153,73 @@ class LocalPaperPosition {
   }
 }
 
+class LocalPaperClosedTrade {
+  const LocalPaperClosedTrade({
+    required this.tradeId,
+    required this.symbol,
+    required this.side,
+    required this.entry,
+    required this.exitPrice,
+    required this.quantity,
+    required this.realizedPnl,
+    required this.riskReward,
+    required this.result,
+    required this.aiAnalysis,
+    required this.lessonTags,
+    required this.closedAt,
+    this.acknowledgedLessons = const <String>{},
+  });
+
+  final String tradeId;
+  final String symbol;
+  final String side;
+  final double entry;
+  final double exitPrice;
+  final double quantity;
+  final double realizedPnl;
+  final double riskReward;
+  final String result;
+  final String aiAnalysis;
+  final List<String> lessonTags;
+  final DateTime closedAt;
+  final Set<String> acknowledgedLessons;
+
+  bool get won => realizedPnl > 0;
+  bool get acknowledged => acknowledgedLessons.isNotEmpty;
+
+  LocalPaperClosedTrade copyWith({Set<String>? acknowledgedLessons}) {
+    return LocalPaperClosedTrade(
+      tradeId: tradeId,
+      symbol: symbol,
+      side: side,
+      entry: entry,
+      exitPrice: exitPrice,
+      quantity: quantity,
+      realizedPnl: realizedPnl,
+      riskReward: riskReward,
+      result: result,
+      aiAnalysis: aiAnalysis,
+      lessonTags: lessonTags,
+      closedAt: closedAt,
+      acknowledgedLessons: acknowledgedLessons ?? this.acknowledgedLessons,
+    );
+  }
+}
+
 class LocalPaperPortfolioState {
   const LocalPaperPortfolioState({
     this.startingBalance = 10000,
     this.cashBalance = 10000,
     this.positions = const <LocalPaperPosition>[],
     this.realizedPnl = 0,
+    this.closedTrades = const <LocalPaperClosedTrade>[],
   });
 
   final double startingBalance;
   final double cashBalance;
   final List<LocalPaperPosition> positions;
   final double realizedPnl;
+  final List<LocalPaperClosedTrade> closedTrades;
 
   double get openNotional => positions.fold<double>(
         0,
@@ -186,18 +241,80 @@ class LocalPaperPortfolioState {
   double get pnlPct =>
       startingBalance <= 0 ? 0 : ((equity - startingBalance) / startingBalance);
 
+  int get closedTradeCount => closedTrades.length;
+
+  int get winningTradeCount => closedTrades.where((trade) => trade.won).length;
+
+  int get consecutiveLosses {
+    var count = 0;
+    for (final trade in closedTrades) {
+      if (trade.won) {
+        break;
+      }
+      count += 1;
+    }
+    return count;
+  }
+
+  double get winRate =>
+      closedTradeCount == 0 ? 0 : winningTradeCount / closedTradeCount;
+
+  double get averageRiskReward => closedTrades.isEmpty
+      ? 0
+      : closedTrades.fold<double>(
+            0,
+            (sum, trade) => sum + trade.riskReward,
+          ) /
+          closedTrades.length;
+
+  bool get liveUnlocked =>
+      closedTradeCount >= 10 && winRate > 0.45 && averageRiskReward >= 1.5;
+
+  String get licenseStatus =>
+      liveUnlocked ? 'Live Trade Ready' : 'Learning Mode';
+
   LocalPaperPortfolioState copyWith({
     double? cashBalance,
     List<LocalPaperPosition>? positions,
     double? realizedPnl,
+    List<LocalPaperClosedTrade>? closedTrades,
   }) {
     return LocalPaperPortfolioState(
       startingBalance: startingBalance,
       cashBalance: cashBalance ?? this.cashBalance,
       positions: positions ?? this.positions,
       realizedPnl: realizedPnl ?? this.realizedPnl,
+      closedTrades: closedTrades ?? this.closedTrades,
     );
   }
+}
+
+class RiskShieldPreview {
+  const RiskShieldPreview({
+    required this.approved,
+    required this.reason,
+    required this.reasonCode,
+    required this.autoQuantity,
+    required this.maxNotional,
+    required this.riskAmount,
+    required this.riskReward,
+    required this.entry,
+    required this.stopLoss,
+    required this.takeProfit,
+    required this.dailyLoss,
+  });
+
+  final bool approved;
+  final String reason;
+  final String reasonCode;
+  final double autoQuantity;
+  final double maxNotional;
+  final double riskAmount;
+  final double riskReward;
+  final double entry;
+  final double stopLoss;
+  final double takeProfit;
+  final double dailyLoss;
 }
 
 class LocalPaperTradingController
@@ -241,6 +358,38 @@ class LocalPaperTradingController
     return position;
   }
 
+  LocalPaperPosition mirrorBackendFill({
+    required TradeExecutionResponseModel response,
+    required String reason,
+  }) {
+    final notional = response.executedPrice * response.executedQuantity;
+    final safeNotional = notional.clamp(0, state.cashBalance).toDouble();
+    final now = DateTime.now();
+    final position = LocalPaperPosition(
+      tradeId: response.tradeId,
+      symbol: response.symbol,
+      side: response.side,
+      entry: response.executedPrice,
+      quantity: response.executedQuantity,
+      notional: safeNotional,
+      stopLoss: response.stopLoss,
+      takeProfit: response.takeProfit,
+      openedAt: now,
+      reason: reason,
+      currentPrice: response.executedPrice,
+      lastMarkedAt: now,
+      marketDataSource: 'backend_paper_fill',
+    );
+    state = state.copyWith(
+      cashBalance: state.cashBalance - safeNotional,
+      positions: <LocalPaperPosition>[
+        position,
+        ...state.positions.where((item) => item.tradeId != response.tradeId),
+      ],
+    );
+    return position;
+  }
+
   void markToMarket({
     required String symbol,
     required double price,
@@ -255,6 +404,7 @@ class LocalPaperTradingController
     var nextCash = state.cashBalance;
     var nextRealized = state.realizedPnl;
     final nextPositions = <LocalPaperPosition>[];
+    final nextClosed = <LocalPaperClosedTrade>[];
     final now = DateTime.now();
 
     for (final position in state.positions) {
@@ -274,6 +424,13 @@ class LocalPaperTradingController
         marketDataSource: source,
       );
       if (marked.takeProfitHit || marked.stopLossHit) {
+        nextClosed.add(
+          _postMortemFor(
+            position: marked,
+            exitPrice: safePrice,
+            reason: marked.takeProfitHit ? 'TARGET HIT' : 'STOP-LOSS HIT',
+          ),
+        );
         nextCash += marked.currentValue;
         nextRealized += marked.unrealizedPnl;
       } else {
@@ -288,6 +445,12 @@ class LocalPaperTradingController
       cashBalance: nextCash,
       positions: nextPositions,
       realizedPnl: nextRealized,
+      closedTrades: nextClosed.isEmpty
+          ? state.closedTrades
+          : <LocalPaperClosedTrade>[
+              ...nextClosed,
+              ...state.closedTrades,
+            ],
     );
   }
 
@@ -315,6 +478,70 @@ class LocalPaperTradingController
       cashBalance: state.cashBalance + position.currentValue,
       realizedPnl: state.realizedPnl + position.unrealizedPnl,
       positions: remaining,
+      closedTrades: <LocalPaperClosedTrade>[
+        _postMortemFor(
+          position: position,
+          exitPrice: position.currentPrice,
+          reason: position.unrealizedPnl >= 0 ? 'MANUAL PROFIT' : 'MANUAL LOSS',
+        ),
+        ...state.closedTrades,
+      ],
+    );
+  }
+
+  void acknowledgeLesson({
+    required String tradeId,
+    required String lesson,
+    required bool acknowledged,
+  }) {
+    state = state.copyWith(
+      closedTrades: state.closedTrades.map((trade) {
+        if (trade.tradeId != tradeId) {
+          return trade;
+        }
+        final lessons = Set<String>.from(trade.acknowledgedLessons);
+        if (acknowledged) {
+          lessons.add(lesson);
+        } else {
+          lessons.remove(lesson);
+        }
+        return trade.copyWith(acknowledgedLessons: lessons);
+      }).toList(growable: false),
+    );
+  }
+
+  LocalPaperClosedTrade _postMortemFor({
+    required LocalPaperPosition position,
+    required double exitPrice,
+    required String reason,
+  }) {
+    final risk = (position.entry - position.stopLoss).abs();
+    final reward = (position.takeProfit - position.entry).abs();
+    final riskReward = risk <= 0 ? 0.0 : reward / risk;
+    final tags = <String>[
+      if (position.unrealizedPnl < 0) 'Rule Violation',
+      if (riskReward < 1.5) 'Poor Risk-Reward',
+      if (position.reason.toLowerCase().contains('wait')) 'FOMO Entry',
+    ];
+    if (tags.isEmpty) {
+      tags.add(position.unrealizedPnl >= 0 ? 'Plan Followed' : 'Review Entry');
+    }
+    final analysis = position.unrealizedPnl < 0
+        ? 'Trade failed because price hit the protected stop before target. Review whether entry was late, volume was weak, or AI had asked to wait.'
+        : 'Trade worked because the target was reached before invalidation. Keep the same bracket discipline instead of increasing size manually.';
+    return LocalPaperClosedTrade(
+      tradeId: position.tradeId,
+      symbol: position.symbol,
+      side: position.side,
+      entry: position.entry,
+      exitPrice: exitPrice,
+      quantity: position.quantity,
+      realizedPnl: position.unrealizedPnl,
+      riskReward: riskReward,
+      result: reason,
+      aiAnalysis: analysis,
+      lessonTags: tags,
+      closedAt: DateTime.now(),
     );
   }
 }
@@ -530,6 +757,143 @@ class TradeExecutionController extends StateNotifier<TradeExecutionState> {
       );
       return null;
     }
+  }
+
+  Future<TradeExecutionResponseModel?> executePaperSandbox({
+    required String userId,
+    required String symbol,
+    required TradeIntent? intent,
+    required TradeEvaluationModel? evaluation,
+    required LocalPaperPortfolioState paperState,
+    required RiskShieldPreview riskShield,
+    double? selectedPrice,
+  }) async {
+    final notional = state.amount;
+    if (notional <= 0) {
+      state = state.copyWith(
+        errorMessage: 'Enter a valid paper amount before submitting.',
+        clearLastResponse: true,
+      );
+      return null;
+    }
+    if (!riskShield.approved) {
+      state = state.copyWith(
+        errorMessage: riskShield.reason,
+        clearLastResponse: true,
+      );
+      return null;
+    }
+
+    final side = _paperSide(intent: intent, evaluation: evaluation);
+    final confidence = _paperConfidence(intent: intent, evaluation: evaluation);
+    final probability = evaluation?.inference.tradeProbability ?? confidence;
+    final reason = evaluation?.reason.trim().isNotEmpty == true
+        ? evaluation!.reason.trim()
+        : ((intent?.reason?.trim().isNotEmpty ?? false)
+            ? intent!.reason!.trim()
+            : 'Paper sandbox request submitted from the mobile AI guide.');
+    final strategy = evaluation?.strategy.trim().isNotEmpty == true
+        ? evaluation!.strategy.trim()
+        : ((intent?.strategy?.trim().isNotEmpty ?? false)
+            ? intent!.strategy!.trim()
+            : 'PAPER_SANDBOX');
+    final featureSnapshot = <String, double>{
+      ...?evaluation?.snapshot.featureSnapshot,
+      'mobile_terminal': 1.0,
+      'paper_sandbox_request': 1.0,
+      'manual_request': 0.0,
+      'signal_confidence': confidence,
+      'trade_success_probability': probability,
+      'raw_trade_success_probability': probability,
+      'ui_requested_notional': notional,
+      if (selectedPrice != null && selectedPrice > 0)
+        'selected_price': selectedPrice,
+      'shield_required': 1.0,
+      'shield_account_balance': paperState.equity,
+      'shield_daily_realized_pnl':
+          paperState.realizedPnl < 0 ? paperState.realizedPnl : 0.0,
+      'shield_consecutive_losses': paperState.consecutiveLosses.toDouble(),
+      'shield_closed_trades': paperState.closedTradeCount.toDouble(),
+      'shield_winning_trades': paperState.winningTradeCount.toDouble(),
+      'shield_average_risk_reward': paperState.averageRiskReward,
+      'shield_entry_price': riskShield.entry,
+      'shield_stop_loss': riskShield.stopLoss,
+      'shield_take_profit': riskShield.takeProfit,
+      'shield_auto_quantity': riskShield.autoQuantity,
+      'shield_max_notional': riskShield.maxNotional,
+      if (evaluation != null) 'approved_alpha_score': evaluation.alphaScore,
+      if (intent?.lowConfidence == true) 'low_confidence_signal': 1.0,
+    };
+
+    state = state.copyWith(
+      side: side,
+      isSubmitting: true,
+      clearError: true,
+      clearLastResponse: true,
+    );
+
+    final request = TradeExecutionRequestModel(
+      userId: userId,
+      symbol: symbol,
+      side: side,
+      confidence: confidence,
+      reason: reason,
+      requestedNotional: notional,
+      expectedReturn: evaluation?.inference.expectedReturn,
+      expectedRisk: evaluation?.inference.expectedRisk,
+      signalId: intent?.signalId,
+      strategy: strategy,
+      featureSnapshot: featureSnapshot,
+    );
+
+    try {
+      final response =
+          await _ref.read(tradingRepositoryProvider).executeTrade(request);
+      _ref.invalidate(userPnLProvider(userId));
+      _ref.invalidate(activeTradesProvider(userId));
+      _ref.invalidate(initialSignalsProvider);
+      _ref.invalidate(tradeEvaluationProvider);
+      state = state.copyWith(
+        isSubmitting: false,
+        lastResponse: response,
+        clearError: true,
+      );
+      return response;
+    } catch (error) {
+      state = state.copyWith(
+        isSubmitting: false,
+        errorMessage: ErrorMapper.map(
+          error,
+          fallback:
+              'Paper trade was rejected by the backend sandbox. The ledger was not changed.',
+        ),
+      );
+      return null;
+    }
+  }
+
+  String _paperSide({
+    required TradeIntent? intent,
+    required TradeEvaluationModel? evaluation,
+  }) {
+    final approvedSide = evaluation?.approvedSide.toUpperCase();
+    if (approvedSide == 'BUY' || approvedSide == 'SELL') {
+      return approvedSide!;
+    }
+    final intentSide = intent?.side?.toUpperCase();
+    if (intentSide == 'BUY' || intentSide == 'SELL') {
+      return intentSide!;
+    }
+    return state.side.toUpperCase() == 'SELL' ? 'SELL' : 'BUY';
+  }
+
+  double _paperConfidence({
+    required TradeIntent? intent,
+    required TradeEvaluationModel? evaluation,
+  }) {
+    final confidence =
+        evaluation?.confidenceScore ?? intent?.confidence ?? 0.55;
+    return confidence.clamp(0.0, 1.0).toDouble();
   }
 }
 

@@ -127,6 +127,7 @@ class Settings(BaseSettings):
     market_data_cache_ttl: int = 15
     model_dir: str = "artifacts"
     training_buffer_path: str = "artifacts/training_buffer.sqlite3"
+    pro_storage_path: str = "app_data/sandbox.db"
 
     default_quote_asset: str = "USDT"
     base_risk_per_trade: float = 0.01
@@ -165,6 +166,22 @@ class Settings(BaseSettings):
     default_portfolio_balance: float = 10_000
     atr_period: int = 14
     paper_fill_noise_bps: int = 5
+    broker_vault_master_key: str = ""
+    broker_client_order_prefix: str = "APP_AI_BRK"
+    broker_reconciliation_enabled: bool = True
+    broker_reconciliation_interval_seconds: float = 300.0
+    broker_emergency_feed_freeze_seconds: float = 10.0
+    market_feed_watchdog_enabled: bool = True
+    market_feed_min_stale_seconds: float = 180.0
+    market_feed_stale_multiplier: float = 3.0
+    market_feed_max_volume_spike_ratio: float = 50.0
+    execution_circuit_breaker_enabled: bool = True
+    execution_circuit_breaker_block_paper: bool = False
+    execution_ai_timeout_threshold_ms: float = 2_000.0
+    execution_exchange_latency_threshold_ms: float = 500.0
+    state_heartbeat_max_age_ms: float = 30_000.0
+    execution_idempotency_ttl_seconds: int = 3_600
+    execution_recovery_stale_seconds: float = 300.0
     rate_limit_per_minute: int = 120
     rate_limit_per_hour: int = 2_000
     optimization_cache_ttl_seconds: int = 900

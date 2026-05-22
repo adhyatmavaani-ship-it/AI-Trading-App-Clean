@@ -19,6 +19,22 @@ from app.trading.exits import initial_exit_plan
 
 ASSISTANT_MODES = ("MANUAL", "ASSISTED", "SEMI_AUTO", "FULL_AUTO")
 SCALP_INTERVALS = ("1m", "3m", "5m", "15m")
+_INDICATOR_WEIGHTS = {
+    "scalp": {
+        "rsi": 0.20,
+        "macd": 0.15,
+        "ema_20_50": 0.10,
+        "atr": 0.25,
+        "volume": 0.30,
+    },
+    "swing": {
+        "rsi": 0.10,
+        "macd": 0.25,
+        "ema_20_50": 0.30,
+        "atr": 0.10,
+        "volume": 0.25,
+    },
+}
 
 
 def resample_ohlcv(frame: pd.DataFrame | None, *, minutes: int) -> pd.DataFrame:
@@ -125,6 +141,20 @@ def build_chart_intelligence(
         ema_fast=float(ema_fast.iloc[-1]),
         ema_slow=float(ema_slow.iloc[-1]),
     )
+    indicator_matrix = _indicator_weightage_matrix(
+        recent=recent,
+        interval=interval,
+        side=decision_side,
+        current_price=float(latest["close"]),
+    )
+    if signal is None:
+        confidence = _clamp(float(indicator_matrix["selected_score"]) / 100.0, 0.0, 1.0)
+    else:
+        confidence = _clamp(
+            (confidence * 0.55) + ((float(indicator_matrix["selected_score"]) / 100.0) * 0.45),
+            0.0,
+            1.0,
+        )
     advanced_regime = MarketRegimeEngine().analyze(recent)
     orderflow = InstitutionalOrderflowEngine().analyze(
         recent,
@@ -468,6 +498,16 @@ def build_chart_intelligence(
             "scalp_score": round(scalp_score * 100, 2),
         },
         "market_regime": regime,
+        "indicator_weightage_matrix": indicator_matrix,
+        "regime_classifier": indicator_matrix["regime_classifier"],
+        "ai_why_card": _ai_why_card(
+            symbol=symbol,
+            side=decision_side,
+            confidence_score=float(indicator_matrix["selected_score"]),
+            indicator_matrix=indicator_matrix,
+            expected_rr=expected_rr,
+        ),
+        "feedback_learning": _feedback_learning_outline(indicator_matrix),
         "advanced_market_regime": {
             "state": advanced_regime.regime,
             "confidence": round(advanced_regime.confidence * 100, 2),
@@ -569,6 +609,248 @@ def _prepare_frame(frame: pd.DataFrame | None) -> pd.DataFrame:
     return working.reset_index(drop=True)
 
 
+def _indicator_weightage_matrix(
+    *,
+    recent: pd.DataFrame,
+    interval: str,
+    side: str,
+    current_price: float,
+) -> dict[str, Any]:
+    closes = recent["close"].astype(float)
+    highs = recent["high"].astype(float)
+    lows = recent["low"].astype(float)
+    volumes = recent["volume"].astype(float)
+    rsi = _rsi_value(closes, 14)
+    macd = _macd_snapshot(closes)
+    ema20 = float(closes.ewm(span=20, adjust=False).mean().iloc[-1])
+    ema50 = float(closes.ewm(span=min(50, len(closes)), adjust=False).mean().iloc[-1])
+    atr_now = _atr(recent.tail(min(len(recent), 14)))
+    atr_previous = _atr(recent.iloc[max(0, len(recent) - 28): max(2, len(recent) - 14)])
+    avg_volume = float(volumes.tail(min(len(volumes), 20)).mean() or 0.0)
+    volume_ratio = float(volumes.iloc[-1] or 0.0) / max(avg_volume, 1e-8)
+    adx = _adx_value(highs=highs, lows=lows, closes=closes, period=14)
+    regime_state = "TRENDING" if adx > 25 else "SIDEWAYS_CHOP" if adx < 20 else "TRANSITION"
+    logic_bypass = regime_state == "SIDEWAYS_CHOP"
+    pivot = (float(highs.tail(min(len(highs), 24)).max()) + float(lows.tail(min(len(lows), 24)).min()) + current_price) / 3
+    support = (2 * pivot) - float(highs.tail(min(len(highs), 24)).max())
+    resistance = (2 * pivot) - float(lows.tail(min(len(lows), 24)).min())
+    previous_close = float(closes.iloc[-2]) if len(closes) >= 2 else current_price
+    near_resistance = resistance > 0 and abs(resistance - current_price) / max(current_price, 1e-8) <= 0.004
+    near_support = support > 0 and abs(current_price - support) / max(current_price, 1e-8) <= 0.006
+
+    rsi_score = 0.0 if logic_bypass else 100.0 if 40 <= rsi <= 62 and current_price >= previous_close else 68.0 if 50 <= rsi < 70 else 25.0
+    macd_score = 0.0 if logic_bypass else 100.0 if macd["line"] > macd["signal"] and macd["previous_line"] <= macd["signal"] else 72.0 if macd["line"] > macd["signal"] else 20.0
+    ema_score = 100.0 if current_price > ema20 and ema20 >= ema50 else 72.0 if current_price > ema20 else 20.0
+    atr_score = 100.0 if atr_previous > 0 and atr_now <= atr_previous * 0.92 else 55.0 if atr_now > 0 else 20.0
+    volume_score = 100.0 if volume_ratio >= 2.0 else 72.0 if volume_ratio >= 1.2 else 25.0
+    pivot_score = 85.0 if current_price >= pivot or near_support else 35.0
+    indicators = {
+        "rsi": {
+            "value": round(rsi, 4),
+            "score": round(rsi_score, 2),
+            "condition": "Cross above 40 / heading to 60",
+            "bypassed": logic_bypass,
+        },
+        "macd": {
+            "value": round(macd["histogram"], 8),
+            "score": round(macd_score, 2),
+            "condition": "Signal crossover below or near zero line",
+            "bypassed": logic_bypass,
+        },
+        "ema_20_50": {
+            "value": {"ema20": round(ema20, 8), "ema50": round(ema50, 8)},
+            "score": round(ema_score, 2),
+            "condition": "Price above 20 EMA / 20-50 golden structure",
+            "bypassed": False,
+        },
+        "atr": {
+            "value": round(atr_now, 8),
+            "score": round(atr_score, 2),
+            "condition": "Volatility contraction before breakout",
+            "bypassed": False,
+        },
+        "volume": {
+            "value": round(volume_ratio, 4),
+            "score": round(volume_score, 2),
+            "condition": "Current volume > 2x 20-period average",
+            "bypassed": False,
+        },
+        "pivot_support_resistance": {
+            "value": {
+                "pivot": round(pivot, 8),
+                "support": round(support, 8),
+                "resistance": round(resistance, 8),
+            },
+            "score": round(pivot_score, 2),
+            "condition": "Sideways bypass focus zone",
+            "bypassed": not logic_bypass,
+        },
+    }
+    scalp_score = _weighted_indicator_score(indicators, "scalp", logic_bypass=logic_bypass)
+    swing_score = _weighted_indicator_score(indicators, "swing", logic_bypass=logic_bypass)
+    selected_profile = "scalp" if interval in SCALP_INTERVALS else "swing"
+    selected_score = scalp_score if selected_profile == "scalp" else swing_score
+    warning = ""
+    if logic_bypass:
+        warning = "Sideways market: RSI/MACD crossovers bypassed; pivot/support-resistance has priority."
+    elif rsi_score >= 70 and volume_score < 50 and near_resistance:
+        warning = "Contradicting Data: High Risk Setup"
+    elif selected_score < 50:
+        warning = "Contradicting Data: High Risk Setup"
+    return {
+        "selected_profile": selected_profile,
+        "selected_score": round(selected_score, 2),
+        "scalp_score": round(scalp_score, 2),
+        "swing_score": round(swing_score, 2),
+        "direction": side,
+        "warning": warning,
+        "indicators": indicators,
+        "weights": {
+            "scalp": _INDICATOR_WEIGHTS["scalp"],
+            "swing": _INDICATOR_WEIGHTS["swing"],
+        },
+        "regime_classifier": {
+            "state": regime_state,
+            "adx": round(adx, 2),
+            "logic_bypass": logic_bypass,
+            "focus": "pivot_support_resistance" if logic_bypass else "trend_volume_momentum",
+        },
+    }
+
+
+def _weighted_indicator_score(indicators: dict[str, Any], profile: str, *, logic_bypass: bool) -> float:
+    weights = _INDICATOR_WEIGHTS[profile]
+    pivot_weight = weights["rsi"] + weights["macd"] + 0.12 if logic_bypass else 0.0
+    active_weights = {
+        "rsi": 0.0 if logic_bypass else weights["rsi"],
+        "macd": 0.0 if logic_bypass else weights["macd"],
+        "ema_20_50": weights["ema_20_50"],
+        "atr": weights["atr"],
+        "volume": weights["volume"],
+        "pivot_support_resistance": pivot_weight,
+    }
+    total = sum(active_weights.values())
+    if total <= 0:
+        return 0.0
+    weighted = sum(
+        float(indicators[key]["score"]) * weight
+        for key, weight in active_weights.items()
+    )
+    return _clamp(weighted / total, 0.0, 100.0)
+
+
+def _rsi_value(closes: pd.Series, period: int) -> float:
+    if len(closes) <= period:
+        return 50.0
+    delta = closes.diff().dropna().tail(period)
+    gains = delta.clip(lower=0).mean()
+    losses = delta.clip(upper=0).abs().mean()
+    if losses <= 0:
+        return 100.0
+    rs = gains / losses
+    return float(100 - (100 / (1 + rs)))
+
+
+def _macd_snapshot(closes: pd.Series) -> dict[str, float]:
+    ema12 = closes.ewm(span=12, adjust=False).mean()
+    ema26 = closes.ewm(span=26, adjust=False).mean()
+    macd_line = ema12 - ema26
+    signal = macd_line.ewm(span=9, adjust=False).mean()
+    return {
+        "line": float(macd_line.iloc[-1]),
+        "previous_line": float(macd_line.iloc[-2]) if len(macd_line) >= 2 else float(macd_line.iloc[-1]),
+        "signal": float(signal.iloc[-1]),
+        "histogram": float(macd_line.iloc[-1] - signal.iloc[-1]),
+    }
+
+
+def _adx_value(*, highs: pd.Series, lows: pd.Series, closes: pd.Series, period: int) -> float:
+    if len(closes) <= period + 1:
+        return 0.0
+    high_diff = highs.diff()
+    low_diff = -lows.diff()
+    plus_dm = high_diff.where((high_diff > low_diff) & (high_diff > 0), 0.0)
+    minus_dm = low_diff.where((low_diff > high_diff) & (low_diff > 0), 0.0)
+    prev_close = closes.shift(1)
+    true_range = pd.concat(
+        [
+            (highs - lows).abs(),
+            (highs - prev_close).abs(),
+            (lows - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    tr_sum = float(true_range.tail(period).sum() or 0.0)
+    if tr_sum <= 0:
+        return 0.0
+    plus_di = 100 * float(plus_dm.tail(period).sum()) / tr_sum
+    minus_di = 100 * float(minus_dm.tail(period).sum()) / tr_sum
+    total = plus_di + minus_di
+    if total <= 0:
+        return 0.0
+    return float(100 * abs(plus_di - minus_di) / total)
+
+
+def _ai_why_card(
+    *,
+    symbol: str,
+    side: str,
+    confidence_score: float,
+    indicator_matrix: dict[str, Any],
+    expected_rr: float,
+) -> dict[str, Any]:
+    indicators = indicator_matrix.get("indicators", {})
+    volume_ratio = float(indicators.get("volume", {}).get("value", 0.0) or 0.0)
+    ema_score = float(indicators.get("ema_20_50", {}).get("score", 0.0) or 0.0)
+    warning = str(indicator_matrix.get("warning", "") or "")
+    headline = warning or (
+        f"{symbol} trend, volume, and momentum are aligned."
+        if confidence_score >= 85
+        else f"{symbol} setup is forming but still needs confirmation."
+    )
+    bullets = []
+    if volume_ratio >= 1.2:
+        bullets.append(f"Volume is {round((volume_ratio - 1) * 100, 1)}% higher than average.")
+    if ema_score >= 75:
+        bullets.append("Price is holding above 20 EMA / 50 EMA structure.")
+    if indicator_matrix["regime_classifier"]["logic_bypass"]:
+        bullets.append("Sideways regime detected; oscillator crossovers are ignored.")
+    if not bullets:
+        bullets.append("AI is waiting for stronger volume or trend alignment.")
+    return {
+        "headline": headline,
+        "suggestion_badge": f"{side} ZONE" if not warning and side in {"BUY", "SELL"} else "WAIT",
+        "confidence": round(confidence_score, 2),
+        "bullets": bullets[:3],
+        "personalization_template": (
+            "Since you prefer {style}, this setup has "
+            f"{round(expected_rr, 2)} R:R and {round(confidence_score, 1)}% weighted confidence."
+        ),
+    }
+
+
+def _feedback_learning_outline(indicator_matrix: dict[str, Any]) -> dict[str, Any]:
+    warning = str(indicator_matrix.get("warning", "") or "")
+    return {
+        "enabled": True,
+        "post_mortem_rules": [
+            {
+                "if": "paper_trade_stop_loss_hit and volume_score < 50",
+                "then": "increase_min_volume_ratio_by_15_percent",
+            },
+            {
+                "if": "signal_failed_after_regime_transition",
+                "then": "retrain_regime_classifier_window",
+            },
+        ],
+        "self_correction": [
+            "Detect fakeout from failed breakout candle and low volume confirmation.",
+            "Persist adjusted volume threshold for the user's future paper-trade signals.",
+        ],
+        "current_warning": warning,
+    }
+
+
 def _empty_payload(*, symbol: str, interval: str, assistant_mode: str) -> dict[str, Any]:
     return {
         "chart_engine": "custom_canvas_pro",
@@ -591,6 +873,42 @@ def _empty_payload(*, symbol: str, interval: str, assistant_mode: str) -> dict[s
             "state": "RANGING",
             "confidence": 0.0,
             "summary": f"{symbol} is waiting for cleaner structure.",
+        },
+        "indicator_weightage_matrix": {
+            "selected_profile": "scalp" if interval in SCALP_INTERVALS else "swing",
+            "selected_score": 0.0,
+            "scalp_score": 0.0,
+            "swing_score": 0.0,
+            "warning": "",
+            "indicators": {},
+            "weights": {
+                "scalp": _INDICATOR_WEIGHTS["scalp"],
+                "swing": _INDICATOR_WEIGHTS["swing"],
+            },
+            "regime_classifier": {
+                "state": "UNKNOWN",
+                "adx": 0.0,
+                "logic_bypass": False,
+                "focus": "waiting_for_candles",
+            },
+        },
+        "regime_classifier": {
+            "state": "UNKNOWN",
+            "adx": 0.0,
+            "logic_bypass": False,
+            "focus": "waiting_for_candles",
+        },
+        "ai_why_card": {
+            "headline": "AI is waiting for verified candles.",
+            "suggestion_badge": "WAIT",
+            "confidence": 0.0,
+            "bullets": [],
+            "personalization_template": "",
+        },
+        "feedback_learning": {
+            "enabled": False,
+            "post_mortem_rules": [],
+            "self_correction": [],
         },
         "advanced_market_regime": {
             "state": "UNKNOWN",

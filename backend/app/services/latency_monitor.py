@@ -5,6 +5,7 @@ import functools
 import logging
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 from app.core.config import Settings
@@ -77,14 +78,42 @@ class LatencyMonitor:
 
     def _record(self, name: str, elapsed_ms: float, used_fallback: bool) -> None:
         key = f"latency:{name}"
+        now = datetime.now(timezone.utc).isoformat()
         state = self.cache.get_json(key) or {"samples": [], "fallbacks": 0}
         samples = list(state.get("samples", []))[-99:]
         samples.append(elapsed_ms)
         fallbacks = int(state.get("fallbacks", 0)) + int(used_fallback)
-        self.cache.set_json(key, {"samples": samples, "fallbacks": fallbacks}, ttl=self.settings.monitor_state_ttl_seconds)
+        self.cache.set_json(
+            key,
+            {"samples": samples, "fallbacks": fallbacks, "producer_last_seen_ts": now, "producer_age_ms": 0.0},
+            ttl=self.settings.monitor_state_ttl_seconds,
+        )
         degraded = elapsed_ms > self.settings.latency_spike_threshold_ms
         self.cache.set_json(
             "latency:state",
-            {"degraded_mode": degraded, "last_name": name, "last_latency_ms": elapsed_ms, "used_fallback": used_fallback},
+            {
+                "degraded_mode": degraded,
+                "last_name": name,
+                "last_latency_ms": elapsed_ms,
+                "used_fallback": used_fallback,
+                "producer_last_seen_ts": now,
+                "producer_age_ms": 0.0,
+            },
             ttl=self.settings.monitor_state_ttl_seconds,
         )
+        if "ai" in name.lower():
+            self.cache.set("monitor:ai_worker_latency_ms", str(elapsed_ms), ttl=self.settings.monitor_state_ttl_seconds)
+            self.cache.set("monitor:ai_worker_latency_ms:last_seen_ts", now, ttl=self.settings.monitor_state_ttl_seconds)
+            self.cache.set_json(
+                "ai:latency",
+                {"latency_ms": float(elapsed_ms), "producer_last_seen_ts": now, "producer_age_ms": 0.0},
+                ttl=self.settings.monitor_state_ttl_seconds,
+            )
+        if "exchange" in name.lower() or "ticker" in name.lower() or "order" in name.lower():
+            self.cache.set("monitor:exchange_latency_ms", str(elapsed_ms), ttl=self.settings.monitor_state_ttl_seconds)
+            self.cache.set("monitor:exchange_latency_ms:last_seen_ts", now, ttl=self.settings.monitor_state_ttl_seconds)
+            self.cache.set_json(
+                "exchange:latency",
+                {"latency_ms": float(elapsed_ms), "producer_last_seen_ts": now, "producer_age_ms": 0.0},
+                ttl=self.settings.monitor_state_ttl_seconds,
+            )

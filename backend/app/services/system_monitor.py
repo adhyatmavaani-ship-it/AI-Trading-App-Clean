@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from app.core.config import Settings
 from app.core.metrics import (
@@ -63,7 +64,16 @@ class SystemMonitorService:
         self.cache.set("monitor:active_trades", str(count), ttl=self.settings.monitor_state_ttl_seconds)
 
     def record_execution(self, latency_ms: float, slippage_bps: float) -> None:
+        now = datetime.now(timezone.utc).isoformat()
         self.cache.set("monitor:execution_latency_ms", str(latency_ms), ttl=self.settings.monitor_state_ttl_seconds)
+        self.cache.set("monitor:execution_latency_ms:last_seen_ts", now, ttl=self.settings.monitor_state_ttl_seconds)
+        self.cache.set("monitor:exchange_latency_ms", str(latency_ms), ttl=self.settings.monitor_state_ttl_seconds)
+        self.cache.set("monitor:exchange_latency_ms:last_seen_ts", now, ttl=self.settings.monitor_state_ttl_seconds)
+        self.cache.set_json(
+            "exchange:latency",
+            {"latency_ms": float(latency_ms), "producer_last_seen_ts": now, "producer_age_ms": 0.0},
+            ttl=self.settings.monitor_state_ttl_seconds,
+        )
         self.cache.set("monitor:execution_slippage_bps", str(slippage_bps), ttl=self.settings.monitor_state_ttl_seconds)
         if slippage_bps > self.settings.micro_slippage_threshold_bps:
             self.cache.increment("monitor:slippage_spikes", ttl=self.settings.monitor_state_ttl_seconds)

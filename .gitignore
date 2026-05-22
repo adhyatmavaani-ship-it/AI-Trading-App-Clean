@@ -16,6 +16,7 @@ logs/
 backend/runtime.txt
 backend/artifacts/
 artifacts/
+app_data/
 backend/backtest_data/
 trades.db
 *.sqlite3

@@ -7,6 +7,7 @@ import pandas as pd
 
 from app.core.config import Settings
 from app.services.market_data import MarketDataService
+from app.services.market_feed_watchdog import MarketFeedWatchdog
 from app.services.scanner_service import ScannerService
 from app.services.user_experience_engine import UserExperienceEngine
 
@@ -17,6 +18,7 @@ class MarketUniverseScanner:
     market_data: MarketDataService
     user_experience_engine: UserExperienceEngine
     scanner_service: ScannerService | None = None
+    market_feed_watchdog: MarketFeedWatchdog | None = None
 
     async def snapshot(self, limit: int | None = None) -> dict[str, object]:
         scanner_snapshot = (
@@ -210,6 +212,9 @@ class MarketUniverseScanner:
         fifteen_minute = frames.get("15m", pd.DataFrame())
         if five_minute.empty:
             raise ValueError(f"missing 5m frame for {symbol}")
+        feed_health = None
+        if self.market_feed_watchdog is not None and self.settings.market_feed_watchdog_enabled:
+            feed_health = self.market_feed_watchdog.evaluate_frame(symbol, "5m", five_minute)
         close_series = five_minute["close"].astype(float)
         volume_series = five_minute["volume"].astype(float)
         latest_close = float(close_series.iloc[-1])
@@ -243,4 +248,5 @@ class MarketUniverseScanner:
             "quote_volume": round(quote_volume, 4),
             "sparkline": sparkline,
             "category": category,
+            "feed_health": feed_health.status if feed_health is not None else "unknown",
         }

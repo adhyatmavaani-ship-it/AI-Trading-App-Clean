@@ -115,6 +115,12 @@ async def lifespan(app: FastAPI):
             slow_threshold=slow_threshold,
             timeout_seconds=startup_timeout_seconds,
         ),
+        _run_startup_async_step(
+            name="broker_reconciliation_worker",
+            awaitable=container.broker_reconciliation_worker.start(),
+            slow_threshold=slow_threshold,
+            timeout_seconds=startup_timeout_seconds,
+        ),
     )
     logger.info(
         "Trading system startup complete",
@@ -130,6 +136,7 @@ async def lifespan(app: FastAPI):
     logger.info("Trading system shutdown - cleaning up resources...")
     await container.strategy_optimizer.stop()
     await container.active_trade_monitor.stop()
+    await container.broker_reconciliation_worker.stop()
     await container.backtest_job_service.stop()
     await get_signal_websocket_manager().stop()
     await get_risk_coach_market_service().stop()

@@ -1,11 +1,13 @@
 import unittest
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from app.core.config import Settings
 from app.services.execution_engine import ExecutionEngine
+from db.database import SQLiteTradeDatabase
 
 
 class InMemoryCache:
@@ -23,6 +25,16 @@ class InMemoryCache:
 
     def set(self, key, value, ttl=None):
         self.store[key] = value
+
+    def set_if_absent(self, key, value, ttl):
+        if key in self.store:
+            return False
+        self.store[key] = value
+        return True
+
+    def increment(self, key, ttl):
+        self.store[key] = int(self.store.get(key, 0)) + 1
+        return self.store[key]
 
 
 class StubQueueManager:
@@ -100,6 +112,12 @@ class StubExchangeAdapter:
 
 
 class ExecutionEngineFilterTest(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
     def _build_engine(self):
         engine = ExecutionEngine(Settings(trading_mode="paper", redis_url="redis://unused", backup_exchanges=[]))
         engine.cache = InMemoryCache()
@@ -182,6 +200,56 @@ class ExecutionEngineFilterTest(unittest.TestCase):
         status = engine.fetch_order_status("BTCUSDT", order["orderId"])
         self.assertEqual(status["exchange"], "kraken")
         self.assertEqual(engine.exchange_clients["kraken"].fetch_order_calls[-1], ("BTCUSDT", "kraken-123"))
+
+    def test_client_order_id_is_stable_for_execution_request_id(self):
+        engine = self._build_engine()
+
+        first = engine.place_order(
+            symbol="BTCUSDT",
+            side="BUY",
+            quantity=0.12,
+            order_type="MARKET",
+            queue_context={"execution_request_id": "exec_unit_test"},
+        )
+        second = engine.place_order(
+            symbol="BTCUSDT",
+            side="BUY",
+            quantity=0.12,
+            order_type="MARKET",
+            queue_context={"execution_request_id": "exec_unit_test"},
+        )
+
+        self.assertEqual(first["clientOrderId"], second["clientOrderId"])
+        self.assertEqual(len(engine.exchange_clients["binance"].create_order_calls), 1)
+        self.assertEqual(int(engine.cache.get("monitor:duplicate_execution_prevented") or 0), 1)
+
+    def test_client_order_id_replays_after_cache_restart_from_durable_store(self):
+        db_path = Path(self.temp_dir.name) / "execution.sqlite3"
+        store = SQLiteTradeDatabase(db_path)
+        first_engine = self._build_engine()
+        first_engine.execution_store = store
+
+        first = first_engine.place_order(
+            symbol="BTCUSDT",
+            side="BUY",
+            quantity=0.12,
+            order_type="MARKET",
+            queue_context={"execution_request_id": "exec_restart"},
+        )
+
+        second_engine = self._build_engine()
+        second_engine.execution_store = SQLiteTradeDatabase(db_path)
+        second = second_engine.place_order(
+            symbol="BTCUSDT",
+            side="BUY",
+            quantity=0.12,
+            order_type="MARKET",
+            queue_context={"execution_request_id": "exec_restart"},
+        )
+
+        self.assertEqual(second["clientOrderId"], first["clientOrderId"])
+        self.assertEqual(second["orderId"], first["orderId"])
+        self.assertEqual(len(second_engine.exchange_clients["binance"].create_order_calls), 0)
 
 
 if __name__ == "__main__":

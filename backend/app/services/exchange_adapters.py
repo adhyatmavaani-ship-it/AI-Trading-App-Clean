@@ -31,6 +31,8 @@ class ExchangeAdapter(Protocol):
         order_type: str,
         quantity: float,
         limit_price: float | None = None,
+        client_order_id: str | None = None,
+        reduce_only: bool = False,
     ) -> dict:
         ...
 
@@ -38,6 +40,9 @@ class ExchangeAdapter(Protocol):
         ...
 
     def fetch_order_book(self, *, symbol: str, limit: int = 20) -> dict:
+        ...
+
+    def fetch_positions(self) -> list[dict]:
         ...
 
     def fetch_ohlcv(self, *, symbol: str, interval: str, limit: int = 300) -> pd.DataFrame:
@@ -124,15 +129,22 @@ class CcxtExchangeAdapter:
         order_type: str,
         quantity: float,
         limit_price: float | None = None,
+        client_order_id: str | None = None,
+        reduce_only: bool = False,
     ) -> dict:
+        params = self._order_params(client_order_id=client_order_id, reduce_only=reduce_only)
         order = self.client.create_order(
             self._exchange_symbol(symbol),
             order_type.lower(),
             side.lower(),
             quantity,
             limit_price if order_type.upper() == "LIMIT" else None,
+            params,
         )
-        return self._normalize_order(order)
+        normalized = self._normalize_order(order)
+        normalized["clientOrderId"] = client_order_id or normalized.get("clientOrderId")
+        normalized["reduceOnly"] = bool(reduce_only)
+        return normalized
 
     def fetch_order(self, *, symbol: str, order_id: str) -> dict:
         order = self.client.fetch_order(id=str(order_id), symbol=self._exchange_symbol(symbol))
@@ -144,6 +156,29 @@ class CcxtExchangeAdapter:
             "bids": [{"price": float(price), "qty": float(qty)} for price, qty in order_book.get("bids", [])],
             "asks": [{"price": float(price), "qty": float(qty)} for price, qty in order_book.get("asks", [])],
         }
+
+    def fetch_positions(self) -> list[dict]:
+        if not hasattr(self.client, "fetch_positions"):
+            return []
+        positions = self.client.fetch_positions()
+        normalized: list[dict] = []
+        for position in positions or []:
+            contracts = float(position.get("contracts") or position.get("contractSize") or position.get("amount") or 0.0)
+            if abs(contracts) <= 0:
+                continue
+            symbol = self._normalize_market_symbol(str(position.get("symbol", "")))
+            side = str(position.get("side", "long") or "long").upper()
+            normalized.append(
+                {
+                    "symbol": symbol,
+                    "side": "BUY" if side in {"LONG", "BUY"} else "SELL",
+                    "quantity": abs(contracts),
+                    "entry_price": float(position.get("entryPrice") or 0.0),
+                    "unrealized_pnl": float(position.get("unrealizedPnl") or 0.0),
+                    "exchange": self.exchange_id,
+                }
+            )
+        return normalized
 
     def fetch_ohlcv(self, *, symbol: str, interval: str, limit: int = 300) -> pd.DataFrame:
         rows = self.client.fetch_ohlcv(self._exchange_symbol(symbol), timeframe=interval, limit=limit)
@@ -212,6 +247,17 @@ class CcxtExchangeAdapter:
             if self.settings.coinbase_api_passphrase:
                 config["password"] = self.settings.coinbase_api_passphrase
         return config
+
+    def _order_params(self, *, client_order_id: str | None, reduce_only: bool) -> dict:
+        params: dict[str, object] = {}
+        if client_order_id:
+            if self.exchange_id == "binance":
+                params["newClientOrderId"] = client_order_id
+            else:
+                params["clientOrderId"] = client_order_id
+        if reduce_only:
+            params["reduceOnly"] = True
+        return params
 
     def _exchange_symbol(self, symbol: str) -> str:
         normalized = str(symbol).upper().replace("-", "/")

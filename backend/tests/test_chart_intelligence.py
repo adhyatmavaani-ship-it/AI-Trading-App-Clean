@@ -114,6 +114,14 @@ class ChartIntelligenceTest(unittest.TestCase):
         self.assertIn("ai_confidence_engine", payload)
         self.assertIn("smc_confluence", payload["ai_confidence_engine"]["factors"])
         self.assertIn("multi_timeframe_intelligence", payload)
+        self.assertIn("indicator_weightage_matrix", payload)
+        self.assertIn("regime_classifier", payload)
+        self.assertIn(
+            payload["indicator_weightage_matrix"]["selected_profile"],
+            {"scalp", "swing"},
+        )
+        self.assertIn("ai_why_card", payload)
+        self.assertIn("feedback_learning", payload)
         self.assertTrue(payload["render_hints"]["crosshair_repaint_isolated"])
 
 

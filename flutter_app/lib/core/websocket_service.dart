@@ -30,6 +30,7 @@ class WebSocketService {
 
   WebSocketChannel? _channel;
   StreamSubscription<dynamic>? _channelSubscription;
+  Timer? _heartbeatTimer;
   Timer? _reconnectTimer;
   Timer? _staleFeedTimer;
   bool _isDisposed = false;
@@ -177,6 +178,7 @@ class WebSocketService {
     }
     _connectInFlight = true;
     _reconnectTimer?.cancel();
+    _heartbeatTimer?.cancel();
     await _channelSubscription?.cancel();
     await _channel?.sink.close();
 
@@ -195,6 +197,7 @@ class WebSocketService {
       await channel.ready.timeout(AppConstants.websocketConnectTimeout);
       _reconnectAttempt = 0;
       _setState(WsState.connected);
+      _startHeartbeat();
       _startStaleFeedMonitor();
       track(
         'ws_connected',
@@ -207,6 +210,14 @@ class WebSocketService {
         (dynamic data) {
           try {
             final decoded = jsonDecode(data as String) as Map<String, dynamic>;
+            if (decoded['type'] == 'pong') {
+              _integrityGate.evaluate(decoded);
+              if (_state.value == WsState.degraded) {
+                _setState(WsState.connected);
+              }
+              track('ws_pong', <String, dynamic>{'target': uri.toString()});
+              return;
+            }
             if (decoded['type'] == 'replay_response') {
               track('ws_replay_response', decoded);
               if (decoded['recovery'] == 'snapshot_required') {
@@ -292,6 +303,7 @@ class WebSocketService {
     }
     _setState(WsState.degraded);
     _reconnectTimer?.cancel();
+    _heartbeatTimer?.cancel();
     _staleFeedTimer?.cancel();
     _reconnectAttempt += 1;
     _lastReconnectReason = reason;
@@ -358,6 +370,7 @@ class WebSocketService {
     await _channelSubscription?.cancel();
     await _channel?.sink.close();
     _reconnectTimer?.cancel();
+    _heartbeatTimer?.cancel();
     _staleFeedTimer?.cancel();
     await _eventController.close();
     _state.dispose();
@@ -366,7 +379,7 @@ class WebSocketService {
   Uri get _signalUri => Uri.parse(_baseUrl);
 
   Duration _reconnectDelayForAttempt(int attempt) {
-    final exponent = attempt <= 1 ? 0 : (attempt - 1).clamp(0, 3);
+    final exponent = attempt <= 1 ? 0 : (attempt - 1).clamp(0, 2);
     final factor = 1 << exponent;
     final computed = AppConstants.websocketReconnectBaseDelay * factor;
     if (computed > AppConstants.websocketReconnectMaxDelay) {
@@ -415,12 +428,32 @@ class WebSocketService {
             'ws_feed_stale',
             <String, dynamic>{
               'target': _signalUri.toString(),
-              'stale_after_seconds':
-                  AppConstants.websocketStaleAfter.inSeconds,
+              'stale_after_seconds': AppConstants.websocketStaleAfter.inSeconds,
             },
           );
         }
       },
+    );
+  }
+
+  void _startHeartbeat() {
+    _heartbeatTimer?.cancel();
+    void sendPing() {
+      if (_isDisposed || _state.value == WsState.disconnected) {
+        return;
+      }
+      try {
+        _channel?.sink.add('ping');
+      } catch (error, stackTrace) {
+        logError(error, stackTrace: stackTrace);
+        _scheduleReconnect(reason: 'heartbeat_failed:${error.runtimeType}');
+      }
+    }
+
+    sendPing();
+    _heartbeatTimer = Timer.periodic(
+      AppConstants.websocketPingInterval,
+      (_) => sendPing(),
     );
   }
 
