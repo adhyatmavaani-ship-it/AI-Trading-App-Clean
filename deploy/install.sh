@@ -6,7 +6,7 @@ APP_USER="${APP_USER:-quentrader}"
 APP_DIR="${APP_DIR:-/opt/quentrader}"
 ENV_DIR="${ENV_DIR:-/etc/quentrader}"
 LOG_DIR="${LOG_DIR:-/var/log/quentrader}"
-DOMAIN="${DOMAIN:-srv1664694.hstgr.cloud}"
+DOMAIN="${DOMAIN:-quentrader.com}"
 BIND_HOST="${BIND_HOST:-127.0.0.1}"
 BIND_PORT="${BIND_PORT:-8000}"
 REPO_URL="${REPO_URL:-}"
@@ -146,7 +146,7 @@ python3 -m venv "${APP_DIR}/.venv"
 if [[ ! -f "${ENV_DIR}/${APP_NAME}.env" ]]; then
   cp "${APP_DIR}/deploy/env.example" "${ENV_DIR}/${APP_NAME}.env"
   sed -i "s#^PUBLIC_BASE_URL=.*#PUBLIC_BASE_URL=https://${DOMAIN}#" "${ENV_DIR}/${APP_NAME}.env"
-  sed -i "s#^CORS_ALLOWED_ORIGINS=.*#CORS_ALLOWED_ORIGINS='[\"https://${DOMAIN}\"]'#" "${ENV_DIR}/${APP_NAME}.env"
+  sed -i "s#^CORS_ALLOWED_ORIGINS=.*#CORS_ALLOWED_ORIGINS='[\"https://${DOMAIN}\",\"https://www.${DOMAIN}\",\"https://srv1664694.hstgr.cloud\"]'#" "${ENV_DIR}/${APP_NAME}.env"
 fi
 chown root:"${APP_USER}" "${ENV_DIR}/${APP_NAME}.env"
 chmod 0640 "${ENV_DIR}/${APP_NAME}.env"
@@ -164,7 +164,7 @@ fi
 install -m 0644 "${APP_DIR}/deploy/quentrader.service" "/etc/systemd/system/${APP_NAME}.service"
 sed -i "s#app.main:app#${ENTRYPOINT}#g" "/etc/systemd/system/${APP_NAME}.service"
 install -m 0644 "${APP_DIR}/deploy/nginx.conf" "/etc/nginx/sites-available/${APP_NAME}"
-sed -i "s#srv1664694.hstgr.cloud#${DOMAIN}#g" "/etc/nginx/sites-available/${APP_NAME}"
+sed -i "s#quentrader.com#${DOMAIN}#g" "/etc/nginx/sites-available/${APP_NAME}"
 ln -sfn "/etc/nginx/sites-available/${APP_NAME}" "/etc/nginx/sites-enabled/${APP_NAME}"
 rm -f /etc/nginx/sites-enabled/default
 write_logrotate
@@ -186,5 +186,5 @@ Health check: curl -fsS http://${BIND_HOST}:${BIND_PORT}/health/ready
 
 Optional HTTPS step after DNS points to this VPS:
   sudo apt-get install -y certbot python3-certbot-nginx
-  sudo certbot --nginx -d ${DOMAIN}
+  sudo certbot --nginx -d ${DOMAIN} -d www.${DOMAIN}
 EOF
