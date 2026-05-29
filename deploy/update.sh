@@ -16,6 +16,8 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
+git config --global --add safe.directory "${APP_DIR}" >/dev/null 2>&1 || true
+
 if [[ -d "${APP_DIR}/.git" ]]; then
   git -C "${APP_DIR}" fetch --depth 1 origin "${REPO_BRANCH}"
   git -C "${APP_DIR}" checkout "${REPO_BRANCH}"
