@@ -18,6 +18,13 @@ fi
 
 git config --global --add safe.directory "${APP_DIR}" >/dev/null 2>&1 || true
 
+for legacy_service in ai-trading-backend.service ai-trading-healthcheck.service; do
+  if systemctl list-unit-files "${legacy_service}" >/dev/null 2>&1; then
+    systemctl stop "${legacy_service}" >/dev/null 2>&1 || true
+    systemctl disable "${legacy_service}" >/dev/null 2>&1 || true
+  fi
+done
+
 if [[ -d "${APP_DIR}/.git" ]]; then
   git -C "${APP_DIR}" fetch --depth 1 origin "${REPO_BRANCH}"
   git -C "${APP_DIR}" checkout "${REPO_BRANCH}"

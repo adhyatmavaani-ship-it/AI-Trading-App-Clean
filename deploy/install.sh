@@ -105,6 +105,15 @@ wait_for_health() {
   exit 1
 }
 
+stop_legacy_services() {
+  for legacy_service in ai-trading-backend.service ai-trading-healthcheck.service; do
+    if systemctl list-unit-files "${legacy_service}" >/dev/null 2>&1; then
+      systemctl stop "${legacy_service}" >/dev/null 2>&1 || true
+      systemctl disable "${legacy_service}" >/dev/null 2>&1 || true
+    fi
+  done
+}
+
 require_root
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
@@ -162,6 +171,7 @@ write_logrotate
 
 nginx -t
 systemctl daemon-reload
+stop_legacy_services
 systemctl enable "${APP_NAME}"
 systemctl restart "${APP_NAME}"
 systemctl reload nginx
