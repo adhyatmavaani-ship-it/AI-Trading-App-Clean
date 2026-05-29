@@ -146,7 +146,7 @@ python3 -m venv "${APP_DIR}/.venv"
 if [[ ! -f "${ENV_DIR}/${APP_NAME}.env" ]]; then
   cp "${APP_DIR}/deploy/env.example" "${ENV_DIR}/${APP_NAME}.env"
   sed -i "s#^PUBLIC_BASE_URL=.*#PUBLIC_BASE_URL=https://${DOMAIN}#" "${ENV_DIR}/${APP_NAME}.env"
-  sed -i "s#^CORS_ALLOWED_ORIGINS=.*#CORS_ALLOWED_ORIGINS='[\"https://${DOMAIN}\",\"https://www.${DOMAIN}\",\"https://srv1664694.hstgr.cloud\"]'#" "${ENV_DIR}/${APP_NAME}.env"
+  sed -i "/^CORS_ALLOWED_ORIGINS=/d" "${ENV_DIR}/${APP_NAME}.env"
 fi
 chown root:"${APP_USER}" "${ENV_DIR}/${APP_NAME}.env"
 chmod 0640 "${ENV_DIR}/${APP_NAME}.env"
