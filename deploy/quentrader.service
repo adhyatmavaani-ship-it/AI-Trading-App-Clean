@@ -1,0 +1,33 @@
+[Unit]
+Description=Quentrader FastAPI backend
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=quentrader
+Group=quentrader
+WorkingDirectory=/opt/quentrader/backend
+EnvironmentFile=/etc/quentrader/quentrader.env
+Environment=PYTHONPATH=/opt/quentrader/backend
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/quentrader/.venv/bin/gunicorn app.main:app --worker-class uvicorn.workers.UvicornWorker --workers 1 --bind 127.0.0.1:8000 --timeout 90 --graceful-timeout 30 --keep-alive 5 --max-requests 500 --max-requests-jitter 50 --access-logfile /var/log/quentrader/access.log --error-logfile /var/log/quentrader/error.log --log-level info
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStartSec=120
+TimeoutStopSec=45
+LimitNOFILE=65535
+TasksMax=128
+MemoryMax=3072M
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/quentrader /var/log/quentrader /etc/quentrader
+
+[Install]
+WantedBy=multi-user.target
