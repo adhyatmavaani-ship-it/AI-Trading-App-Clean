@@ -90,6 +90,38 @@ ${LOG_DIR}/*.log {
 EOF
 }
 
+write_nginx_api_key_snippet() {
+  mkdir -p /etc/nginx/snippets
+  python3 - <<'PY'
+import json
+import re
+from pathlib import Path
+
+env_path = Path("/etc/quentrader/quentrader.env")
+snippet_path = Path("/etc/nginx/snippets/quentrader-api-key.conf")
+text = env_path.read_text(encoding="utf-8")
+match = re.search(r"^AUTH_API_KEYS_JSON=(.*)$", text, re.M)
+if not match:
+    raise SystemExit("AUTH_API_KEYS_JSON missing")
+raw = match.group(1).strip()
+if raw.startswith("'") and raw.endswith("'"):
+    raw = raw[1:-1]
+if raw.startswith('"') and raw.endswith('"'):
+    raw = raw[1:-1]
+items = json.loads(raw)
+key = ""
+for item in items:
+    if isinstance(item, dict):
+        key = str(item.get("api_key") or item.get("token") or "").strip()
+        if key:
+            break
+if not key:
+    raise SystemExit("AUTH_API_KEYS_JSON must include an api_key entry")
+snippet_path.write_text(f'proxy_set_header X-API-Key "{key}";\n', encoding="utf-8")
+PY
+  chmod 0600 /etc/nginx/snippets/quentrader-api-key.conf
+}
+
 wait_for_health() {
   local url_ready="http://${BIND_HOST}:${BIND_PORT}/health/ready"
   local url_health="http://${BIND_HOST}:${BIND_PORT}/health"
@@ -157,9 +189,10 @@ import secrets
 print(secrets.token_urlsafe(32))
 PY
 )"
-  sed -i "s#^AUTH_API_KEYS_JSON=.*#AUTH_API_KEYS_JSON='[\"${INITIAL_API_KEY}\"]'#" "${ENV_DIR}/${APP_NAME}.env"
+  sed -i "s#^AUTH_API_KEYS_JSON=.*#AUTH_API_KEYS_JSON='[{\"api_key\":\"${INITIAL_API_KEY}\",\"user_id\":\"admin\"}]'#" "${ENV_DIR}/${APP_NAME}.env"
   echo "Generated initial API key in ${ENV_DIR}/${APP_NAME}.env; rotate it after first login."
 fi
+write_nginx_api_key_snippet
 
 install -m 0644 "${APP_DIR}/deploy/quentrader.service" "/etc/systemd/system/${APP_NAME}.service"
 sed -i "s#app.main:app#${ENTRYPOINT}#g" "/etc/systemd/system/${APP_NAME}.service"

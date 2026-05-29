@@ -18,6 +18,38 @@ fi
 
 git config --global --add safe.directory "${APP_DIR}" >/dev/null 2>&1 || true
 
+write_nginx_api_key_snippet() {
+  mkdir -p /etc/nginx/snippets
+  python3 - <<'PY'
+import json
+import re
+from pathlib import Path
+
+env_path = Path("/etc/quentrader/quentrader.env")
+snippet_path = Path("/etc/nginx/snippets/quentrader-api-key.conf")
+text = env_path.read_text(encoding="utf-8")
+match = re.search(r"^AUTH_API_KEYS_JSON=(.*)$", text, re.M)
+if not match:
+    raise SystemExit("AUTH_API_KEYS_JSON missing")
+raw = match.group(1).strip()
+if raw.startswith("'") and raw.endswith("'"):
+    raw = raw[1:-1]
+if raw.startswith('"') and raw.endswith('"'):
+    raw = raw[1:-1]
+items = json.loads(raw)
+key = ""
+for item in items:
+    if isinstance(item, dict):
+        key = str(item.get("api_key") or item.get("token") or "").strip()
+        if key:
+            break
+if not key:
+    raise SystemExit("AUTH_API_KEYS_JSON must include an api_key entry")
+snippet_path.write_text(f'proxy_set_header X-API-Key "{key}";\n', encoding="utf-8")
+PY
+  chmod 0600 /etc/nginx/snippets/quentrader-api-key.conf
+}
+
 for legacy_service in ai-trading-backend.service ai-trading-healthcheck.service; do
   if systemctl list-unit-files "${legacy_service}" >/dev/null 2>&1; then
     systemctl stop "${legacy_service}" >/dev/null 2>&1 || true
@@ -48,6 +80,7 @@ else
 fi
 
 chown -R "${APP_USER}:${APP_USER}" "${APP_DIR}" /var/log/quentrader
+write_nginx_api_key_snippet
 "${APP_DIR}/.venv/bin/pip" install --upgrade pip wheel
 "${APP_DIR}/.venv/bin/pip" install -r "${APP_DIR}/backend/requirements.txt" gunicorn
 
