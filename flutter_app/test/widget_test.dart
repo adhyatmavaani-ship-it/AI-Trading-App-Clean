@@ -779,10 +779,10 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.byType(TradingApp), findsOneWidget);
-    expect(find.text('AI Trade Center'), findsOneWidget);
-    expect(find.text('AI Trade'), findsWidgets);
-    expect(find.text('BEST AI TRADE NOW'), findsOneWidget);
-    expect(find.text('Portfolio'), findsWidgets);
+    expect(find.text('QUENTRADER'), findsWidgets);
+    expect(find.text('Smarter Trades.'), findsOneWidget);
+    expect(find.text('Start Trading Free'), findsWidgets);
+    expect(find.text('Portfolio Performance'), findsOneWidget);
   });
 
   testWidgets('authenticated users enter the app shell', (
@@ -803,10 +803,10 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.byType(TradingApp), findsOneWidget);
-    expect(find.text('AI Trade Center'), findsOneWidget);
-    expect(find.text('AI Trade'), findsWidgets);
-    expect(find.text('BEST AI TRADE NOW'), findsOneWidget);
-    expect(find.text('Portfolio'), findsWidgets);
+    expect(find.text('QUENTRADER'), findsWidgets);
+    expect(find.text('Smarter Trades.'), findsOneWidget);
+    expect(find.text('Start Trading Free'), findsWidgets);
+    expect(find.text('Portfolio Performance'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();

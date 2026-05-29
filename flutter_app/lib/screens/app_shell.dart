@@ -10,11 +10,11 @@ import '../widgets/live_pulse_indicator.dart';
 import 'ai_copilot_screen.dart';
 import 'ai_trade_center_screen.dart';
 import 'market_screen.dart';
-import 'onboarding_screen.dart';
 import 'portfolio_screen.dart';
+import 'quentrader_home_screen.dart';
 import 'trade_screen.dart';
 
-enum AppDestination { tradeCenter, market, chart, portfolio, copilot }
+enum AppDestination { home, tradeCenter, market, chart, portfolio, copilot }
 
 class AppShell extends ConsumerStatefulWidget {
   const AppShell({super.key});
@@ -24,14 +24,10 @@ class AppShell extends ConsumerStatefulWidget {
 }
 
 class _AppShellState extends ConsumerState<AppShell> {
-  AppDestination _destination = AppDestination.tradeCenter;
+  AppDestination _destination = AppDestination.home;
 
   @override
   Widget build(BuildContext context) {
-    final onboardingCompleted = ref.watch(onboardingCompletedProvider);
-    if (!onboardingCompleted) {
-      return const OnboardingScreen();
-    }
     return LayoutBuilder(
       builder: (context, constraints) {
         final desktop = constraints.maxWidth >= 1080;
@@ -61,23 +57,28 @@ class _AppShellState extends ConsumerState<AppShell> {
               child: SafeArea(
                 child: Row(
                   children: <Widget>[
-                    _DesktopSidebar(
-                      current: _destination,
-                      onSelect: _selectDestination,
-                    ),
+                    if (_destination != AppDestination.home)
+                      _DesktopSidebar(
+                        current: _destination,
+                        onSelect: _selectDestination,
+                      ),
                     Expanded(
                       child: Padding(
-                        padding: const EdgeInsets.fromLTRB(10, 18, 18, 18),
-                        child: Column(
-                          children: <Widget>[
-                            _ShellHeader(
-                              title: _titleFor(_destination),
-                              subtitle: _subtitleFor(_destination),
-                            ),
-                            const SizedBox(height: 18),
-                            Expanded(child: content),
-                          ],
-                        ),
+                        padding: _destination == AppDestination.home
+                            ? EdgeInsets.zero
+                            : const EdgeInsets.fromLTRB(10, 18, 18, 18),
+                        child: _destination == AppDestination.home
+                            ? content
+                            : Column(
+                                children: <Widget>[
+                                  _ShellHeader(
+                                    title: _titleFor(_destination),
+                                    subtitle: _subtitleFor(_destination),
+                                  ),
+                                  const SizedBox(height: 18),
+                                  Expanded(child: content),
+                                ],
+                              ),
                       ),
                     ),
                   ],
@@ -124,6 +125,11 @@ class _AppShellState extends ConsumerState<AppShell> {
                 _selectDestination(AppDestination.values[index]),
             destinations: const <NavigationDestination>[
               NavigationDestination(
+                icon: Icon(Icons.home_outlined),
+                selectedIcon: Icon(Icons.home_rounded),
+                label: 'Home',
+              ),
+              NavigationDestination(
                 icon: Icon(Icons.auto_awesome_outlined),
                 selectedIcon: Icon(Icons.auto_awesome),
                 label: 'AI Trade',
@@ -157,6 +163,13 @@ class _AppShellState extends ConsumerState<AppShell> {
 
   Widget _buildScreen() {
     switch (_destination) {
+      case AppDestination.home:
+        return QuentraderHomeScreen(
+          onOpenDashboard: () => _selectDestination(AppDestination.tradeCenter),
+          onOpenSignals: () => _selectDestination(AppDestination.tradeCenter),
+          onOpenBrokers: () => _selectDestination(AppDestination.copilot),
+          onOpenPricing: () => _selectDestination(AppDestination.portfolio),
+        );
       case AppDestination.tradeCenter:
         return AiTradeCenterScreen(
           onOpenChart: () => _selectDestination(AppDestination.chart),
@@ -192,6 +205,7 @@ class _AppShellState extends ConsumerState<AppShell> {
 
   String _titleFor(AppDestination destination) {
     return switch (destination) {
+      AppDestination.home => 'Quentrader',
       AppDestination.tradeCenter => 'AI Trade Center',
       AppDestination.market => 'Market',
       AppDestination.chart => 'Advanced Chart',
@@ -202,6 +216,8 @@ class _AppShellState extends ConsumerState<AppShell> {
 
   String _subtitleFor(AppDestination destination) {
     return switch (destination) {
+      AppDestination.home =>
+        'AI-powered trading platform with live signals and risk-first execution.',
       AppDestination.tradeCenter =>
         'Best verified setup, entry plan, risk, and AI reasoning in one view.',
       AppDestination.market =>
@@ -228,6 +244,7 @@ class _DesktopSidebar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final items = <({AppDestination value, IconData icon, String label})>[
+      (value: AppDestination.home, icon: Icons.home_rounded, label: 'Home'),
       (
         value: AppDestination.tradeCenter,
         icon: Icons.auto_awesome,
