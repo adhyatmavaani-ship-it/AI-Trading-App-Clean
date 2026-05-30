@@ -15,10 +15,12 @@ import '../features/auth/providers/auth_provider.dart';
 import '../features/market/providers/market_providers.dart';
 import '../features/pnl/providers/pnl_providers.dart';
 import '../features/retention/providers/retention_providers.dart';
+import '../features/realtime/providers/realtime_providers.dart';
 import '../features/signals/providers/signal_providers.dart';
 import '../features/trade/providers/trade_providers.dart';
 import '../models/active_trade.dart';
 import '../models/market_chart.dart';
+import '../models/realtime_event.dart';
 import '../models/signal.dart';
 import '../models/trade_execution.dart';
 import '../providers/app_providers.dart';
@@ -98,6 +100,9 @@ class _TradeScreenState extends ConsumerState<TradeScreen> {
     final marketUniverseAsync = ref.watch(marketUniverseProvider);
     final activeTradesAsync = ref.watch(activeTradesProvider(userId));
     final signalFeed = ref.watch(signalFeedProvider);
+    final chartOrderActions = ref.watch(
+      chartOrderActionFeedProvider(selectedSymbol),
+    );
     final localMemory = ref.watch(localAiMemoryProvider);
     final signalItems = signalFeed.items;
     final symbolOptions = _buildSymbolOptions(
@@ -236,6 +241,10 @@ class _TradeScreenState extends ConsumerState<TradeScreen> {
                 _SymbolStrip(
                   symbols: symbolOptions,
                   selectedSymbol: selectedSymbol,
+                  pulsingSymbols: chartOrderActions.valueOrNull
+                          ?.map((action) => action.symbol.toUpperCase())
+                          .toSet() ??
+                      const <String>{},
                   onSelect: (symbol) {
                     ref.read(selectedMarketSymbolProvider.notifier).state =
                         symbol;
@@ -265,6 +274,8 @@ class _TradeScreenState extends ConsumerState<TradeScreen> {
                 marketChartAsync.when(
                   data: (chart) => ProTradingChart(
                     chart: chart,
+                    chartOrderActions: chartOrderActions.valueOrNull ??
+                        const <ChartOrderActionModel>[],
                     activeTrades: activeTradesAsync.valueOrNull ??
                         const <ActiveTradeModel>[],
                     fullscreenActionBar: buildStickyExecutionBar(),
@@ -2608,11 +2619,13 @@ class _SymbolStrip extends StatelessWidget {
   const _SymbolStrip({
     required this.symbols,
     required this.selectedSymbol,
+    required this.pulsingSymbols,
     required this.onSelect,
   });
 
   final List<String> symbols;
   final String selectedSymbol;
+  final Set<String> pulsingSymbols;
   final ValueChanged<String> onSelect;
 
   @override
@@ -2624,15 +2637,100 @@ class _SymbolStrip extends StatelessWidget {
             .map(
               (symbol) => Padding(
                 padding: const EdgeInsets.only(right: 10),
-                child: ChoiceChip(
-                  label: Text(symbol),
+                child: _HolographicSymbolChip(
+                  symbol: symbol,
                   selected: symbol == selectedSymbol,
-                  onSelected: (_) => onSelect(symbol),
+                  pulsing: pulsingSymbols.contains(symbol.toUpperCase()),
+                  onSelected: () => onSelect(symbol),
                 ),
               ),
             )
             .toList(),
       ),
+    );
+  }
+}
+
+class _HolographicSymbolChip extends StatefulWidget {
+  const _HolographicSymbolChip({
+    required this.symbol,
+    required this.selected,
+    required this.pulsing,
+    required this.onSelected,
+  });
+
+  final String symbol;
+  final bool selected;
+  final bool pulsing;
+  final VoidCallback onSelected;
+
+  @override
+  State<_HolographicSymbolChip> createState() => _HolographicSymbolChipState();
+}
+
+class _HolographicSymbolChipState extends State<_HolographicSymbolChip>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1100),
+    );
+    if (widget.pulsing) {
+      _controller.repeat(reverse: true);
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _HolographicSymbolChip oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.pulsing && !_controller.isAnimating) {
+      _controller.repeat(reverse: true);
+    } else if (!widget.pulsing && _controller.isAnimating) {
+      _controller.stop();
+      _controller.value = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        final glow = widget.pulsing ? 0.18 + _controller.value * 0.34 : 0.0;
+        return DecoratedBox(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(999),
+            boxShadow: widget.pulsing
+                ? <BoxShadow>[
+                    BoxShadow(
+                      color: TradingPalette.electricBlue.withOpacity(glow),
+                      blurRadius: 18 + _controller.value * 10,
+                    ),
+                  ]
+                : const <BoxShadow>[],
+          ),
+          child: ChoiceChip(
+            label: Text(widget.symbol),
+            selected: widget.selected,
+            onSelected: (_) => widget.onSelected(),
+            side: BorderSide(
+              color: widget.pulsing
+                  ? TradingPalette.electricBlue.withOpacity(0.72)
+                  : TradingPalette.panelBorder,
+            ),
+          ),
+        );
+      },
     );
   }
 }

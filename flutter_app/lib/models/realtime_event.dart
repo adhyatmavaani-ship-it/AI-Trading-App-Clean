@@ -1,5 +1,136 @@
 import 'market_chart.dart';
 
+class ChartOrderActionModel {
+  const ChartOrderActionModel({
+    required this.timestamp,
+    required this.symbol,
+    required this.actionId,
+    required this.type,
+    required this.status,
+    required this.isAiTrailing,
+    required this.liveBrokerSubmission,
+    this.chartOrderId,
+    this.price,
+    this.quantity,
+    this.mode = 'mock',
+    this.reason = '',
+  });
+
+  final DateTime timestamp;
+  final String symbol;
+  final String actionId;
+  final String? chartOrderId;
+  final String type;
+  final String status;
+  final double? price;
+  final double? quantity;
+  final bool isAiTrailing;
+  final bool liveBrokerSubmission;
+  final String mode;
+  final String reason;
+
+  bool matchesSymbol(String symbol) =>
+      _normalizeSymbol(this.symbol) == _normalizeSymbol(symbol);
+
+  bool get isBuy => type.toUpperCase().contains('BUY');
+  bool get isSell => type.toUpperCase().contains('SELL');
+  bool get isMockFilled => status.toUpperCase() == 'MOCK_FILLED';
+
+  factory ChartOrderActionModel.fromJson(Map<String, dynamic> json) {
+    final data = Map<String, dynamic>.from(
+      json['data'] as Map? ?? const <String, dynamic>{},
+    );
+    return ChartOrderActionModel(
+      timestamp: DateTime.tryParse(json['timestamp'] as String? ?? '') ??
+          DateTime.fromMillisecondsSinceEpoch(0),
+      symbol: data['symbol'] as String? ?? '',
+      actionId: data['action_id'] as String? ?? '',
+      chartOrderId: data['chart_order_id'] as String?,
+      type: data['type'] as String? ?? '',
+      status: data['status'] as String? ?? '',
+      price: (data['price'] as num?)?.toDouble(),
+      quantity: (data['quantity'] as num?)?.toDouble(),
+      isAiTrailing: data['is_ai_trailing'] as bool? ?? false,
+      liveBrokerSubmission: data['live_broker_submission'] as bool? ?? false,
+      mode: data['mode'] as String? ?? 'mock',
+      reason: data['reason'] as String? ?? '',
+    );
+  }
+}
+
+String _normalizeSymbol(String symbol) =>
+    symbol.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
+
+class StrategyPerformanceUpdateModel {
+  const StrategyPerformanceUpdateModel({
+    required this.timestamp,
+    required this.userId,
+    required this.advisoryOnly,
+    required this.simulationOnly,
+    required this.liveBrokerSubmission,
+    required this.rollingWindow,
+    required this.actionCount,
+    required this.acceptedCount,
+    required this.rejectedCount,
+    required this.winLossRatio,
+    required this.lossRatio,
+    required this.sharpeEstimate,
+    required this.timeDecayRisk,
+    required this.slippagePressure,
+    required this.aiTrailingRatio,
+    required this.symbolBreakdown,
+    required this.stressSimulation,
+  });
+
+  final DateTime timestamp;
+  final String userId;
+  final bool advisoryOnly;
+  final bool simulationOnly;
+  final bool liveBrokerSubmission;
+  final int rollingWindow;
+  final int actionCount;
+  final int acceptedCount;
+  final int rejectedCount;
+  final double winLossRatio;
+  final double lossRatio;
+  final double sharpeEstimate;
+  final double timeDecayRisk;
+  final double slippagePressure;
+  final double aiTrailingRatio;
+  final Map<String, dynamic> symbolBreakdown;
+  final Map<String, dynamic> stressSimulation;
+
+  factory StrategyPerformanceUpdateModel.fromJson(Map<String, dynamic> json) {
+    final data = Map<String, dynamic>.from(
+      json['data'] as Map? ?? const <String, dynamic>{},
+    );
+    return StrategyPerformanceUpdateModel(
+      timestamp: DateTime.tryParse(json['timestamp'] as String? ?? '') ??
+          DateTime.fromMillisecondsSinceEpoch(0),
+      userId: data['user_id'] as String? ?? '',
+      advisoryOnly: data['advisory_only'] as bool? ?? true,
+      simulationOnly: data['simulation_only'] as bool? ?? true,
+      liveBrokerSubmission: data['live_broker_submission'] as bool? ?? false,
+      rollingWindow: (data['rolling_window'] as num?)?.toInt() ?? 0,
+      actionCount: (data['action_count'] as num?)?.toInt() ?? 0,
+      acceptedCount: (data['accepted_count'] as num?)?.toInt() ?? 0,
+      rejectedCount: (data['rejected_count'] as num?)?.toInt() ?? 0,
+      winLossRatio: (data['win_loss_ratio'] as num?)?.toDouble() ?? 0,
+      lossRatio: (data['loss_ratio'] as num?)?.toDouble() ?? 0,
+      sharpeEstimate: (data['sharpe_estimate'] as num?)?.toDouble() ?? 0,
+      timeDecayRisk: (data['time_decay_risk'] as num?)?.toDouble() ?? 0,
+      slippagePressure: (data['slippage_pressure'] as num?)?.toDouble() ?? 0,
+      aiTrailingRatio: (data['ai_trailing_ratio'] as num?)?.toDouble() ?? 0,
+      symbolBreakdown: Map<String, dynamic>.from(
+        data['symbol_breakdown'] as Map? ?? const <String, dynamic>{},
+      ),
+      stressSimulation: Map<String, dynamic>.from(
+        data['stress_simulation'] as Map? ?? const <String, dynamic>{},
+      ),
+    );
+  }
+}
+
 class RealtimeTradeUpdateModel {
   const RealtimeTradeUpdateModel({
     required this.timestamp,

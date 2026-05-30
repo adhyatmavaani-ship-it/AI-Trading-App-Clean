@@ -2,6 +2,7 @@ import 'dart:async';
 
 import '../core/api_client.dart';
 import '../core/constants.dart';
+import '../core/trading_updates_socket_service.dart';
 import '../core/websocket_service.dart';
 import '../models/active_trade.dart';
 import '../models/activity.dart';
@@ -27,11 +28,15 @@ class TradingRepository {
   TradingRepository({
     required ApiClient apiClient,
     required WebSocketService webSocketService,
+    TradingUpdatesSocketService? tradingUpdatesSocketService,
   })  : _apiClient = apiClient,
-        _webSocketService = webSocketService;
+        _webSocketService = webSocketService,
+        _tradingUpdatesSocketService =
+            tradingUpdatesSocketService ?? TradingUpdatesSocketService();
 
   final ApiClient _apiClient;
   final WebSocketService _webSocketService;
+  final TradingUpdatesSocketService _tradingUpdatesSocketService;
 
   Future<List<SignalModel>> fetchSignals({int limit = 25}) {
     return _apiClient.getSignals(limit: limit);
@@ -382,6 +387,20 @@ class TradingRepository {
               event['type'] == 'replay_response' &&
               event['recovery'] == 'snapshot_required',
         );
+  }
+
+  Stream<ChartOrderActionModel> watchChartOrderActions({String? symbol}) {
+    final normalized = symbol?.trim();
+    return _tradingUpdatesSocketService.connectChartOrderActions().where(
+          (event) =>
+              normalized == null ||
+              normalized.isEmpty ||
+              event.matchesSymbol(normalized),
+        );
+  }
+
+  Stream<StrategyPerformanceUpdateModel> watchStrategyPerformanceUpdates() {
+    return _tradingUpdatesSocketService.connectStrategyPerformanceUpdates();
   }
 
   Stream<List<ActivityItemModel>> watchActivityHistory(

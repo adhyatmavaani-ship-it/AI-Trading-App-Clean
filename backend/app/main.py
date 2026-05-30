@@ -11,7 +11,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 import uvicorn
 
-from app.api.routes import admin, backtest_jobs, backtests, frontend, health, meta, monitoring, public, realtime, risk_coach, simulation, trading
+from app.api.routes import (
+    admin,
+    advanced_trading,
+    backtest_jobs,
+    backtests,
+    frontend,
+    health,
+    meta,
+    monitoring,
+    public,
+    realtime,
+    risk_coach,
+    simulation,
+    trading,
+)
 from app.core.config import get_settings
 from app.core.exceptions import TradingSystemException
 from app.core.logging import configure_logging
@@ -19,6 +33,9 @@ from app.middleware.auth import AuthMiddleware, get_api_key
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.request_context import RequestContextMiddleware
 from app.services.container import get_container
+from app.services.advanced_trading_state import get_advanced_trading_state_repository
+from app.services.chart_execution_bridge import ChartExecutionBridgeWorker
+from app.services.ml_signal_pipeline import MlSignalPipelineWorker
 from app.services.signal_websocket_manager import get_signal_websocket_manager
 from app.api.routes.risk_coach import get_risk_coach_market_service
 
@@ -42,6 +59,8 @@ logger.info(
 
 
 _shutdown_event = asyncio.Event()
+_ml_signal_pipeline_worker: MlSignalPipelineWorker | None = None
+_chart_execution_bridge_worker: ChartExecutionBridgeWorker | None = None
 
 
 def get_bind_port() -> int:
@@ -121,7 +140,20 @@ async def lifespan(app: FastAPI):
             slow_threshold=slow_threshold,
             timeout_seconds=startup_timeout_seconds,
         ),
+        _run_startup_async_step(
+            name="broker_state_sync_worker",
+            awaitable=container.broker_state_sync_worker.start(),
+            slow_threshold=slow_threshold,
+            timeout_seconds=startup_timeout_seconds,
+        ),
+        _run_startup_async_step(
+            name="event_dispatcher_worker",
+            awaitable=container.event_dispatcher_worker.start(),
+            slow_threshold=slow_threshold,
+            timeout_seconds=startup_timeout_seconds,
+        ),
     )
+    await _start_advisory_background_workers()
     logger.info(
         "Trading system startup complete",
         extra={
@@ -134,14 +166,51 @@ async def lifespan(app: FastAPI):
     )
     yield
     logger.info("Trading system shutdown - cleaning up resources...")
+    await _stop_advisory_background_workers()
     await container.strategy_optimizer.stop()
     await container.active_trade_monitor.stop()
     await container.broker_reconciliation_worker.stop()
+    await container.broker_state_sync_worker.stop()
+    await container.event_dispatcher_worker.stop()
     await container.backtest_job_service.stop()
     await get_signal_websocket_manager().stop()
     await get_risk_coach_market_service().stop()
     await asyncio.sleep(0.1)
     logger.info("Shutdown complete")
+
+
+async def _start_advisory_background_workers() -> None:
+    global _ml_signal_pipeline_worker, _chart_execution_bridge_worker
+    repository = get_advanced_trading_state_repository()
+    tasks = []
+    if settings.ml_signal_pipeline_enabled:
+        _ml_signal_pipeline_worker = MlSignalPipelineWorker(
+            repository=repository,
+            interval_seconds=settings.ml_signal_pipeline_interval_seconds,
+        )
+        tasks.append(_ml_signal_pipeline_worker.start())
+    if settings.chart_execution_bridge_enabled:
+        _chart_execution_bridge_worker = ChartExecutionBridgeWorker(
+            repository=repository,
+            mode=settings.chart_execution_bridge_mode,
+            interval_seconds=settings.chart_execution_bridge_interval_seconds,
+        )
+        tasks.append(_chart_execution_bridge_worker.start())
+    if tasks:
+        await asyncio.gather(*tasks)
+
+
+async def _stop_advisory_background_workers() -> None:
+    global _ml_signal_pipeline_worker, _chart_execution_bridge_worker
+    tasks = []
+    if _ml_signal_pipeline_worker is not None:
+        tasks.append(_ml_signal_pipeline_worker.stop())
+    if _chart_execution_bridge_worker is not None:
+        tasks.append(_chart_execution_bridge_worker.stop())
+    if tasks:
+        await asyncio.gather(*tasks)
+    _ml_signal_pipeline_worker = None
+    _chart_execution_bridge_worker = None
 
 
 async def _run_startup_sync_step(*, name: str, fn, slow_threshold: float):
@@ -287,6 +356,8 @@ app.include_router(health.router, prefix="/v1")
 app.include_router(frontend.router, prefix="/v1", dependencies=[Depends(get_api_key)])
 app.include_router(public.router, prefix="/v1")
 app.include_router(trading.router, prefix="/v1", dependencies=[Depends(get_api_key)])
+app.include_router(advanced_trading.router, prefix="/v1", dependencies=[Depends(get_api_key)])
+app.include_router(advanced_trading.router, prefix="/api/v1", dependencies=[Depends(get_api_key)])
 app.include_router(meta.router, prefix="/v1", dependencies=[Depends(get_api_key)])
 app.include_router(backtests.router, prefix="/v1", dependencies=[Depends(get_api_key)])
 app.include_router(backtest_jobs.router, prefix="/v1", dependencies=[Depends(get_api_key)])

@@ -16,11 +16,13 @@ from app.services.automated_journal import AutomatedJournalService
 from app.services.backtest_jobs import BacktestJobService
 from app.services.backtesting import BacktestingEngine
 from app.services.broker_reconciliation import BrokerReconciliationEngine
+from app.services.broker_state_sync import BrokerStateSyncService
 from app.services.drawdown_protection import DrawdownProtectionService
 from app.services.dual_track_engine import DualTrackCoordinator
 from app.services.evolution_lab import EvolutionLab
 from app.services.execution_engine import ExecutionEngine
 from app.services.execution_circuit_breaker import ExecutionCircuitBreaker
+from app.services.event_dispatcher import EventDispatcher
 from app.services.execution_idempotency import ExecutionIdempotencyService
 from app.services.execution_queue_manager import ExecutionQueueManager
 from app.services.feature_pipeline import FeaturePipeline
@@ -74,6 +76,8 @@ from app.services.whale_tracker import WhaleTracker
 from app.workers.strategy_optimizer_worker import StrategyOptimizerWorker
 from app.workers.trade_monitor_worker import ActiveTradeMonitorWorker
 from app.workers.broker_reconciliation_worker import BrokerReconciliationWorker
+from app.workers.broker_state_sync_worker import BrokerStateSyncWorker
+from app.workers.event_dispatcher_worker import EventDispatcherWorker
 
 
 class ServiceContainer:
@@ -280,6 +284,30 @@ class ServiceContainer:
             settings=settings,
             reconciliation_engine=broker_reconciliation_engine,
         )
+        broker_state_sync_service = BrokerStateSyncService(
+            settings=settings,
+            execution_engine=execution_engine,
+            cache=cache,
+            store=pro_store,
+        )
+        broker_state_sync_worker = BrokerStateSyncWorker(
+            settings=settings,
+            sync_service=broker_state_sync_service,
+        )
+        event_dispatcher = EventDispatcher(
+            store=pro_store,
+            cache=cache,
+            batch_size=int(settings.execution_event_dispatcher_batch_size),
+            max_attempts=int(settings.execution_event_dispatcher_max_attempts),
+            stall_seconds=float(settings.execution_event_dispatcher_stall_seconds),
+            backlog_warning_threshold=int(settings.execution_event_outbox_warning_threshold),
+            backlog_critical_threshold=int(settings.execution_event_outbox_critical_threshold),
+        )
+        event_dispatcher_worker = EventDispatcherWorker(
+            dispatcher=event_dispatcher,
+            interval_seconds=float(settings.execution_event_dispatcher_interval_seconds),
+            enabled=bool(settings.execution_event_dispatcher_enabled),
+        )
         self.trading_orchestrator.active_trade_monitor = active_trade_monitor
         self.trading_orchestrator.reconcile_startup_state()
         broker_reconciliation_engine.startup_recovery_report()
@@ -354,6 +382,10 @@ class ServiceContainer:
         self.strategy_optimizer = strategy_optimizer
         self.broker_reconciliation_engine = broker_reconciliation_engine
         self.broker_reconciliation_worker = broker_reconciliation_worker
+        self.broker_state_sync_service = broker_state_sync_service
+        self.broker_state_sync_worker = broker_state_sync_worker
+        self.event_dispatcher = event_dispatcher
+        self.event_dispatcher_worker = event_dispatcher_worker
         self.simulation_tester = SimulationTester(
             settings=settings,
             orchestrator=self.trading_orchestrator,

@@ -8,6 +8,7 @@ import '../core/chart_render_scheduler.dart';
 import '../core/trading_palette.dart';
 import '../models/active_trade.dart';
 import '../models/market_chart.dart';
+import '../models/realtime_event.dart';
 import 'live_energy_widgets.dart';
 import 'status_badge.dart';
 
@@ -19,6 +20,7 @@ class ProTradingChart extends StatefulWidget {
     this.fullscreenActionBar,
     this.height = 400,
     this.activeTrades = const <ActiveTradeModel>[],
+    this.chartOrderActions = const <ChartOrderActionModel>[],
   });
 
   final MarketChartModel chart;
@@ -26,6 +28,7 @@ class ProTradingChart extends StatefulWidget {
   final Widget? fullscreenActionBar;
   final double height;
   final List<ActiveTradeModel> activeTrades;
+  final List<ChartOrderActionModel> chartOrderActions;
 
   @override
   State<ProTradingChart> createState() => _ProTradingChartState();
@@ -100,6 +103,7 @@ class _ProTradingChartState extends State<ProTradingChart>
               final geometry = _ProChartGeometry(
                 chart: chart,
                 activeTrades: widget.activeTrades,
+                chartOrderActions: widget.chartOrderActions,
                 size: constraints.biggest,
                 zoomX: _zoomX,
                 windowPosition: _windowPosition,
@@ -162,6 +166,8 @@ class _ProTradingChartState extends State<ProTradingChart>
                                     painter: _ProTradingChartPainter(
                                       chart: chart,
                                       activeTrades: widget.activeTrades,
+                                      chartOrderActions:
+                                          widget.chartOrderActions,
                                       geometry: geometry,
                                       pulse: _chartEnergyController.value,
                                       replayMode: _replayMode,
@@ -329,6 +335,7 @@ class _ProTradingChartState extends State<ProTradingChart>
                             child: ProTradingChart(
                               chart: widget.chart,
                               activeTrades: widget.activeTrades,
+                              chartOrderActions: widget.chartOrderActions,
                               onAssistantModeChanged:
                                   widget.onAssistantModeChanged,
                               fullscreenActionBar: widget.fullscreenActionBar,
@@ -827,6 +834,7 @@ class _ProTradingChartPainter extends CustomPainter {
   const _ProTradingChartPainter({
     required this.chart,
     required this.activeTrades,
+    required this.chartOrderActions,
     required this.geometry,
     required this.pulse,
     required this.replayMode,
@@ -834,6 +842,7 @@ class _ProTradingChartPainter extends CustomPainter {
 
   final MarketChartModel chart;
   final List<ActiveTradeModel> activeTrades;
+  final List<ChartOrderActionModel> chartOrderActions;
   final _ProChartGeometry geometry;
   final double pulse;
   final bool replayMode;
@@ -866,6 +875,7 @@ class _ProTradingChartPainter extends CustomPainter {
     _paintConfidenceBands(canvas);
     _paintMarkers(canvas);
     _paintExecutionGuide(canvas);
+    _paintChartOrderActions(canvas);
     _paintActiveTrades(canvas);
     _paintAxisLabels(canvas, size);
   }
@@ -1308,6 +1318,45 @@ class _ProTradingChartPainter extends CustomPainter {
     }
   }
 
+  void _paintChartOrderActions(Canvas canvas) {
+    for (final action in chartOrderActions
+        .where((item) =>
+            item.matchesSymbol(chart.symbol) &&
+            item.price != null &&
+            item.price! > 0)
+        .take(8)) {
+      final bullish = action.isBuy || !action.isSell;
+      final baseColor =
+          bullish ? TradingPalette.neonGreen : TradingPalette.neonRed;
+      final color = action.isAiTrailing ? TradingPalette.violet : baseColor;
+      final y = geometry.yFor(action.price!);
+      if (y.isNaN || y.isInfinite) {
+        continue;
+      }
+      final glowWidth = 5.0 + pulse * 5.0;
+      canvas.drawLine(
+        Offset(0, y),
+        Offset(geometry.chartWidth, y),
+        Paint()
+          ..color = color.withOpacity(0.18 + pulse * 0.16)
+          ..strokeWidth = glowWidth
+          ..strokeCap = StrokeCap.round
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+      );
+      canvas.drawLine(
+        Offset(0, y),
+        Offset(geometry.chartWidth, y),
+        Paint()
+          ..color = color.withOpacity(0.86)
+          ..strokeWidth = action.isAiTrailing ? 1.8 : 1.3
+          ..strokeCap = StrokeCap.round,
+      );
+      final label =
+          action.isAiTrailing ? 'AI TRAIL' : action.type.replaceAll('_', ' ');
+      _drawPriceTag(canvas, label, y, color);
+    }
+  }
+
   void _drawPriceTag(Canvas canvas, String label, double y, Color color) {
     if (y.isNaN || y.isInfinite) {
       return;
@@ -1404,6 +1453,7 @@ class _ProTradingChartPainter extends CustomPainter {
   bool shouldRepaint(covariant _ProTradingChartPainter oldDelegate) {
     return oldDelegate.chart != chart ||
         oldDelegate.activeTrades != activeTrades ||
+        oldDelegate.chartOrderActions != chartOrderActions ||
         oldDelegate.geometry != geometry ||
         oldDelegate.pulse != pulse ||
         oldDelegate.replayMode != replayMode;
@@ -1447,6 +1497,7 @@ class _ProChartGeometry {
   _ProChartGeometry({
     required MarketChartModel chart,
     required List<ActiveTradeModel> activeTrades,
+    required List<ChartOrderActionModel> chartOrderActions,
     required Size size,
     required double zoomX,
     required double windowPosition,
@@ -1498,6 +1549,11 @@ class _ProChartGeometry {
         trade.stopLoss,
         trade.takeProfit
       ],
+      for (final action in chartOrderActions.where((item) =>
+          item.matchesSymbol(chart.symbol) &&
+          item.price != null &&
+          item.price! > 0))
+        action.price!,
     ].where((value) => value > 0).toList();
     minPrice = levels.isEmpty ? 0 : levels.reduce(math.min);
     maxPrice = levels.isEmpty ? 1 : levels.reduce(math.max);

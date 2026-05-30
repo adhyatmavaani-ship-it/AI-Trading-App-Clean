@@ -1,6 +1,7 @@
 import 'package:ai_trading_app/core/trading_palette.dart';
 import 'package:ai_trading_app/models/activity.dart';
 import 'package:ai_trading_app/models/market_chart.dart';
+import 'package:ai_trading_app/models/realtime_event.dart';
 import 'package:ai_trading_app/widgets/pro_trading_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -121,6 +122,32 @@ void main() {
                 height: 1200,
                 child: ProTradingChart(
                   chart: chart,
+                  chartOrderActions: <ChartOrderActionModel>[
+                    ChartOrderActionModel(
+                      timestamp: DateTime.utc(2026, 5, 30, 12),
+                      symbol: 'BTCUSDT',
+                      actionId: 'action-1',
+                      chartOrderId: 'order-1',
+                      type: 'LIMIT_BUY',
+                      status: 'MOCK_FILLED',
+                      price: 100160,
+                      quantity: 0.01,
+                      isAiTrailing: false,
+                      liveBrokerSubmission: false,
+                    ),
+                    ChartOrderActionModel(
+                      timestamp: DateTime.utc(2026, 5, 30, 12, 1),
+                      symbol: 'BTCUSDT',
+                      actionId: 'action-2',
+                      chartOrderId: 'order-2',
+                      type: 'STOP_LOSS_SELL',
+                      status: 'MOCK_UPDATED',
+                      price: 99950,
+                      quantity: 0.01,
+                      isAiTrailing: true,
+                      liveBrokerSubmission: false,
+                    ),
+                  ],
                   onAssistantModeChanged: (_) {},
                 ),
               ),

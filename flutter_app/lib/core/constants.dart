@@ -13,24 +13,34 @@ class AppConstants {
     'MARKET_WS_URL',
     defaultValue: '',
   );
+  static const String _configuredTradingUpdatesWebSocketUrl =
+      String.fromEnvironment(
+    'TRADING_UPDATES_WS_URL',
+    defaultValue: '',
+  );
   static const String sandboxApiBaseUrl = 'http://127.0.0.1:8000';
   static const String sandboxSignalsWebSocketUrl =
       'ws://127.0.0.1:8000/ws/signals';
   static const String sandboxMarketWebSocketUrl =
       'ws://127.0.0.1:8000/ws/market';
+  static const String sandboxTradingUpdatesWebSocketUrl =
+      'ws://127.0.0.1:8000/api/v1/ws/trading-updates';
   static const String productionApiBaseUrl = String.fromEnvironment(
     'PRODUCTION_API_BASE_URL',
     defaultValue: sandboxApiBaseUrl,
   );
-  static const String productionSignalsWebSocketUrl =
-      String.fromEnvironment(
+  static const String productionSignalsWebSocketUrl = String.fromEnvironment(
     'PRODUCTION_SIGNALS_WS_URL',
     defaultValue: sandboxSignalsWebSocketUrl,
   );
-  static const String productionMarketWebSocketUrl =
-      String.fromEnvironment(
+  static const String productionMarketWebSocketUrl = String.fromEnvironment(
     'PRODUCTION_MARKET_WS_URL',
     defaultValue: sandboxMarketWebSocketUrl,
+  );
+  static const String productionTradingUpdatesWebSocketUrl =
+      String.fromEnvironment(
+    'PRODUCTION_TRADING_UPDATES_WS_URL',
+    defaultValue: sandboxTradingUpdatesWebSocketUrl,
   );
   static const String _configuredProductionApiKey = String.fromEnvironment(
     'TRADING_API_KEY',
@@ -76,6 +86,13 @@ class AppConstants {
   static String get defaultMarketWebSocketUrl {
     final configured = _configuredMarketWebSocketUrl.trim();
     return configured.isNotEmpty ? configured : productionMarketWebSocketUrl;
+  }
+
+  static String get defaultTradingUpdatesWebSocketUrl {
+    final configured = _configuredTradingUpdatesWebSocketUrl.trim();
+    return configured.isNotEmpty
+        ? configured
+        : productionTradingUpdatesWebSocketUrl;
   }
 
   static const int maxSignalCacheSize = 100;
