@@ -118,7 +118,7 @@ class _LivePulseIndicatorState extends ConsumerState<LivePulseIndicator>
     switch (state) {
       case WsState.connecting:
         return const _WsIndicatorState(
-          label: 'CONNECTING',
+          label: 'SYNCING',
           color: TradingPalette.amber,
           animate: true,
         );
@@ -130,7 +130,7 @@ class _LivePulseIndicatorState extends ConsumerState<LivePulseIndicator>
         );
       case WsState.degraded:
         return const _WsIndicatorState(
-          label: 'RECONNECTING',
+          label: 'LIVE SYNC',
           color: TradingPalette.amber,
           animate: true,
         );
