@@ -1,0 +1,214 @@
+// QuenTrader PostgreSQL schema for advanced AI crypto trading platform.
+// This schema is intentionally persistence-only. It does not define or alter
+// any trading execution path, broker routing path, or risk-engine behavior.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum WorkspaceMode {
+  AI_MODE
+  SCOUT_MODE
+  EXECUTION_MODE
+}
+
+enum PositionSide {
+  LONG
+  SHORT
+}
+
+enum PositionStatus {
+  PENDING
+  OPEN
+  PARTIALLY_CLOSED
+  CLOSED
+  CANCELLED
+  REJECTED
+}
+
+enum ChartOrderSide {
+  BUY
+  SELL
+}
+
+enum ChartOrderStatus {
+  DRAFT
+  STAGED
+  SUBMITTED
+  CANCELLED
+  FILLED
+  EXPIRED
+}
+
+enum ApiKeyStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
+}
+
+model User {
+  id                String             @id @default(uuid()) @db.Uuid
+  email             String             @unique @db.Citext
+  username          String?            @unique @db.VarChar(64)
+  passwordHash      String?            @map("password_hash") @db.Text
+  displayName       String?            @map("display_name") @db.VarChar(120)
+  role              String             @default("trader") @db.VarChar(40)
+  isActive          Boolean            @default(true) @map("is_active")
+  emailVerifiedAt   DateTime?          @map("email_verified_at") @db.Timestamptz(6)
+  lastLoginAt       DateTime?          @map("last_login_at") @db.Timestamptz(6)
+  createdAt         DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt         DateTime?          @map("deleted_at") @db.Timestamptz(6)
+
+  apiKeys           UserApiKey[]
+  workspaceProfiles WorkspaceProfile[]
+  activePositions   ActivePosition[]
+  chartOrders       ChartOrder[]
+
+  @@index([isActive])
+  @@index([createdAt])
+  @@map("users")
+}
+
+model UserApiKey {
+  id                    String       @id @default(uuid()) @db.Uuid
+  userId                String       @map("user_id") @db.Uuid
+  label                 String       @db.VarChar(120)
+  keyHash               String       @unique @map("key_hash") @db.VarChar(128)
+  encryptedKey          String       @map("encrypted_key") @db.Text
+  encryptionIv          String       @map("encryption_iv") @db.VarChar(64)
+  encryptionTag         String       @map("encryption_tag") @db.VarChar(64)
+  keyPreview            String?      @map("key_preview") @db.VarChar(24)
+  scopes                Json         @default("[]")
+  status                ApiKeyStatus @default(ACTIVE)
+  lastUsedAt            DateTime?    @map("last_used_at") @db.Timestamptz(6)
+  expiresAt             DateTime?    @map("expires_at") @db.Timestamptz(6)
+  revokedAt             DateTime?    @map("revoked_at") @db.Timestamptz(6)
+  createdAt             DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user                  User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([lastUsedAt])
+  @@map("user_api_keys")
+}
+
+model WorkspaceProfile {
+  id                 String        @id @default(uuid()) @db.Uuid
+  userId             String        @map("user_id") @db.Uuid
+  name               String        @db.VarChar(120)
+  mode               WorkspaceMode @default(SCOUT_MODE)
+  isDefault          Boolean       @default(false) @map("is_default")
+  layoutConfig       Json          @default("{}") @map("layout_config")
+  chartConfig        Json          @default("{}") @map("chart_config")
+  watchlistSymbols   String[]      @default([]) @map("watchlist_symbols")
+  pinnedWidgets      String[]      @default([]) @map("pinned_widgets")
+  createdAt          DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user               User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, name])
+  @@index([userId, mode])
+  @@index([userId, isDefault])
+  @@map("workspace_profiles")
+}
+
+model AiStrategy {
+  id              String           @id @default(uuid()) @db.Uuid
+  slug            String           @unique @db.VarChar(80)
+  name            String           @db.VarChar(160)
+  version         String           @db.VarChar(40)
+  description     String?          @db.Text
+  modelFamily     String?          @map("model_family") @db.VarChar(80)
+  isActive        Boolean          @default(true) @map("is_active")
+  riskProfile     Json             @default("{}") @map("risk_profile")
+  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  activePositions ActivePosition[]
+  chartOrders     ChartOrder[]
+
+  @@index([isActive])
+  @@index([slug, version])
+  @@map("ai_strategies")
+}
+
+model ActivePosition {
+  id                  String         @id @default(uuid()) @db.Uuid
+  userId              String         @map("user_id") @db.Uuid
+  aiStrategyId        String?        @map("ai_strategy_id") @db.Uuid
+  symbol              String         @db.VarChar(32)
+  asset               String         @db.VarChar(32)
+  quoteAsset          String         @default("USDT") @map("quote_asset") @db.VarChar(16)
+  exchange            String         @default("BINANCE") @db.VarChar(40)
+  side                PositionSide
+  status              PositionStatus @default(PENDING)
+  entryPrice          Decimal        @map("entry_price") @db.Decimal(28, 10)
+  quantity            Decimal        @db.Decimal(28, 10)
+  avgFillPrice        Decimal?       @map("avg_fill_price") @db.Decimal(28, 10)
+  currentPrice        Decimal?       @map("current_price") @db.Decimal(28, 10)
+  stopLoss            Decimal?       @map("stop_loss") @db.Decimal(28, 10)
+  takeProfit          Decimal?       @map("take_profit") @db.Decimal(28, 10)
+  trailingStop        Decimal?       @map("trailing_stop") @db.Decimal(28, 10)
+  riskFraction        Decimal?       @map("risk_fraction") @db.Decimal(8, 6)
+  unrealizedPnl       Decimal        @default(0) @map("unrealized_pnl") @db.Decimal(28, 10)
+  realizedPnl         Decimal        @default(0) @map("realized_pnl") @db.Decimal(28, 10)
+  brokerPositionId    String?        @map("broker_position_id") @db.VarChar(120)
+  openedAt            DateTime?      @map("opened_at") @db.Timestamptz(6)
+  closedAt            DateTime?      @map("closed_at") @db.Timestamptz(6)
+  createdAt           DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user                User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  aiStrategy          AiStrategy?     @relation(fields: [aiStrategyId], references: [id], onDelete: SetNull)
+  chartOrders         ChartOrder[]
+
+  @@index([userId, status])
+  @@index([userId, symbol])
+  @@index([symbol, status])
+  @@index([aiStrategyId])
+  @@index([createdAt])
+  @@map("active_positions")
+}
+
+model ChartOrder {
+  id                  String           @id @default(uuid()) @db.Uuid
+  userId              String           @map("user_id") @db.Uuid
+  activePositionId    String?          @map("active_position_id") @db.Uuid
+  aiStrategyId        String?          @map("ai_strategy_id") @db.Uuid
+  symbol              String           @db.VarChar(32)
+  exchange            String           @default("BINANCE") @db.VarChar(40)
+  side                ChartOrderSide
+  status              ChartOrderStatus @default(DRAFT)
+  limitPrice          Decimal?         @map("limit_price") @db.Decimal(28, 10)
+  stopLoss            Decimal?         @map("stop_loss") @db.Decimal(28, 10)
+  takeProfit          Decimal?         @map("take_profit") @db.Decimal(28, 10)
+  quantity            Decimal?         @db.Decimal(28, 10)
+  walletPercent       Decimal?         @map("wallet_percent") @db.Decimal(6, 3)
+  isAiTrailing        Boolean          @default(false) @map("is_ai_trailing")
+  trailingDistancePct Decimal?         @map("trailing_distance_pct") @db.Decimal(8, 6)
+  aiForecastSnapshot  Json             @default("{}") @map("ai_forecast_snapshot")
+  userDraggedLevels   Json             @default("{}") @map("user_dragged_levels")
+  lastUpdated         DateTime         @default(now()) @updatedAt @map("last_updated") @db.Timestamptz(6)
+  createdAt           DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  submittedAt         DateTime?        @map("submitted_at") @db.Timestamptz(6)
+  cancelledAt         DateTime?        @map("cancelled_at") @db.Timestamptz(6)
+
+  user                User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activePosition      ActivePosition?   @relation(fields: [activePositionId], references: [id], onDelete: SetNull)
+  aiStrategy          AiStrategy?       @relation(fields: [aiStrategyId], references: [id], onDelete: SetNull)
+
+  @@index([userId, status])
+  @@index([userId, symbol])
+  @@index([symbol, status])
+  @@index([activePositionId])
+  @@index([aiStrategyId])
+  @@index([lastUpdated])
+  @@map("chart_orders")
+}
