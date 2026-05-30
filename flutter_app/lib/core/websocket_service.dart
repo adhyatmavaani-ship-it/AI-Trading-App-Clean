@@ -36,6 +36,7 @@ class WebSocketService {
   bool _connectionRequested = false;
   bool _connectInFlight = false;
   int _reconnectAttempt = 0;
+  int _stalePingAttempts = 0;
   String _lastReconnectReason = 'initial_connect';
   final ValueNotifier<WsState> _state = ValueNotifier<WsState>(
     WsState.disconnected,
@@ -194,6 +195,7 @@ class WebSocketService {
       _channel = channel;
       await channel.ready.timeout(AppConstants.websocketConnectTimeout);
       _reconnectAttempt = 0;
+      _stalePingAttempts = 0;
       _setState(WsState.connected);
       _startStaleFeedMonitor();
       track(
@@ -207,6 +209,7 @@ class WebSocketService {
         (dynamic data) {
           try {
             final decoded = jsonDecode(data as String) as Map<String, dynamic>;
+            _stalePingAttempts = 0;
             if (decoded['type'] == 'replay_response') {
               track('ws_replay_response', decoded);
               if (decoded['recovery'] == 'snapshot_required') {
@@ -294,6 +297,7 @@ class WebSocketService {
     _reconnectTimer?.cancel();
     _staleFeedTimer?.cancel();
     _reconnectAttempt += 1;
+    _stalePingAttempts = 0;
     _lastReconnectReason = reason;
     final delay = _reconnectDelayForAttempt(_reconnectAttempt);
     debugPrint(
@@ -410,6 +414,19 @@ class WebSocketService {
           return;
         }
         if (_integrityGate.isStale(AppConstants.websocketStaleAfter)) {
+          final channel = _channel;
+          if (channel != null && _stalePingAttempts < 2) {
+            _stalePingAttempts += 1;
+            channel.sink.add('ping');
+            track(
+              'ws_stale_keepalive_ping',
+              <String, dynamic>{
+                'target': _signalUri.toString(),
+                'attempt': _stalePingAttempts,
+              },
+            );
+            return;
+          }
           _setState(WsState.degraded);
           track(
             'ws_feed_stale',
