@@ -1,0 +1,4 @@
+dist/
+node_modules/
+*.local
+quentrader-react-preview.png
