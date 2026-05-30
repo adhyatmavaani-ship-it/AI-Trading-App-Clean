@@ -7,6 +7,7 @@ import '../features/retention/providers/retention_providers.dart';
 import '../features/trade/providers/trade_providers.dart';
 import '../models/signal.dart';
 import '../widgets/live_pulse_indicator.dart';
+import 'ai_choice_screen.dart';
 import 'ai_copilot_screen.dart';
 import 'ai_trade_center_screen.dart';
 import 'market_screen.dart';
@@ -14,7 +15,15 @@ import 'portfolio_screen.dart';
 import 'quentrader_home_screen.dart';
 import 'trade_screen.dart';
 
-enum AppDestination { home, tradeCenter, market, chart, portfolio, copilot }
+enum AppDestination {
+  home,
+  aiChoice,
+  tradeCenter,
+  market,
+  chart,
+  portfolio,
+  copilot
+}
 
 class AppShell extends ConsumerStatefulWidget {
   const AppShell({super.key});
@@ -132,6 +141,11 @@ class _AppShellState extends ConsumerState<AppShell> {
               NavigationDestination(
                 icon: Icon(Icons.auto_awesome_outlined),
                 selectedIcon: Icon(Icons.auto_awesome),
+                label: 'AI Choice',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.bolt_outlined),
+                selectedIcon: Icon(Icons.bolt),
                 label: 'AI Trade',
               ),
               NavigationDestination(
@@ -166,9 +180,15 @@ class _AppShellState extends ConsumerState<AppShell> {
       case AppDestination.home:
         return QuentraderHomeScreen(
           onOpenDashboard: () => _selectDestination(AppDestination.tradeCenter),
-          onOpenSignals: () => _selectDestination(AppDestination.tradeCenter),
+          onOpenSignals: () => _selectDestination(AppDestination.aiChoice),
           onOpenBrokers: () => _selectDestination(AppDestination.copilot),
           onOpenPricing: () => _selectDestination(AppDestination.portfolio),
+          onOpenAiChoice: () => _selectDestination(AppDestination.aiChoice),
+        );
+      case AppDestination.aiChoice:
+        return AiChoiceScreen(
+          onOpenManualTrade: _openManualTrade,
+          onOpenAiTrade: _openTradeWithSignal,
         );
       case AppDestination.tradeCenter:
         return AiTradeCenterScreen(
@@ -197,6 +217,14 @@ class _AppShellState extends ConsumerState<AppShell> {
     _selectDestination(AppDestination.chart);
   }
 
+  void _openManualTrade(String symbol) {
+    ref.read(selectedMarketSymbolProvider.notifier).state = symbol;
+    ref.read(selectedTradeIntentProvider.notifier).state = null;
+    ref.read(localAiMemoryProvider.notifier).recordAsset(symbol);
+    ref.read(localAiMemoryProvider.notifier).recordMode('MANUAL');
+    _selectDestination(AppDestination.chart);
+  }
+
   void _selectDestination(AppDestination destination) {
     setState(() {
       _destination = destination;
@@ -206,6 +234,7 @@ class _AppShellState extends ConsumerState<AppShell> {
   String _titleFor(AppDestination destination) {
     return switch (destination) {
       AppDestination.home => 'Quentrader',
+      AppDestination.aiChoice => 'AI Choice',
       AppDestination.tradeCenter => 'AI Trade Center',
       AppDestination.market => 'Market',
       AppDestination.chart => 'Advanced Chart',
@@ -218,6 +247,8 @@ class _AppShellState extends ConsumerState<AppShell> {
     return switch (destination) {
       AppDestination.home =>
         'AI-powered trading platform with live signals and risk-first execution.',
+      AppDestination.aiChoice =>
+        'AI-ranked crypto buy and sell candidates with clear entry reasoning.',
       AppDestination.tradeCenter =>
         'Best verified setup, entry plan, risk, and AI reasoning in one view.',
       AppDestination.market =>
@@ -246,8 +277,13 @@ class _DesktopSidebar extends StatelessWidget {
     final items = <({AppDestination value, IconData icon, String label})>[
       (value: AppDestination.home, icon: Icons.home_rounded, label: 'Home'),
       (
+        value: AppDestination.aiChoice,
+        icon: Icons.psychology_alt,
+        label: 'AI Choice'
+      ),
+      (
         value: AppDestination.tradeCenter,
-        icon: Icons.auto_awesome,
+        icon: Icons.bolt,
         label: 'AI Trade Center'
       ),
       (value: AppDestination.market, icon: Icons.query_stats, label: 'Market'),

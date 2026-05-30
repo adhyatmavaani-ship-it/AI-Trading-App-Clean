@@ -25,6 +25,7 @@ import 'package:ai_trading_app/models/trade_timeline.dart';
 import 'package:ai_trading_app/models/user_pnl.dart';
 import 'package:ai_trading_app/providers/app_providers.dart';
 import 'package:ai_trading_app/repositories/trading_repository.dart';
+import 'package:ai_trading_app/screens/ai_choice_screen.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -318,10 +319,20 @@ class FakeTradingRepository extends TradingRepository {
       quoteVolume: 950000,
       category: 'major',
     );
+    const sol = MarketUniverseEntryModel(
+      symbol: 'SOLUSDT',
+      price: 168,
+      changePct: -2.1,
+      volumeRatio: 1.6,
+      volatilityPct: 3.8,
+      trendPct: -1.2,
+      quoteVolume: 820000,
+      category: 'major',
+    );
     return const MarketUniverseModel(
-      items: <MarketUniverseEntryModel>[btc, eth],
+      items: <MarketUniverseEntryModel>[btc, eth, sol],
       topGainers: <MarketUniverseEntryModel>[btc, eth],
-      topLosers: <MarketUniverseEntryModel>[],
+      topLosers: <MarketUniverseEntryModel>[sol],
       highVolatility: <MarketUniverseEntryModel>[btc],
       aiPicks: <MarketUniverseEntryModel>[btc],
     );
@@ -810,5 +821,48 @@ void main() {
 
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();
+  });
+
+  testWidgets('AI Choice separates buy and sell decisions', (
+    WidgetTester tester,
+  ) async {
+    var manualSymbol = '';
+    var aiSymbol = '';
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: _commonOverrides(
+          authStore: MemoryAuthCredentialsStore(
+            initialSession: const AuthSession(accessToken: 'test-token'),
+          ),
+        ),
+        child: MaterialApp(
+          home: Scaffold(
+            body: AiChoiceScreen(
+              onOpenManualTrade: (symbol) => manualSymbol = symbol,
+              onOpenAiTrade: (signal) => aiSymbol = signal.symbol,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.text('AI Choice'), findsOneWidget);
+    expect(find.text('AI Buy List'), findsOneWidget);
+    expect(find.text('AI Sell List'), findsOneWidget);
+    expect(find.text('Manual Trade'), findsOneWidget);
+    expect(find.text('AI Trade Plan'), findsOneWidget);
+
+    await tester.ensureVisible(find.text('Open Chart').first);
+    await tester.tap(find.text('Open Chart').first);
+    await tester.pump();
+    expect(manualSymbol, isNotEmpty);
+
+    await tester.ensureVisible(find.text('Arm AI Plan').first);
+    await tester.tap(find.text('Arm AI Plan').first);
+    await tester.pump();
+    expect(aiSymbol, isNotEmpty);
   });
 }

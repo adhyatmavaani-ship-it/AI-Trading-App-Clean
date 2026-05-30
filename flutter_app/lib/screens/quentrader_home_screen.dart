@@ -18,6 +18,7 @@ class QuentraderHomeScreen extends ConsumerWidget {
     required this.onOpenSignals,
     required this.onOpenBrokers,
     required this.onOpenPricing,
+    required this.onOpenAiChoice,
     super.key,
   });
 
@@ -25,6 +26,7 @@ class QuentraderHomeScreen extends ConsumerWidget {
   final VoidCallback onOpenSignals;
   final VoidCallback onOpenBrokers;
   final VoidCallback onOpenPricing;
+  final VoidCallback onOpenAiChoice;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -58,6 +60,7 @@ class QuentraderHomeScreen extends ConsumerWidget {
                 onOpenSignals: onOpenSignals,
                 onOpenBrokers: onOpenBrokers,
                 onOpenPricing: onOpenPricing,
+                onOpenAiChoice: onOpenAiChoice,
               ),
             ),
             SliverPadding(
@@ -67,7 +70,7 @@ class QuentraderHomeScreen extends ConsumerWidget {
                   builder: (context, constraints) {
                     final wide = constraints.maxWidth >= 1050;
                     final hero = _HeroCopy(
-                      onStart: onOpenDashboard,
+                      onStart: onOpenAiChoice,
                       onDemo: onOpenSignals,
                     );
                     final terminal = _TerminalPreview(
@@ -106,7 +109,7 @@ class QuentraderHomeScreen extends ConsumerWidget {
               sliver: SliverToBoxAdapter(
                 child: _FeatureRail(
                   onOpenDashboard: onOpenDashboard,
-                  onOpenSignals: onOpenSignals,
+                  onOpenSignals: onOpenAiChoice,
                   onOpenBrokers: onOpenBrokers,
                 ),
               ),
@@ -238,12 +241,14 @@ class _TopNav extends StatelessWidget {
     required this.onOpenSignals,
     required this.onOpenBrokers,
     required this.onOpenPricing,
+    required this.onOpenAiChoice,
   });
 
   final VoidCallback onOpenDashboard;
   final VoidCallback onOpenSignals;
   final VoidCallback onOpenBrokers;
   final VoidCallback onOpenPricing;
+  final VoidCallback onOpenAiChoice;
 
   @override
   Widget build(BuildContext context) {
@@ -292,6 +297,7 @@ class _TopNav extends StatelessWidget {
           if (showFullNav) ...<Widget>[
             _NavButton(label: 'Home', selected: true, onTap: () {}),
             _NavButton(label: 'Features', onTap: onOpenSignals),
+            _NavButton(label: 'AI Choice', onTap: onOpenAiChoice),
             _NavButton(label: 'Pricing', onTap: onOpenPricing),
             _NavButton(label: 'Dashboard', onTap: onOpenDashboard),
             _NavButton(label: 'Brokers', onTap: onOpenBrokers),
