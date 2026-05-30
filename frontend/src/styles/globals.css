@@ -81,6 +81,42 @@ textarea {
   font-variant-numeric: tabular-nums;
 }
 
+.holographic-pulse {
+  position: relative;
+  overflow: hidden;
+}
+
+.holographic-pulse::after {
+  position: absolute;
+  inset: -1px;
+  pointer-events: none;
+  content: "";
+  background: linear-gradient(115deg, transparent 0%, rgba(0, 194, 255, 0.22) 35%, rgba(0, 230, 118, 0.3) 50%, transparent 70%);
+  transform: translateX(-130%);
+  animation: holo-sweep 2.8s ease-in-out infinite;
+}
+
+.price-line-drag {
+  accent-color: #00e676;
+}
+
+@keyframes holo-sweep {
+  0% {
+    transform: translateX(-130%);
+    opacity: 0;
+  }
+  18% {
+    opacity: 1;
+  }
+  62% {
+    opacity: 0.75;
+  }
+  100% {
+    transform: translateX(130%);
+    opacity: 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
