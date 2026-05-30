@@ -193,18 +193,6 @@ class WebSocketService {
       debugPrint('[WS AUTH] required_api_key');
       debugPrint('[WS AUTH HEADER] X-API-Key=present');
       _channel = channel;
-      await channel.ready.timeout(AppConstants.websocketConnectTimeout);
-      _reconnectAttempt = 0;
-      _stalePingAttempts = 0;
-      _setState(WsState.connected);
-      _startStaleFeedMonitor();
-      track(
-        'ws_connected',
-        <String, dynamic>{
-          'uri': uri.toString(),
-          'via_proxy': true,
-        },
-      );
       _channelSubscription = channel.stream.listen(
         (dynamic data) {
           try {
@@ -270,6 +258,21 @@ class WebSocketService {
           _scheduleReconnect(reason: 'stream_closed');
         },
         cancelOnError: false,
+      );
+      if (!kIsWeb) {
+        await channel.ready.timeout(AppConstants.websocketConnectTimeout);
+      }
+      _reconnectAttempt = 0;
+      _stalePingAttempts = 0;
+      _setState(WsState.connected);
+      _startStaleFeedMonitor();
+      track(
+        'ws_connected',
+        <String, dynamic>{
+          'uri': uri.toString(),
+          'via_proxy': true,
+          'ready_mode': kIsWeb ? 'web_stream_listen' : 'channel_ready',
+        },
       );
     } catch (error, stackTrace) {
       logError(error, stackTrace: stackTrace);
